@@ -962,6 +962,8 @@ export const dict = {
   "session.delete.button": "Delete session",
 
   "workspace.new": "New worktree",
+  "workspace.move.menu.title": "Move session to",
+  "workspace.move.failed": "Failed to move session",
   "common.viewAll": "View all",
   "session.new.workspace.local.tooltip": "Uses project’s current checkout",
   "session.new.workspace.new.tooltip": "Creates isolated copy from current checkout",

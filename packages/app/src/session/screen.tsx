@@ -16,6 +16,7 @@ import { Slot, type BackgroundTask, type MountedSession, type SessionScreen } fr
 import { MessageTimeline } from "@/session/timeline/message-timeline"
 import { ComposerDropzone } from "@/composer/dropzone"
 import { useSettings } from "@/settings/model"
+import { useServer } from "@/runtime/server/current"
 import type { SessionModel } from "@/session/model"
 import { SESSION_PANEL_WIDTH_MIN } from "@/session/session-panel-width"
 import { SessionPanelFrame } from "@/session/session-frame"
@@ -33,6 +34,7 @@ import { createSessionTimelineInteraction } from "./timeline/interaction"
 import { createTimelineSearchController } from "./timeline/search-controller"
 import { TimelineSearchBar } from "./timeline/search-bar"
 import { ActiveSessionComposerRegion, createActiveSessionRegion } from "./composer/region"
+import { SessionWorkspaceFooter } from "./composer/workspace-footer"
 import { SessionIdentityHeader } from "./session-identity-header"
 import { SessionReviewToggle } from "./header/session-header-actions"
 import { SessionRunningMenu } from "./header/session-running-menu"
@@ -223,6 +225,15 @@ function SessionScreenContent(props: {
 
   props.bindBackground(composer.requests.background.tasks)
   useUsageExceededDialogs()
+  const server = useServer()
+  const workspaceMove = createMemo(() => {
+    const info = session.data.info()
+    const project = info ? server.ctx.projects.detailsForSession(info) : undefined
+
+    if (!info || !project) return
+
+    return { project, sessionID: info.id }
+  })
 
   const sessionErrorFallback = (cause: unknown, reset: () => void) => {
     createEffect(on(session.identity.sessionKey, reset, { defer: true }))
@@ -357,7 +368,19 @@ function SessionScreenContent(props: {
 
       <Show when={composer.active()} keyed>
         {(model) => (
-          <ActiveSessionComposerRegion session={session} model={model} suggestionBoundary={timeline.scroller} />
+          <ActiveSessionComposerRegion
+            session={session}
+            model={model}
+            suggestionBoundary={timeline.scroller}
+            footer={
+              <SessionWorkspaceFooter
+                move={workspaceMove()}
+                directory={session.workspace.directory()}
+                local={!session.workspace.current()}
+                branch={session.shared.data.location.vcs.info({ directory: session.workspace.directory() })?.branch.current}
+              />
+            }
+          />
         )}
       </Show>
       <Show when={!isDesktop() && !!session.identity.params.id && bottomMobileTabs()}>{mobileTabs()}</Show>
