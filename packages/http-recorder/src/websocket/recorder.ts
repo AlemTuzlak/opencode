@@ -288,8 +288,8 @@ const makeReplaySocket = (
         )
         return { pull, upgrade: Socket.SocketUpgradeError.unsupported }
       }),
-      writer: Effect.succeed({
-        write: (message) =>
+      writer: Effect.sync(() => {
+        const write: Socket.Writer["write"] = (message) =>
           Ref.get(active).pipe(
             Effect.flatMap((state) =>
               state
@@ -322,35 +322,8 @@ const makeReplaySocket = (
                   )
                 : Effect.die("WebSocket writer used without an active socket run"),
             ),
-          ),
-        writeAll: (messages) =>
-          Effect.forEach(
-            messages,
-            (message) =>
-              Ref.get(active).pipe(
-                Effect.flatMap((state) =>
-                  state
-                    ? state.writeLock.withPermit(
-                        Effect.gen(function* () {
-                          const current = yield* Ref.get(state.progress)
-                          yield* assertEvent(
-                            redactEvent(encodeEvent("client", message), redactor),
-                            state.interaction.events[current.position],
-                            current.position,
-                            options.compareClientMessagesAsJson === true,
-                          )
-                          yield* Ref.set(state.progress, {
-                            position: current.position + 1,
-                            changed: yield* Deferred.make<void>(),
-                          })
-                          yield* Deferred.succeed(current.changed, undefined)
-                        }),
-                      )
-                    : Effect.die("WebSocket writer used without an active socket run"),
-                ),
-              ),
-            { discard: true },
-          ),
+          )
+        return { write, writeAll: (messages) => Effect.forEach(messages, write, { discard: true }) }
       }),
     })
   })
