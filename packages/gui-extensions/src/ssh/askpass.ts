@@ -24,25 +24,22 @@ export const createAskpass = Effect.fn("Ssh.askpass")(function* (input: {
     .run((socket) =>
       Effect.gen(function* () {
         const request = yield* Deferred.make<string, SshFailure>()
-        const state = { buffer: "", received: false }
 
+        // A helper sends one newline-terminated request. Oversized input, later data, or a close fails it.
         const reader = yield* Effect.gen(function* () {
           const pull = yield* Socket.readerString(socket)
+          let buffer = ""
 
-          while (true) {
-            const chunks = yield* pull
+          while (!buffer.includes("\n")) {
+            buffer += (yield* pull).join("")
 
-            for (const chunk of chunks) {
-              if (state.received) return yield* Effect.fail(new SshFailure("connection"))
-              state.buffer += chunk
-
-              if (state.buffer.length > 16_384) return yield* Effect.fail(new SshFailure("connection"))
-
-              if (!state.buffer.includes("\n")) continue
-              state.received = true
-              yield* Deferred.succeed(request, state.buffer.trim())
-            }
+            if (buffer.length > 16_384) return yield* new SshFailure("connection")
           }
+
+          yield* Deferred.succeed(request, buffer.trim())
+          yield* pull
+
+          return yield* new SshFailure("connection")
         }).pipe(Effect.ensuring(Deferred.fail(request, new SshFailure("connection"))), Effect.forkScoped)
 
         const message = yield* Deferred.await(request).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Request)))
@@ -66,7 +63,7 @@ export const createAskpass = Effect.fn("Ssh.askpass")(function* (input: {
               yield* writer.write(JSON.stringify({ value }))
             }).pipe(Effect.scoped),
           )
-          .pipe(Effect.raceFirst(Fiber.join(reader).pipe(Effect.andThen(Effect.fail(new SshFailure("connection"))))))
+          .pipe(Effect.raceFirst(Fiber.join(reader)))
       }).pipe(
         Effect.scoped,
         Effect.timeout("5 minutes"),

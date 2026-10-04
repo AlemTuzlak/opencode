@@ -74,3 +74,25 @@ it.live(
     expect(yield* Fiber.join(reply)).toBe("")
   }),
 )
+
+it.live(
+  "oversized requests never prompt; disconnecting a helper clears its prompt",
+  Effect.gen(function* () {
+    const prompts = yield* Queue.unbounded<string>()
+    const cleared = yield* Deferred.make<string>()
+
+    const bridge = yield* createAskpass({
+      binary: "unused",
+      prompt: (prompt) => Queue.offer(prompts, prompt.id).pipe(Effect.asVoid),
+      clear: (id) => Deferred.succeed(cleared, id).pipe(Effect.asVoid),
+    })
+
+    expect(yield* request(bridge.env, "x".repeat(16_384))).toBe("")
+    expect(yield* Queue.size(prompts)).toBe(0)
+
+    const helper = yield* request(bridge.env, "Password:").pipe(Effect.forkScoped)
+    const id = yield* Queue.take(prompts)
+    yield* Fiber.interrupt(helper)
+    expect(yield* Deferred.await(cleared)).toBe(id)
+  }),
+)
