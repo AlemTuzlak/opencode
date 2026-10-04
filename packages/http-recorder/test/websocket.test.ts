@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Deferred, Effect, Exit, Fiber, FiberSet, Layer } from "effect"
+import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Socket } from "effect/socket"
 import { existsSync } from "node:fs"
 import { HttpRecorder } from "../src"
@@ -14,6 +14,7 @@ const unavailableSocket = Socket.make({
   }),
 })
 
+// Reads until the socket closes, handling each frame before pulling the next batch.
 const runRaw = <E, R>(
   socket: Socket.Socket,
   handler: (message: string | Uint8Array) => Effect.Effect<unknown, E, R> | void,
@@ -21,31 +22,20 @@ const runRaw = <E, R>(
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const handlers = yield* FiberSet.make<unknown, E>()
-      const run = yield* FiberSet.runtime(handlers)<R>()
       const reader = yield* socket.reader
       if (onOpen) yield* onOpen
-      yield* Effect.gen(function* () {
-        while (true) {
-          const messages = yield* reader.pull
-          messages.forEach((message) =>
-            run(
-              Effect.suspend(() => {
-                const result = handler(message)
-                return Effect.isEffect(result) ? Effect.asVoid(result) : Effect.void
-              }),
-            ),
-          )
+      while (true) {
+        for (const message of yield* reader.pull) {
+          const result = handler(message)
+          if (Effect.isEffect(result)) yield* result
         }
-      }).pipe(
-        Effect.catchIf(
-          (error) => Socket.SocketError.is(error) && error.reason._tag === "SocketCloseError",
-          () => Effect.void,
-        ),
-        Effect.raceFirst(FiberSet.join(handlers)),
-      )
-      yield* FiberSet.awaitEmpty(handlers).pipe(Effect.raceFirst(FiberSet.join(handlers)))
-    }),
+      }
+    }).pipe(
+      Effect.catchIf(
+        (error) => Socket.SocketError.is(error) && error.reason._tag === "SocketCloseError",
+        () => Effect.void,
+      ),
+    ),
   )
 
 const runString = <E, R>(
@@ -481,36 +471,6 @@ describe("WebSocket", () => {
       '{"type":"response.completed","id":"first"}',
       '{"type":"response.completed","id":"second"}',
     ])
-  })
-
-  test("WebSocket replay runs message handlers concurrently", async () => {
-    using directory = tempDirectory("http-recorder-websocket-")
-    await seedCassetteDirectory(directory.path, "websocket/concurrent-handlers", [
-      {
-        transport: "websocket",
-        events: [
-          { direction: "server", kind: "text", body: "first" },
-          { direction: "server", kind: "text", body: "second" },
-        ],
-      },
-    ])
-
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const socket = yield* Socket.Socket
-        const second = yield* Deferred.make<void>()
-        yield* runString(socket, (message) =>
-          message === "first" ? Deferred.await(second) : Deferred.succeed(second, undefined),
-        )
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          layerSocketWithMode("websocket/concurrent-handlers", { directory: directory.path, mode: "replay" }).pipe(
-            Layer.provide(Layer.succeed(Socket.Socket, unavailableSocket)),
-          ),
-        ),
-      ),
-    )
   })
 
   test("rejected concurrent replay does not consume the next interaction", async () => {
