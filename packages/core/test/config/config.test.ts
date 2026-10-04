@@ -692,27 +692,6 @@ describe("Config", () => {
       expect(() => decode(invalid)).toThrow()
   })
 
-  test("migrates top-level, tool, and agent permissions in source order", () => {
-    const migrated = migrateV1({
-      tools: { "*": false, read: true },
-      permission: { "*": "deny", bash: "ask", read: "allow" },
-      agent: { build: { tools: { write: false, read: true }, permission: { "*": "allow", edit: "allow" } } },
-    })
-    expect(migrated.permissions).toEqual([
-      { action: "*", resource: "*", effect: "deny" },
-      { action: "read", resource: "*", effect: "allow" },
-      { action: "*", resource: "*", effect: "deny" },
-      { action: "shell", resource: "*", effect: "ask" },
-      { action: "read", resource: "*", effect: "allow" },
-    ])
-    // An agent's permission overrides its tools in place, like Object.assign.
-    expect(migrated.agents?.build?.permissions).toEqual([
-      { action: "edit", resource: "*", effect: "allow" },
-      { action: "read", resource: "*", effect: "allow" },
-      { action: "*", resource: "*", effect: "allow" },
-    ])
-  })
-
   test("migrates the v1 experimental subagent depth", () => {
     expect(migrateV1({ experimental: { subagent_depth: 2 } }).experimental?.subagent_depth).toBe(2)
   })

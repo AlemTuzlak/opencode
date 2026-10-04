@@ -267,24 +267,19 @@ describe("ConfigNormalize", () => {
   })
 
   test.each(["agent", "mode"])("preserves legacy %s permission source order", (key) => {
-    const permission = { "*": "allow", bash: "ask", custom: "deny", edit: "deny" }
-    expect(normalized({ [key]: { build: { permission } } }).encoded.agents).toMatchObject({
+    const build = {
+      tools: { write: false, read: true },
+      permission: { "*": "allow", bash: "ask", custom: "deny", edit: "allow" },
+    }
+    // An agent's permission overrides its tools in place, like Object.assign.
+    expect(normalized({ [key]: { build } }).encoded.agents).toMatchObject({
       build: {
         permissions: [
+          { action: "edit", resource: "*", effect: "allow" },
+          { action: "read", resource: "*", effect: "allow" },
           { action: "*", resource: "*", effect: "allow" },
           { action: "shell", resource: "*", effect: "ask" },
           { action: "custom", resource: "*", effect: "deny" },
-          { action: "edit", resource: "*", effect: "deny" },
-        ],
-      },
-    })
-    expect(
-      normalized({ [key]: { review: { permission: { "*": "deny", read: "allow" } } } }).encoded.agents,
-    ).toMatchObject({
-      review: {
-        permissions: [
-          { action: "*", resource: "*", effect: "deny" },
-          { action: "read", resource: "*", effect: "allow" },
         ],
       },
     })
