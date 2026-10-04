@@ -571,6 +571,44 @@ describe("WebSocket", () => {
     expect(existsSync(`${directory.path}/websocket/failed-run.json`)).toBe(false)
   })
 
+  test("recording rejects a write after the client closes, as replay does", async () => {
+    using directory = tempDirectory("http-recorder-websocket-")
+    const upstream = Socket.make({
+      reader: Effect.succeed({
+        pull: Effect.never,
+        upgrade: Socket.SocketUpgradeError.unsupported,
+      }),
+      writer: Effect.succeed({ write: () => Effect.void, writeAll: () => Effect.void }),
+    })
+    const exit = await Effect.runPromise(
+      Effect.gen(function* () {
+        const socket = yield* Socket.Socket
+        const writer = yield* socket.writer
+        return yield* Effect.exit(
+          Effect.scoped(
+            Effect.gen(function* () {
+              yield* socket.reader
+              yield* writer.write("before-close")
+              yield* writer.write(new Socket.CloseEvent(1000))
+              yield* writer.write("after-close")
+            }),
+          ),
+        )
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          layerSocketWithMode("websocket/write-after-close", { directory: directory.path, mode: "record" }).pipe(
+            Layer.provide(Layer.succeed(Socket.Socket, upstream)),
+          ),
+        ),
+      ),
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(failureText(exit)).toContain("after the client closed")
+    expect(existsSync(`${directory.path}/websocket/write-after-close.json`)).toBe(false)
+  })
+
   test("WebSocket replay preserves binary frame kinds across reconnects", async () => {
     using directory = tempDirectory("http-recorder-websocket-")
     const interaction = {

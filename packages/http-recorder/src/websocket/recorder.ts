@@ -24,6 +24,7 @@ interface ActiveRecording {
   readonly accepting: Ref.Ref<boolean>
   opened: boolean
   closed: boolean
+  clientClosed: boolean
   valid: boolean
 }
 interface PendingRecordings {
@@ -153,6 +154,7 @@ const makeRecordingSocket = (
           accepting: yield* Ref.make(true),
           opened: false,
           closed: false,
+          clientClosed: false,
           valid: true,
         }
         const occupied = yield* Ref.modify(active, (current) => [current !== undefined, current ?? state])
@@ -212,6 +214,8 @@ const makeRecordingSocket = (
                 const state = yield* Ref.get(active)
                 if (!state || !(yield* Ref.get(state.accepting)))
                   return yield* Effect.die("WebSocket writer used without an active socket run")
+                // Replay ends the run at the client's close, so a later frame could never replay.
+                if (state.clientClosed) return yield* Effect.die("WebSocket writer used after the client closed")
                 yield* state.eventLock.withPermit(
                   Effect.sync(() =>
                     state.events.push(
@@ -225,7 +229,16 @@ const makeRecordingSocket = (
           return {
             write: (message) =>
               Socket.isCloseEvent(message)
-                ? writeLock.withPermit(writer.write(message))
+                ? writeLock.withPermit(
+                    Ref.get(active).pipe(
+                      Effect.tap((state) =>
+                        Effect.sync(() => {
+                          if (state) state.clientClosed = true
+                        }),
+                      ),
+                      Effect.andThen(writer.write(message)),
+                    ),
+                  )
                 : record([message], writer.write(message)),
             writeAll: (messages) => record(messages, writer.writeAll(messages)),
           }
