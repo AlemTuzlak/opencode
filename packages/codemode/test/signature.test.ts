@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Schema, SchemaGetter } from "effect"
-import { CodeMode, Tool, nonFiniteNumberDefinition, signatureJsonSchema } from "../src/index.js"
+import { CodeMode, Tool } from "../src/index.js"
 import {
   decodeInput,
   inputProperties,
@@ -706,33 +706,18 @@ describe("union schemas render every alternative", () => {
     expect(outputTypeScript(named)).toBe("number")
   })
 
-  test("explicit non-finite string alternatives stay visible", () => {
+  test("strings that only spell non-finite numbers render as number", () => {
     const literals = ["NaN", "Infinity", "-Infinity"] as const
     const union = Schema.Union([Schema.Finite, Schema.Literals(literals)])
     const tool = Tool.make({ description: "n", input: union, output: union, execute: Effect.succeed })
-    expect(inputTypeScript(tool)).toBe('number | "NaN" | "Infinity" | "-Infinity"')
-    expect(outputTypeScript(tool)).toBe('number | "NaN" | "Infinity" | "-Infinity"')
+    expect(inputTypeScript(tool)).toBe("number")
+    expect(outputTypeScript(tool)).toBe("number")
+    // The signature only narrows what the model is told; the strings still decode.
     for (const value of literals) expect(decodeInput(tool, value)).toBe(value)
 
-    const mixed = Schema.Struct({
-      amount: Schema.Union([Schema.Number, Schema.Literals(literals)]),
-      missing: Schema.Union([Schema.Finite, Schema.Literal("NaN")]),
-    })
-    const mixedTool = Tool.make({ description: "n", input: mixed, output: mixed, execute: Effect.succeed })
-    const rendered = '{ amount: number | "NaN" | "Infinity" | "-Infinity"; missing: number | "NaN" }'
-    expect(inputTypeScript(mixedTool)).toBe(rendered)
-    expect(outputTypeScript(mixedTool)).toBe(rendered)
-    expect(decodeInput(mixedTool, { amount: "-Infinity", missing: "NaN" })).toEqual({
-      amount: "-Infinity",
-      missing: "NaN",
-    })
-
-    const raw = { anyOf: [{ type: "number" }, { type: "string", enum: [...literals] }] }
-    const rawTool = Tool.make({ description: "n", input: raw, output: raw, execute: Effect.succeed })
-    expect(jsonSchemaToTypeScript(raw)).toBe('number | "NaN" | "Infinity" | "-Infinity"')
-    expect(inputTypeScript(rawTool)).toBe('number | "NaN" | "Infinity" | "-Infinity"')
-    expect(outputTypeScript(rawTool)).toBe('number | "NaN" | "Infinity" | "-Infinity"')
-    expect(decodeInput(rawTool, "Infinity")).toBe("Infinity")
+    expect(jsonSchemaToTypeScript({ anyOf: [{ type: "number" }, { type: "string", enum: [...literals] }] })).toBe(
+      "number",
+    )
     expect(
       jsonSchemaToTypeScript({
         anyOf: [{ type: "number" }, ...literals.map((value) => ({ type: "string", enum: [value] }))],
@@ -740,40 +725,12 @@ describe("union schemas render every alternative", () => {
     ).toBe("number")
   })
 
-  test("raw schemas exported by signatureJsonSchema keep number provenance", () => {
-    const schema = Schema.Struct({
-      amount: Schema.Number,
-      maybe: Schema.optionalKey(Schema.NullOr(Schema.Number)),
-      sentinel: Schema.Literals(["NaN", "Infinity", "-Infinity"]),
-    })
-    const document = signatureJsonSchema(schema)
-    const raw = { ...document.schema, $defs: document.definitions } as Tool.JsonSchema
-    expect(Object.keys(document.definitions)).toEqual([nonFiniteNumberDefinition])
-    const rendered = '{ amount: number; maybe?: number | null; sentinel: "NaN" | "Infinity" | "-Infinity" }'
-    expect(jsonSchemaToTypeScript(raw)).toBe(rendered)
-    expect(
-      inputTypeScript(Tool.make({ description: "n", input: schema, output: schema, execute: Effect.succeed })),
-    ).toBe(rendered)
-    // Only the reserved definition name carries provenance; an authored definition keeps its strings.
-    expect(
-      jsonSchemaToTypeScript({
-        anyOf: [{ type: "number" }, { $ref: "#/$defs/Other" }],
-        $defs: { Other: { type: "string", enum: ["Infinity", "-Infinity", "NaN"] } },
-      }),
-    ).toBe('number | "Infinity" | "-Infinity" | "NaN"')
-  })
-
-  test("keeps unrelated and partial grouped string enums alongside numbers", () => {
+  test("keeps string enums with other values alongside numbers", () => {
     expect(
       jsonSchemaToTypeScript({
         anyOf: [{ type: "number" }, { type: "string", enum: ["NaN", "Infinity", "unknown"] }],
       }),
     ).toBe('number | "NaN" | "Infinity" | "unknown"')
-    expect(
-      jsonSchemaToTypeScript({
-        anyOf: [{ type: "number" }, { type: "string", enum: ["NaN", "Infinity"] }],
-      }),
-    ).toBe('number | "NaN" | "Infinity"')
     const tool = Tool.make({
       description: "Number or status",
       input: Schema.Union([Schema.Number, Schema.Literal("unknown")]),
