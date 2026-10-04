@@ -1039,6 +1039,39 @@ describe("empty input signatures agree with decoding", () => {
   })
 })
 
+describe("empty object signatures", () => {
+  const output = (schema: Schema.Decoder<unknown>) =>
+    Tool.make({ description: "Inspect", input: Schema.Struct({}), output: schema, execute: () => Effect.succeed({}) })
+
+  test("an empty struct output renders as {}", () => {
+    const tool = output(Schema.Struct({}))
+    expect(outputTypeScript(tool)).toBe("{}")
+    expect(outputTypeScript(tool, true)).toBe("{}")
+    expect(CodeMode.make({ tools: { inspect: tool } }).catalog[0]?.signature).toBe("tools.inspect(): Promise<{}>")
+  })
+
+  test("nested empty structs render as {}", () => {
+    const tool = output(
+      Schema.Struct({
+        meta: Schema.Struct({}),
+        extra: Schema.optionalKey(Schema.Struct({}).annotate({ description: "Extra data" })),
+      }),
+    )
+    expect(outputTypeScript(tool)).toBe("{ meta: {}; extra?: {} }")
+    expect(outputTypeScript(tool, true)).toBe(
+      ["{", "  meta: {},", "  /** Extra data */", "  extra?: {},", "}"].join("\n"),
+    )
+  })
+
+  test("raw schemas render only the exact empty-struct shapes as {}", () => {
+    expect(jsonSchemaToTypeScript({ not: { type: "null" } })).toBe("{}")
+    expect(jsonSchemaToTypeScript({ anyOf: [{ type: "object" }, { type: "array" }] })).toBe("{}")
+    expect(jsonSchemaToTypeScript({ type: "string", not: { type: "null" } })).toBe("string")
+    expect(jsonSchemaToTypeScript({ not: { type: "string" } })).toBe("unknown")
+    expect(jsonSchemaToTypeScript({ not: { type: "null", description: "Not null" } })).toBe("unknown")
+  })
+})
+
 describe("non-identifier tool paths", () => {
   const resolveLibrary = Tool.make({
     description: "Resolve a Context7 library ID",

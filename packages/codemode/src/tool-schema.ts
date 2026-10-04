@@ -176,6 +176,7 @@ const renderSchema = (
       alternatives.every((item) => item.type === "number" || ctx.numberSentinel(item))
     )
       return "number"
+    // Older Effect releases emitted this pair for an empty struct, and raw schemas from their generators still can.
     if (
       alternatives.length === 2 &&
       alternatives[0]?.type === "object" &&
@@ -226,6 +227,8 @@ const renderSchema = (
     if (indexType !== undefined) lines.push(`${pad}[key: string]: ${indexType},`)
     return `{\n${lines.join("\n")}\n${"  ".repeat(depth)}}`
   }
+  // Effect emits `{ not: { type: "null" } }` for an empty struct; any non-null value is TypeScript's `{}`.
+  if (schema.not?.type === "null" && Object.keys(schema.not).length === 1) return "{}"
   return "unknown"
 }
 
