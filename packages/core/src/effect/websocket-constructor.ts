@@ -3,11 +3,9 @@ import { NodeWS } from "@effect/platform-node/NodeSocket"
 import { HttpProxyAgent } from "http-proxy-agent"
 import { HttpsProxyAgent } from "https-proxy-agent"
 import { Layer } from "effect"
-import { Headers } from "effect/http"
 import { Socket } from "effect/socket"
 
-interface WebSocketOptions {
-  readonly headers?: Headers.Headers
+interface WebSocketOptions extends Socket.WebSocketClientOptions {
   readonly protocols?: string | Array<string>
 }
 
@@ -48,10 +46,8 @@ const proxy = (value: string, environment: Environment = process.env) => {
   )
 }
 
-const constructorOptions = (input: Socket.WebSocketConstructorOptions | undefined): WebSocketOptions => {
-  if (typeof input === "string" || Array.isArray(input)) return { protocols: input }
-  return { headers: input?.headers === undefined ? undefined : Headers.fromInput(input.headers) }
-}
+const constructorOptions = (input: Socket.WebSocketConstructorOptions | undefined): WebSocketOptions =>
+  typeof input === "string" || Array.isArray(input) ? { protocols: input } : { headers: input?.headers }
 
 const proxyAgent = (url: string, selectedProxy: string | undefined) => {
   if (!selectedProxy) return undefined
