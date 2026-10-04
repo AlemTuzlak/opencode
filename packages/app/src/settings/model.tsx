@@ -169,7 +169,7 @@ export const settingsSchema = Persistence.struct({
 function storedTimelineCategory(category: TimelineCategory) {
   return Persistence.optional(
     Schema.Union([
-      Schema.Struct({
+      Persistence.legacy({
         placement: Persistence.optional(placementSchema),
         details: Persistence.optional(detailsSchema),
       }),
@@ -219,7 +219,7 @@ export const settingsPersistence = Persistence.migrate(
         // Keep invalid explicit values distinct from absent values so legacy preferences cannot replace them.
         timelineDetail: Schema.optional(
           Schema.NullOr(
-            Schema.Struct({
+            Persistence.legacy({
               shell: storedTimelineCategory("shell"),
               edit: storedTimelineCategory("edit"),
               thinking: storedTimelineCategory("thinking"),
