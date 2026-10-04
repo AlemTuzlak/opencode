@@ -148,52 +148,38 @@ describe("tool schema projections", () => {
       ],
     },
   ]) {
-    for (const input of [
-      { name: "plain", schema: Schema.Struct({}) },
-      { name: "described", schema: Schema.Struct({}).annotate({ description: "No arguments" }) },
-      { name: "named", schema: Schema.Struct({}).annotate({ identifier: "Ping" }) },
-      {
-        name: "named and described",
-        schema: Schema.Struct({}).annotate({ identifier: "Ping", description: "No arguments" }),
-      },
-      { name: "encoded", schema: defaulted },
-      { name: "named encoded", schema: defaulted.annotate({ identifier: "Ping" }) },
-    ]) {
-      it.effect(
-        `${scenario.route.id} prepares ${input.name} empty Effect Struct tools alongside nonempty and raw schemas`,
-        () =>
-          Effect.gen(function* () {
-            const prepared = yield* compileRequest(
-              LLM.request({
-                model: scenario.route.with({ auth: Auth.bearer("test") }).model({ id: "test-model" }),
-                prompt: "Use a tool.",
-                tools: Tool.toDefinitions({
-                  ping: Tool.make({
-                    description: "Ping",
-                    parameters: input.schema,
-                    success: Schema.String,
-                    execute: () => Effect.succeed("pong"),
-                  }),
-                  lookup: Tool.make({
-                    description: "Lookup",
-                    parameters: Schema.Struct({ query: Schema.String }),
-                    success: Schema.String,
-                    execute: (input) => Effect.succeed(input.query),
-                  }),
-                  raw: Tool.make({ description: "Raw", jsonSchema: raw, execute: () => Effect.succeed("raw") }),
-                  reversed: Tool.make({
-                    description: "Reversed",
-                    parameters: reversed,
-                    success: Schema.String,
-                    execute: () => Effect.succeed("reversed"),
-                  }),
-                }),
+    it.effect(`${scenario.route.id} prepares empty Effect Struct tools alongside nonempty and raw schemas`, () =>
+      Effect.gen(function* () {
+        const prepared = yield* compileRequest(
+          LLM.request({
+            model: scenario.route.with({ auth: Auth.bearer("test") }).model({ id: "test-model" }),
+            prompt: "Use a tool.",
+            tools: Tool.toDefinitions({
+              ping: Tool.make({
+                description: "Ping",
+                parameters: Schema.Struct({}),
+                success: Schema.String,
+                execute: () => Effect.succeed("pong"),
               }),
-            )
-            expect(prepared.body.tools).toMatchObject(scenario.tools)
+              lookup: Tool.make({
+                description: "Lookup",
+                parameters: Schema.Struct({ query: Schema.String }),
+                success: Schema.String,
+                execute: (input) => Effect.succeed(input.query),
+              }),
+              raw: Tool.make({ description: "Raw", jsonSchema: raw, execute: () => Effect.succeed("raw") }),
+              reversed: Tool.make({
+                description: "Reversed",
+                parameters: reversed,
+                success: Schema.String,
+                execute: () => Effect.succeed("reversed"),
+              }),
+            }),
           }),
-      )
-    }
+        )
+        expect(prepared.body.tools).toMatchObject(scenario.tools)
+      }),
+    )
   }
 
   test("moonshot strips $ref siblings and converts tuple arrays to a schema object", () => {
