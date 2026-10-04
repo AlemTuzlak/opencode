@@ -46,7 +46,7 @@ live(
         (terminal) => Effect.promise(() => client.pty.remove({ location, ptyID: terminal.data.id })),
       )
       yield* Effect.promise(async () => {
-        const connect = async () => {
+        const open = async () => {
           const token = await client.pty.connect.token({ location, ptyID: terminal.data.id, "x-opencode-ticket": "1" })
           const url = new URL(`/api/pty/${terminal.data.id}/connect`, base)
           url.protocol = "ws:"
@@ -76,10 +76,16 @@ live(
           socket.addEventListener("error", () => {
             state.error = true
           })
-          await waitFor(() => state.frames.includes("cursor") || state.closed || state.error)
-          expect(state.error).toBeFalse()
-          expect(state.closed).toBeFalse()
           return { socket, state }
+        }
+        const connect = async () => {
+          const connection = await open()
+          await waitFor(
+            () => connection.state.frames.includes("cursor") || connection.state.closed || connection.state.error,
+          )
+          expect(connection.state.error).toBeFalse()
+          expect(connection.state.closed).toBeFalse()
+          return connection
         }
         const first = await connect()
         try {
@@ -105,6 +111,10 @@ live(
             await waitFor(() => second.state.closed)
             expect(second.state.code).toBe(1000)
             expect((await client.pty.get({ location, ptyID: terminal.data.id })).data.status).toBe("exited")
+            const exited = await open()
+            await waitFor(() => exited.state.closed)
+            expect(exited.state.code).toBe(4404)
+            expect(exited.state.frames).toEqual([])
           } finally {
             second.socket.close()
           }

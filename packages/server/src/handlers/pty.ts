@@ -16,7 +16,7 @@ import {
 } from "@opencode/protocol/groups/pty"
 import { response } from "../location"
 import { PtyEnvironment } from "../pty-environment"
-import { runPtySocket } from "./pty-socket"
+import { type Outbound, runPtySocket } from "./pty-socket"
 
 const ticketScope = Effect.gen(function* () {
   const location = yield* Location.Service
@@ -165,10 +165,10 @@ export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
               : undefined
 
           const socket = yield* Effect.orDie(ctx.request.upgrade)
-          const writer = yield* socket.writer
           const closeAccepted = (event: Socket.CloseEvent) =>
             Effect.gen(function* () {
               const reader = yield* socket.reader
+              const writer = yield* socket.writer
               yield* writer.write(event).pipe(Effect.catch(() => Effect.void))
               while (true) yield* reader.pull
             }).pipe(
@@ -177,10 +177,8 @@ export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
               Effect.catch(() => Effect.void),
             )
 
-          // Outbound frames flow through one queue drained by a single writer so replay, live
-          // output, and the close frame keep their order.
           // TODO: Integrate graceful-shutdown socket tracking before clients migrate to this route.
-          const outbox = yield* Queue.unbounded<string | Uint8Array | Socket.CloseEvent>()
+          const outbox = yield* Queue.unbounded<Outbound>()
           const attachment = yield* pty
             .attach(ctx.params.ptyID, {
               cursor,
@@ -201,31 +199,16 @@ export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
           Queue.offerUnsafe(outbox, PtyProtocol.metaFrame(attachment.cursor))
           attachment.activate()
 
-          const drain = Effect.gen(function* () {
-            while (true) {
-              const item = yield* Queue.take(outbox)
-              yield* writer.write(item)
-              if (item instanceof Socket.CloseEvent) return
-            }
+          yield* runPtySocket({
+            socket,
+            outbox,
+            onMessage: (message) =>
+              Effect.sync(() => {
+                const decoded = PtyProtocol.decodeInput(message)
+                if (decoded !== undefined) attachment.write(decoded)
+              }),
+            detach: attachment.detach,
           })
-
-          yield* runPtySocket(
-            drain,
-            Effect.gen(function* () {
-              const reader = yield* socket.reader
-              while (true) {
-                const messages = yield* reader.pull
-                messages.forEach((message) => {
-                  const decoded = PtyProtocol.decodeInput(message)
-                  if (decoded !== undefined) attachment.write(decoded)
-                })
-              }
-            }),
-            attachment.detach,
-          ).pipe(
-            Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void),
-            Effect.orDie,
-          )
           return HttpServerResponse.empty()
         }),
       )
