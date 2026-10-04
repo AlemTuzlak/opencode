@@ -965,6 +965,28 @@ describe("empty input signatures agree with decoding", () => {
     })
   })
 
+  test.each([
+    { name: "a record of JSON values", input: Schema.Record(Schema.String, Schema.Json), call: "{ a: 1 }" },
+    { name: "a record of unknown values", input: Schema.Record(Schema.String, Schema.Unknown), call: "{ a: 1 }" },
+    {
+      name: "a pattern-keyed record",
+      input: Schema.Record(Schema.TemplateLiteral(["x-", Schema.String]), Schema.String),
+      call: '{ "x-a": "1" }',
+    },
+    { name: "a constrained empty struct", input: Schema.Struct({}).check(Schema.isMinProperties(1)), call: "{ a: 1 }" },
+  ])("$name is not advertised as a zero-argument call", async ({ input, call }) => {
+    const runtime = CodeMode.make({
+      tools: {
+        take: Tool.make({ description: "Take", input, output: Schema.String, execute: () => Effect.succeed("taken") }),
+      },
+    })
+    expect(runtime.catalog[0]?.signature).not.toBe("tools.take(): Promise<string>")
+    expect(await Effect.runPromise(runtime.execute(`return await tools.take(${call})`))).toMatchObject({
+      ok: true,
+      value: "taken",
+    })
+  })
+
   test("a required encoded input transformed to an empty struct keeps its required fields", async () => {
     const consume = Tool.make({
       description: "Consume token",

@@ -22,6 +22,15 @@ const effectNumberSentinel = (schema: JsonSchema) =>
   schema.enum.length > 0 &&
   schema.enum.every((value) => value === "NaN" || value === "Infinity" || value === "-Infinity")
 
+// Effect emits `{ not: { type: "null" } }` only for a struct with no properties or index signatures. With nothing but
+// annotations beside it, it is TypeScript's `{}`. Mirrors `emptyInputJsonSchema` in `@opencode/ai`, which this
+// standalone package cannot import.
+const annotationKeywords = new Set(["title", "description", "default", "examples", "readOnly", "writeOnly"])
+const isEffectEmptyStruct = (schema: JsonSchema) =>
+  schema.not?.type === "null" &&
+  Object.keys(schema.not).length === 1 &&
+  Object.keys(schema).every((key) => key === "not" || annotationKeywords.has(key))
+
 const intersection = (members: ReadonlyArray<string>): string => {
   const concrete = members.filter((member) => member !== "unknown")
   if (concrete.length === 0) return "unknown"
@@ -203,8 +212,7 @@ const renderSchema = (
     if (indexType !== undefined) lines.push(`${pad}[key: string]: ${indexType},`)
     return `{\n${lines.join("\n")}\n${"  ".repeat(depth)}}`
   }
-  // Effect emits `{ not: { type: "null" } }` for an empty struct; any non-null value is TypeScript's `{}`.
-  if (schema.not?.type === "null" && Object.keys(schema.not).length === 1) return "{}"
+  if (isEffectEmptyStruct(schema)) return "{}"
   return "unknown"
 }
 
@@ -269,10 +277,14 @@ export const inputProperties = <R>(tool: Tool<R>): Array<InputProperty> => {
 export const inputTypeScript = <R>(tool: Tool<R>, pretty = false): string =>
   isEffectSchema(tool.input) ? toTypeScript(tool.input, false, pretty) : jsonSchemaToTypeScript(tool.input, pretty)
 
-// Empty object schemas render as `{}` in compact form; anything with properties,
-// an index signature, or union members renders differently, so equality is a
-// conservative emptiness test for both Effect and JSON Schema inputs.
-export const isEmptyInput = <R>(tool: Tool<R>): boolean => inputTypeScript(tool) === "{}"
+// Effect inputs are empty only when their encoded root is Effect's empty-struct marker, which records and checked
+// structs never are. Raw JSON Schema inputs keep the `{}` rendering check, which treats `{ type: "object" }` as empty.
+export const isEmptyInput = <R>(tool: Tool<R>): boolean =>
+  isEffectSchema(tool.input)
+    ? isEffectEmptyStruct(
+        Schema.toJsonSchemaDocument(tool.input, { referencePolicy: () => undefined }).schema as JsonSchema,
+      )
+    : inputTypeScript(tool) === "{}"
 
 export const outputTypeScript = <R>(tool: Tool<R>, pretty = false): string =>
   tool.output === undefined
