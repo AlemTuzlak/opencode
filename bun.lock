@@ -764,6 +764,7 @@
         "@tsconfig/bun": "catalog:",
         "@types/bun": "catalog:",
         "@typescript/native-preview": "catalog:",
+        "fast-check": "catalog:",
       },
     },
     "packages/session-ui": {
