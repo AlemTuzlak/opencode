@@ -117,8 +117,8 @@ describe("tool schema projections", () => {
     additionalProperties: false,
   }
   const raw = { type: "object", properties: { value: { type: "number" } }, additionalProperties: true }
-  const names = ["ping", "lookup", "raw", "reversed"]
-  const schemas = [empty, nonempty, raw, token]
+  const names = ["ping", "lookup", "raw", "reversed", "checked"]
+  const schemas = [empty, nonempty, raw, token, { type: "object", minProperties: 1 }]
 
   for (const scenario of [
     {
@@ -181,10 +181,17 @@ describe("tool schema projections", () => {
                 success: Schema.String,
                 execute: () => Effect.succeed("reversed"),
               }),
+              checked: Tool.make({
+                description: "Checked",
+                parameters: Schema.Struct({}).check(Schema.isMinProperties(1)),
+                success: Schema.String,
+                execute: () => Effect.succeed("checked"),
+              }),
             }),
           }),
         )
         expect(prepared.body.tools).toMatchObject(scenario.tools)
+        expect(JSON.stringify(prepared.body.tools)).not.toContain('"not"')
       }),
     )
   }
