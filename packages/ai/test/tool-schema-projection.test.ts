@@ -66,7 +66,7 @@ describe("tool schema projections", () => {
     expect(definitions[1]?.inputSchema).toEqual(raw)
   })
 
-  test("normalizes inputs whose encoded side is an unchecked empty struct", () => {
+  test("normalizes inputs whose encoded side is an empty struct", () => {
     const definitions = Tool.toDefinitions({
       defaulted: Tool.make({ description: "Defaulted", parameters: defaulted, success: defaulted }),
       named: Tool.make({
@@ -92,6 +92,12 @@ describe("tool schema projections", () => {
         parameters: Schema.Struct({}).check(Schema.isMinProperties(1)),
         success: Schema.String,
       }),
+      // A filter without a JSON Schema form emits nothing, so the input still describes an empty object.
+      encodedFilter: Tool.make({
+        description: "Encoded filter",
+        parameters: Schema.Struct({}).check(Schema.makeFilter(() => true)),
+        success: Schema.String,
+      }),
     })
     expect(definitions[0]?.inputSchema).toEqual(empty)
     expect(definitions[0]?.outputSchema).toEqual({ not: { type: "null" } })
@@ -100,6 +106,7 @@ describe("tool schema projections", () => {
     expect(definitions[3]?.inputSchema).toEqual(empty)
     expect(definitions[4]?.inputSchema).toEqual(token)
     expect(definitions[5]?.inputSchema).toEqual({ not: { type: "null" }, minProperties: 1 })
+    expect(definitions[6]?.inputSchema).toEqual(empty)
   })
 
   const empty = { type: "object", properties: {}, additionalProperties: false }
