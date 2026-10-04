@@ -36,6 +36,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@opencode-ai/pty": "0.2.0",
     "@opencode/client": "workspace:*",
     "@opencode/plugin": "workspace:*",
     "@tsconfig/bun": "catalog:",

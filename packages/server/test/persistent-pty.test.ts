@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { expect } from "bun:test"
+import { binaryPath } from "@opencode-ai/pty"
 import { PersistentPty } from "@opencode/schema/persistent-pty"
 import { Session } from "@opencode/schema/session"
 import { Effect, Exit, Schema, Scope } from "effect"
@@ -11,8 +12,9 @@ import { OpenCode } from "../../client/src/promise/index"
 import { it } from "../../core/test/lib/effect"
 import { ServerProcess } from "../src/process"
 
-const binary = process.env.OPENCODE_PTY_BIN ?? "/root/projects/opencode-pty/target/debug/opencode-pty"
-const smoke = existsSync(binary) ? it.live : it.live.skip
+// opencode-pty does not support Windows, and its package resolves no binary on other unsupported platforms.
+const binary = process.platform === "win32" ? undefined : (process.env.OPENCODE_PTY_BIN ?? binaryPath)
+const smoke = binary !== undefined && existsSync(binary) ? it.live : it.live.skip
 
 smoke(
   "reads the latest controlled terminal with optional physical line counts through the SDK",
