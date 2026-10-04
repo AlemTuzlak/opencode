@@ -205,40 +205,29 @@ const makeRecordingSocket = (
         }
       }),
       writer: upstream.writer.pipe(
-        Effect.map((writer) => {
-          const write: Socket.Writer["write"] = (message) =>
+        Effect.map((writer): Socket.Writer => {
+          const record = (messages: ReadonlyArray<Frame>, send: Effect.Effect<void, Socket.SocketError>) =>
             writeLock.withPermit(
               Effect.gen(function* () {
-                if (Socket.isCloseEvent(message)) return yield* writer.write(message)
                 const state = yield* Ref.get(active)
                 if (!state || !(yield* Ref.get(state.accepting)))
                   return yield* Effect.die("WebSocket writer used without an active socket run")
                 yield* state.eventLock.withPermit(
-                  Effect.sync(() => state.events.push(redactEvent(encodeEvent("client", message), redactor))),
+                  Effect.sync(() =>
+                    state.events.push(
+                      ...messages.map((message) => redactEvent(encodeEvent("client", message), redactor)),
+                    ),
+                  ),
                 )
-                return yield* writer.write(message).pipe(Effect.onError(() => Effect.sync(() => (state.valid = false))))
+                return yield* send.pipe(Effect.onError(() => Effect.sync(() => (state.valid = false))))
               }),
             )
           return {
-            write,
-            writeAll: (messages) =>
-              writeLock.withPermit(
-                Effect.gen(function* () {
-                  const state = yield* Ref.get(active)
-                  if (!state || !(yield* Ref.get(state.accepting)))
-                    return yield* Effect.die("WebSocket writer used without an active socket run")
-                  yield* state.eventLock.withPermit(
-                    Effect.sync(() =>
-                      state.events.push(
-                        ...messages.map((message) => redactEvent(encodeEvent("client", message), redactor)),
-                      ),
-                    ),
-                  )
-                  return yield* writer
-                    .writeAll(messages)
-                    .pipe(Effect.onError(() => Effect.sync(() => (state.valid = false))))
-                }),
-              ),
+            write: (message) =>
+              Socket.isCloseEvent(message)
+                ? writeLock.withPermit(writer.write(message))
+                : record([message], writer.write(message)),
+            writeAll: (messages) => record(messages, writer.writeAll(messages)),
           }
         }),
       ),
@@ -272,27 +261,25 @@ const makeReplaySocket = (
           closed: yield* Ref.make(false),
         }
         yield* Ref.set(active, state)
-        const pull: Socket.Reader["pull"] = Effect.suspend(() =>
-          Effect.gen(function* () {
+        const pull: Socket.Reader["pull"] = Effect.gen(function* () {
+          while (true) {
             const current = yield* Ref.get(state.progress)
-            if (yield* Ref.get(state.closed))
-              return yield* Effect.fail(new Socket.SocketError({ reason: new Socket.SocketCloseError({ code: 1000 }) }))
+            const closed = yield* Ref.get(state.closed)
             const remaining = state.interaction.events.slice(current.position)
             const client = remaining.findIndex((event) => event.direction === "client")
             const messages = client === -1 ? remaining : remaining.slice(0, client)
-            if (messages.length > 0) {
+            if (!closed && messages.length > 0) {
               yield* Ref.set(state.progress, {
                 position: current.position + messages.length,
                 changed: yield* Deferred.make<void>(),
               })
               return messages.map(decodeEvent) as [Frame, ...Array<Frame>]
             }
-            if (current.position === state.interaction.events.length)
+            if (closed || remaining.length === 0)
               return yield* Effect.fail(new Socket.SocketError({ reason: new Socket.SocketCloseError({ code: 1000 }) }))
             yield* Deferred.await(current.changed)
-            return yield* pull
-          }),
-        )
+          }
+        })
         return { pull, upgrade: Socket.SocketUpgradeError.unsupported }
       }),
       writer: Effect.sync(() => {

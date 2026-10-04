@@ -325,6 +325,7 @@ describe("WebSocket", () => {
         yield* Effect.gen(function* () {
           const reader = yield* socket.reader
           yield* writer.write("ping")
+          yield* writer.writeAll(["batch-1", "batch-2"])
           while (true) yield* reader.pull
         }).pipe(
           Effect.scoped,
@@ -346,6 +347,8 @@ describe("WebSocket", () => {
           transport: "websocket",
           events: [
             { direction: "client", kind: "text", body: "ping" },
+            { direction: "client", kind: "text", body: "batch-1" },
+            { direction: "client", kind: "text", body: "batch-2" },
             { direction: "server", kind: "text", body: "pong" },
           ],
         },
