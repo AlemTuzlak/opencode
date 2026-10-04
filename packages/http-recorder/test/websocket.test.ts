@@ -302,6 +302,57 @@ describe("WebSocket", () => {
     })
   })
 
+  test("records a connection whose reader scope ends with the socket close", async () => {
+    using directory = tempDirectory("http-recorder-websocket-")
+    let sent = false
+    const upstream = Socket.make({
+      reader: Effect.succeed({
+        pull: Effect.suspend(() => {
+          if (sent) return Effect.fail(new Socket.SocketError({ reason: new Socket.SocketCloseError({ code: 1000 }) }))
+          sent = true
+          return Effect.succeed(["pong"])
+        }),
+        upgrade: Socket.SocketUpgradeError.unsupported,
+      }),
+      writer: Effect.succeed({ write: () => Effect.void, writeAll: () => Effect.void }),
+    })
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const socket = yield* Socket.Socket
+        const writer = yield* socket.writer
+        // Effect's documented read loop: the close fails the pull and is handled outside the reader's scope.
+        yield* Effect.gen(function* () {
+          const reader = yield* socket.reader
+          yield* writer.write("ping")
+          while (true) yield* reader.pull
+        }).pipe(
+          Effect.scoped,
+          Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void),
+        )
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          layerSocketWithMode("websocket/close-outside-scope", { directory: directory.path, mode: "record" }).pipe(
+            Layer.provide(Layer.succeed(Socket.Socket, upstream)),
+          ),
+        ),
+      ),
+    )
+
+    expect(readCassette(`${directory.path}/websocket/close-outside-scope.json`)).toMatchObject({
+      interactions: [
+        {
+          transport: "websocket",
+          events: [
+            { direction: "client", kind: "text", body: "ping" },
+            { direction: "server", kind: "text", body: "pong" },
+          ],
+        },
+      ],
+    })
+  })
+
   test("WebSocket replay preserves causal frame ordering", async () => {
     using directory = tempDirectory("http-recorder-websocket-")
     await seedCassetteDirectory(directory.path, "websocket/replay", [

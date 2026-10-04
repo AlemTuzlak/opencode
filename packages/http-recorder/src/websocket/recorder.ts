@@ -23,6 +23,7 @@ interface ActiveRecording {
   readonly eventLock: Semaphore.Semaphore
   readonly accepting: Ref.Ref<boolean>
   opened: boolean
+  closed: boolean
   valid: boolean
 }
 interface PendingRecordings {
@@ -151,6 +152,7 @@ const makeRecordingSocket = (
           eventLock: yield* Semaphore.make(1),
           accepting: yield* Ref.make(true),
           opened: false,
+          closed: false,
           valid: true,
         }
         const occupied = yield* Ref.modify(active, (current) => [current !== undefined, current ?? state])
@@ -161,7 +163,8 @@ const makeRecordingSocket = (
               Effect.gen(function* () {
                 yield* Ref.set(state.accepting, false)
                 yield* Ref.set(active, undefined)
-                if (!Exit.isSuccess(exit) || !state.opened || !state.valid) return
+                // Every close fails the pull, so a consumer may end its scope with that failure.
+                if (!state.opened || !state.valid || !(state.closed || Exit.isSuccess(exit))) return
                 yield* cassette
                   .append(
                     name,
@@ -191,7 +194,11 @@ const makeRecordingSocket = (
             ),
             Effect.tapError((error) =>
               Effect.sync(() => {
-                if (error.reason._tag !== "SocketCloseError") state.valid = false
+                if (error.reason._tag === "SocketCloseError") {
+                  state.closed = true
+                  return
+                }
+                state.valid = false
               }),
             ),
           ),
