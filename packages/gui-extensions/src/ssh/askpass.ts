@@ -27,11 +27,13 @@ export const createAskpass = Effect.fn("Ssh.askpass")(function* (input: {
 
         // A helper sends one newline-terminated request. Oversized input, later data, or a close fails it.
         const reader = yield* Effect.gen(function* () {
-          const pull = yield* Socket.readerString(socket)
+          const pull = yield* Socket.readerBytes(socket)
+          // One streaming decoder, so a character split across reads decodes intact.
+          const decoder = new TextDecoder()
           let buffer = ""
 
           while (!buffer.includes("\n")) {
-            buffer += (yield* pull).join("")
+            for (const chunk of yield* pull) buffer += decoder.decode(chunk, { stream: true })
 
             if (buffer.length > 16_384) return yield* new SshFailure("connection")
           }

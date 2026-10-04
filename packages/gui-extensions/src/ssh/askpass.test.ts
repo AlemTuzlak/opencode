@@ -1,6 +1,7 @@
 import { expect } from "bun:test"
 import { NodeSocket } from "@effect/platform-node"
 import { Deferred, Effect, Fiber, Layer, Queue, Scope, Exit } from "effect"
+import net from "node:net"
 import { Socket } from "effect/socket"
 import { testEffect } from "../../../core/test/lib/effect"
 import { createAskpass } from "./askpass"
@@ -94,5 +95,41 @@ it.live(
     const id = yield* Queue.take(prompts)
     yield* Fiber.interrupt(helper)
     expect(yield* Deferred.await(cleared)).toBe(id)
+  }),
+)
+
+it.live(
+  "a request split inside a multi-byte character arrives intact",
+  Effect.gen(function* () {
+    const prompts = yield* Queue.unbounded<string>()
+
+    const bridge = yield* createAskpass({
+      binary: "unused",
+      prompt: (prompt) => Queue.offer(prompts, prompt.text).pipe(Effect.asVoid),
+      clear: () => Effect.void,
+    })
+
+    const payload = Buffer.from(
+      JSON.stringify({ token: bridge.env.OPENCODE_SSH_ASKPASS_TOKEN, text: "Passwort für host:", confirm: false }) +
+        "\n",
+    )
+
+    // Split between the two bytes of "ü" so they arrive as separate reads.
+    const split = payload.indexOf(0xc3) + 1
+
+    const client = yield* Effect.acquireRelease(
+      Effect.callback<net.Socket>((resume) => {
+        const socket = net.createConnection(Number(bridge.env.OPENCODE_SSH_ASKPASS_PORT), "127.0.0.1", () =>
+          resume(Effect.succeed(socket)),
+        )
+      }),
+      (socket) => Effect.sync(() => socket.destroy()),
+    )
+
+    client.setNoDelay(true)
+    client.write(payload.subarray(0, split))
+    yield* Effect.sleep("50 millis")
+    client.write(payload.subarray(split))
+    expect(yield* Queue.take(prompts)).toBe("Passwort für host:")
   }),
 )

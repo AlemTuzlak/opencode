@@ -16,8 +16,10 @@ export const askpass = Effect.gen(function* () {
   yield* Effect.all(
     [
       Effect.gen(function* () {
-        const pull = yield* Socket.readerString(socket)
-        while (true) response.text += (yield* pull).join("")
+        const pull = yield* Socket.readerBytes(socket)
+        // One streaming decoder, so a character split across reads decodes intact.
+        const decoder = new TextDecoder()
+        while (true) for (const chunk of yield* pull) response.text += decoder.decode(chunk, { stream: true })
       }).pipe(Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void)),
       writer.write(
         JSON.stringify({
