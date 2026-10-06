@@ -54,7 +54,7 @@ export function ProjectPicker(props: { directory?: string; home?: string; onSele
           <Menu.Content class="w-[min(320px,calc(100vw-16px))]">
             <Menu.Group>
               <Menu.GroupLabel>Directory</Menu.GroupLabel>
-              <div class="-mx-0.5 max-h-[min(392px,calc(100vh-180px))] overflow-y-auto overscroll-contain px-0.5">
+              <div class="-mx-0.5 max-h-[min(392px,calc(100vh-300px))] overflow-y-auto overscroll-contain px-0.5">
                 <Menu.RadioGroup value={props.directory} onChange={props.onSelect}>
                   <For each={entries()}>
                     {(item) => (
@@ -84,37 +84,49 @@ export function ProjectPicker(props: { directory?: string; home?: string; onSele
                 </Menu.RadioGroup>
               </div>
             </Menu.Group>
-            <Menu.Separator />
-            <Menu.Group>
-              <Menu.GroupLabel>Server</Menu.GroupLabel>
-              <Menu.RadioGroup
-                value={server.info.id}
-                onChange={(id) => server.background.send({ type: "servers.use", id })}
-              >
-                <For each={server.background.state.servers}>
-                  {(item) => (
-                    <Menu.RadioItem value={item.id} closeOnSelect title={item.url}>
-                      <span class="flex min-w-0 flex-1 flex-col">
-                        <span class="truncate">{item.name}</span>
-                        <span class="truncate text-[12px] text-v2-text-text-faint">{item.url}</span>
-                      </span>
-                    </Menu.RadioItem>
-                  )}
-                </For>
-              </Menu.RadioGroup>
-              <Menu.Item onSelect={() => server.background.send({ type: "service.refresh" })}>Reconnect</Menu.Item>
-              <Menu.Item onSelect={() => void chrome.tabs.create({ url: chrome.runtime.getURL("connect.html") })}>
-                Add a server…
-              </Menu.Item>
-              <Show when={server.background.state.servers.length > 1}>
-                <Menu.Item onSelect={() => server.background.send({ type: "servers.remove", id: server.info.id })}>
-                  Forget {server.info.name}
-                </Menu.Item>
-              </Show>
-            </Menu.Group>
+            <ServerMenu />
           </Menu.Content>
         </Menu.Portal>
       </Menu>
     </div>
+  )
+}
+
+/**
+ * The saved opencode servers, for the end of a header menu: switch, reconnect, add, forget. Switching starts over
+ * on the other server, since conversations and directories belong to one server.
+ */
+export function ServerMenu() {
+  const server = useServer()
+  return (
+    <>
+      <Menu.Separator />
+      <Menu.Group>
+        <Menu.GroupLabel>Server</Menu.GroupLabel>
+        <Menu.RadioGroup value={server.info.id} onChange={(id) => server.background.send({ type: "servers.use", id })}>
+          <For each={server.background.state.servers}>
+            {(item) => (
+              <Menu.RadioItem value={item.id} closeOnSelect class="!h-11 !gap-2.5 !pe-2.5 !ps-2.5" title={item.url}>
+                <span class="flex min-w-0 flex-1 flex-col">
+                  <span class="truncate text-[13px] font-[530] leading-[18px] tracking-[-0.04px] text-v2-text-text-base">
+                    {item.name}
+                  </span>
+                  <span class="truncate text-[12px] font-[440] leading-4 text-v2-text-text-faint">{item.url}</span>
+                </span>
+              </Menu.RadioItem>
+            )}
+          </For>
+        </Menu.RadioGroup>
+        <Menu.Item onSelect={() => server.background.send({ type: "service.refresh" })}>Reconnect</Menu.Item>
+        <Menu.Item onSelect={() => void chrome.tabs.create({ url: chrome.runtime.getURL("connect.html") })}>
+          Add a server…
+        </Menu.Item>
+        <Show when={server.background.state.servers.length > 1}>
+          <Menu.Item onSelect={() => server.background.send({ type: "servers.remove", id: server.info.id })}>
+            Forget {server.info.name}
+          </Menu.Item>
+        </Show>
+      </Menu.Group>
+    </>
   )
 }

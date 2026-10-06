@@ -9,6 +9,7 @@ import { Tooltip } from "@opencode/ui/tooltip"
 import { For, Show, batch, createEffect, createMemo, createSignal, type JSX } from "solid-js"
 import { useServer } from "./connection"
 import { relativeTime, toastError } from "./format"
+import { ServerMenu } from "./projects"
 
 const limit = 30
 
@@ -35,6 +36,7 @@ export function SessionPicker(props: Props & { title: string }) {
       <RecentMenu
         {...props}
         placement="bottom-start"
+        footer={() => <ServerMenu />}
         trigger={() => (
           <Menu.Trigger
             as={Button}
@@ -53,7 +55,7 @@ export function SessionPicker(props: Props & { title: string }) {
 }
 
 function RecentMenu(
-  props: Props & { placement: "bottom-start" | "bottom-end"; trigger: () => JSX.Element },
+  props: Props & { placement: "bottom-start" | "bottom-end"; trigger: () => JSX.Element; footer?: () => JSX.Element },
 ) {
   const server = useServer()
   const data = server.data
@@ -88,7 +90,14 @@ function RecentMenu(
         <Menu.Content class="w-[min(320px,calc(100vw-16px))]">
           <Menu.Group>
             <Menu.GroupLabel>Recent conversations</Menu.GroupLabel>
-            <div class="-mx-0.5 max-h-[min(420px,calc(100vh-120px))] overflow-y-auto overscroll-contain px-0.5">
+            <div
+              class="-mx-0.5 overflow-y-auto overscroll-contain px-0.5"
+              classList={{
+                // Leaves room for the server section under the list.
+                "max-h-[min(420px,calc(100vh-280px))]": !!props.footer,
+                "max-h-[min(420px,calc(100vh-120px))]": !props.footer,
+              }}
+            >
               <Show
                 when={sessions().length > 0}
                 fallback={
@@ -132,6 +141,7 @@ function RecentMenu(
               </Show>
             </div>
           </Menu.Group>
+          {props.footer?.()}
         </Menu.Content>
       </Menu.Portal>
     </Menu>
