@@ -96,7 +96,7 @@ const HOSTED_TOOLS = {
   image_generation_call: {
     name: "image_generation",
     input: () => ({}),
-    result: Effect.fn("MetaResponses.imageResult")(function* (raw: ResponsesHostedTools.Item) {
+    result: Effect.fnUntraced(function* (raw: ResponsesHostedTools.Item) {
       const item = yield* Schema.decodeUnknownEffect(ImageItem)(raw).pipe(
         Effect.mapError((cause) =>
           ProviderShared.eventError(
@@ -137,7 +137,7 @@ const HOSTED_TOOLS = {
   },
 } satisfies ResponsesHostedTools.Definitions
 
-const onEvent = Effect.fn("MetaResponses.onEvent")(function* (
+const onEvent = Effect.fnUntraced(function* (
   state: OpenResponses.ParserState,
   input: OpenResponses.Event,
 ) {
@@ -174,7 +174,7 @@ const onEvent = Effect.fn("MetaResponses.onEvent")(function* (
   ] satisfies OpenResponses.StepResult
 })
 
-const step = Effect.fn("MetaResponses.step")(function* (state: ParserState, input: OpenResponses.Event) {
+const step = Effect.fnUntraced(function* (state: ParserState, input: OpenResponses.Event) {
   const completedItems = new Set(state.completedItems)
   const event = OpenResponses.normalize(state, input)
   if (event.type === "response.output_item.done" && event.item && completedItems.has(event.item.id))
