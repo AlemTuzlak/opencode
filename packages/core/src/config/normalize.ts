@@ -214,7 +214,6 @@ export function normalize(input: unknown): Result {
     tool_output: Info.fields.tool_output,
     websearch: Info.fields.websearch,
     worktree: Info.fields.worktree,
-    plan: Info.fields.plan,
     warming: Info.fields.warming,
   }
   Object.entries(nativeAtomic).forEach(([key, schema]) => {

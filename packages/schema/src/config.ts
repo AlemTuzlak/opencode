@@ -20,7 +20,6 @@ import { ConfigWebSearch } from "./config/websearch.js"
 import { ConfigToolOutput } from "./config/tool-output.js"
 import { ConfigWatcher } from "./config/watcher.js"
 import { ConfigWarming } from "./config/warming.js"
-import { ConfigPlan } from "./config/plan.js"
 import { ConfigWorktree } from "./config/worktree.js"
 
 export class Info extends Schema.Class<Info>("Config.Info")({
@@ -102,9 +101,6 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   }),
   worktree: ConfigWorktree.Info.pipe(optional).annotate({
     description: "Directory defaults for local worktree creation",
-  }),
-  plan: ConfigPlan.Info.pipe(optional).annotate({
-    description: "Plan agent configuration",
   }),
   warming: ConfigWarming.Warming.pipe(optional).annotate({
     description: "Keep recently active sessions warm with transient model requests (default: false)",

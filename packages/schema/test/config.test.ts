@@ -10,16 +10,6 @@ import { AbsolutePath } from "../src/schema.js"
 import { WebSearch } from "../src/websearch.js"
 
 describe("Config.Entry", () => {
-  test("accepts a plan directory and omits it when absent", () => {
-    const decode = Schema.decodeUnknownSync(Config.Info)
-    const input = { plan: { directory: ".opencode/plans" } }
-    expect(Schema.encodeSync(Config.Info)(decode(input))).toEqual(input)
-    expect(Schema.encodeSync(Config.Info)(new Config.Info({ plan: undefined }))).not.toHaveProperty("plan")
-    expect(() => decode({ plan: {} })).toThrow()
-    expect(() => decode({ plan: { directory: " " } })).toThrow()
-    expect(() => decode({ plan: { directory: false } })).toThrow()
-  })
-
   test("accepts directory-only worktree config and omits it when absent", () => {
     const decode = Schema.decodeUnknownSync(Config.Info)
     const input = { worktree: { directory: "../worktrees" } }

@@ -219,25 +219,6 @@ instructions, mode, and permissions.
 
 See the [agents guide](/agents) for all agent options and file-based agents.
 
-### Plan
-
-Set the directory where the Plan agent writes plan files. Plan can edit files only inside this directory.
-
-```jsonc
-{
-  "plan": {
-    "directory": ".opencode/plans",
-  },
-}
-```
-
-- Relative paths resolve against the root of the current checkout, in global and project configuration alike. Each linked worktree gets its own plan directory.
-- Outside version control, relative paths resolve against the opened directory.
-- Absolute paths are used as-is, and `~/` resolves against your home directory.
-- Without this setting, plans go to `~/.opencode/plan`.
-
-Changing the directory does not move existing plan files.
-
 ### Snapshots
 
 Enable or disable filesystem snapshots used by undo and revert behavior.
