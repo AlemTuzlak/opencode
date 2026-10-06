@@ -53,14 +53,19 @@ jobs:
         run: bun typecheck
         working-directory: packages/browser-extension
 
-      - name: Build the helper and the store zip
+      - name: Build the CLI and the store zip
         run: |
+          bun install --frozen-lockfile
+          bun run typecheck
           bun run build
           cd .. && bun run package
         working-directory: packages/browser-extension/cli
 
-      - name: Smoke test the helper
-        run: node dist/cli.mjs | grep -q "npx opencode-browser-cli install"
+      - name: Smoke test the CLI
+        run: |
+          node dist/cli.mjs --help | grep -q "install"
+          OPENCODE_BROWSER_HOME="$RUNNER_TEMP/ocb" node dist/cli.mjs doctor || true
+          npm pack --dry-run
         working-directory: packages/browser-extension/cli
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

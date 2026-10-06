@@ -1,18 +1,20 @@
 {
   "name": "opencode-browser-cli",
   "version": "0.0.2",
-  "description": "Set up the OpenCode Browser extension: registers its helper with your browsers and connects it to opencode.",
+  "description": "OpenCode Browser: connect the extension to opencode, and drive your browser from any agent (CLI, MCP, Playwright).",
   "type": "module",
   "license": "MIT",
   "bin": {
+    "opencode-browser": "dist/cli.mjs",
     "opencode-browser-cli": "dist/cli.mjs"
   },
   "files": [
     "dist",
-    "extension"
+    "extension",
+    "skills"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.19.0"
   },
   "repository": {
     "type": "git",
@@ -21,6 +23,25 @@
   },
   "scripts": {
     "build": "bun build.ts",
+    "typecheck": "tsgo --noEmit -p tsconfig.json",
     "prepublishOnly": "bun build.ts"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node-shared": "4.0.1",
+    "acorn": "8.18.0",
+    "effect": "4.0.1",
+    "pixelmatch": "7.2.0",
+    "playwright-core": "1.63.0",
+    "pngjs": "7.0.0",
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.3.4",
+    "@types/node": "26.6.4",
+    "@types/pngjs": "6.0.5",
+    "@types/ws": "8.18.2",
+    "@typescript/native-preview": "7.0.0-dev.20260707.2",
+    "jsonc-parser": "3.3.1"
   }
 }

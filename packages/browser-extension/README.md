@@ -24,25 +24,38 @@ npx opencode-browser-cli install
 2. For site scripts, choose **Details** on OpenCode Browser and turn on **Allow user scripts**.
 3. Click the toolbar icon, or press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>.</kbd>, to open the panel.
 
-## The helper (`cli/`, npm `opencode-browser-cli`)
+## The CLI (`cli/`, npm `opencode-browser-cli`)
 
-The extension finds the local opencode service through a Chrome native messaging host, `ai.opencode.browser`.
-The helper is a standalone npm package so opencode itself needs no changes, and it works with any opencode
-release:
+One package for everything outside the browser. Its commands are `opencode-browser <command>` (or
+`npx opencode-browser-cli <command>`):
 
-- `install` copies the helper to `~/.local/share/opencode-browser` (npx caches can be cleared) and registers
-  the host for every installed Chromium browser: a manifest in each browser's `NativeMessagingHosts`
-  directory on macOS and Linux, per-user registry keys on Windows (the browsers ChatGPT's extension supports,
-  plus Helium and Arc). It also adds the Browser Control MCP server to opencode's global config, starts the
-  service, and copies the bundled unpacked extension next to the helper.
-- `host` is what the browser starts. It answers the extension with the service URL and password from
-  `opencode service start` / `opencode service get password`, and writes the extension's opencode plugin
-  (`plugin/opencode-browser.ts`: `site_scripts`, `browsing`, and `browser.tabs.request`) to
-  `~/.config/opencode/plugins/opencode-browser.ts` whenever it changes, so the plugin always matches the
-  installed extension.
-- `status`, `extension` (opens the unpacked folder), and `uninstall`.
+- **Setup** (`cli/src/setup.ts`)
+  - `install` installs this exact version into the data root (`~/.local/share/opencode-browser`,
+    `%LOCALAPPDATA%\opencode-browser` on Windows) so nothing depends on the npx cache, registers the
+    `ai.opencode.browser` native messaging host for every installed Chromium browser (manifests in each
+    browser's `NativeMessagingHosts` directory on macOS and Linux, per-user registry keys on Windows; the
+    browsers ChatGPT's extension supports, plus Helium and Arc), adds the `opencode-browser` MCP server to
+    opencode's global config, starts the opencode service, and copies the unpacked extension.
+  - `host` is what the browser starts. It answers the extension with the service URL and password from
+    `opencode service start` / `opencode service get password`, and writes the extension's opencode plugin
+    (`plugin/opencode-browser.ts`: `site_scripts`, `browsing`, and `browser.tabs.request`) to
+    `~/.config/opencode/plugins/opencode-browser.ts` whenever it changes.
+  - `extension` opens the unpacked extension folder; `uninstall` removes everything `install` set up.
+- **Automation** (the rest of `cli/src`): a local relay (`ws://127.0.0.1:19988`) the extension connects to,
+  and the clients that drive it: `execute` (Playwright against the user's browser), `session`, `network`
+  (capture, redacted HAR), `secrets`, `recording`, `flight-recorder`, `journal`, `doctor`, `status`, and
+  `mcp` (the same as an MCP server over stdio, which `install` registers with opencode). The CLI and MCP
+  server start the relay on demand. The agent guide is `cli/skills/opencode-browser/SKILL.md`.
 
-Without the helper, the panel offers a manual URL and password form.
+  This was Browser Control (anomalyco/browser-control 8c80ac2), now part of OpenCode Browser: renamed, on its
+  own port, accepting only OpenCode Browser's extension IDs, with files under the data root.
+
+Logs live in `<data root>/logs`: `relay.log` (relay lifecycle, extension connects and disconnects, every HTTP
+request with status and duration, faults; rotated at 1 MB) and `host.log` (each native messaging request).
+`OPENCODE_BROWSER_DEBUG=1` adds per-CDP-message tracing to the relay's stderr. Environment overrides:
+`OPENCODE_BROWSER_PORT`, `OPENCODE_BROWSER_HOME`, `OPENCODE_BROWSER_EXTENSION_ORIGINS`.
+
+Without the host, the panel offers a manual URL and password form.
 
 ## Releasing
 
@@ -50,11 +63,13 @@ Without the helper, the panel offers a manual URL and password form.
 
 1. Bump `version` in `cli/package.json` and merge.
 2. Push a tag `browser-extension-v<version>`. The `publish-browser-extension` workflow builds the
-   extension and the helper, publishes `opencode-browser-cli` to npm (skipped when that version exists),
+   extension and the CLI, publishes `opencode-browser-cli` to npm (skipped when that version exists),
    and attaches `opencode-browser-<version>.zip` to a GitHub release.
 3. Upload that zip in the Chrome Web Store dashboard.
 
-Locally: `bun run package` writes the store zip to `release/`; `cd cli && bun run build` builds the helper.
+Locally: `bun run package` writes the store zip to `release/`; `cd cli && bun install && bun run build` builds
+the CLI (it has its own lockfile so its dependencies stay out of the monorepo's). `cd cli && bun src/main.ts <command>`
+runs it from source.
 
 ## How it connects
 
@@ -65,6 +80,7 @@ Locally: `bun run package` writes the store zip to `release/`; `cd cli && bun ru
 | Background (`src/background`) | `opencode.browser` plugin | `experimental.browser` RPC, attach v4, per session |
 | Background | tabs | `chrome.debugger` (CDP), `chrome.tabs`, `chrome.userScripts` |
 | Background | `opencode-browser` plugin (`plugin/`) | `opencode-browser.relay` RPC, while a panel is open |
+| Background | OpenCode Browser relay (`cli/`) | WebSocket `ws://127.0.0.1:19988/extension`, extension protocol 2 |
 
 The background implements the same browser contract as the desktop pane
 (`packages/gui-extensions/src/browser`): the server plugin owns tools and permissions, the extension owns

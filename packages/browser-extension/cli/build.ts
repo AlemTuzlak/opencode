@@ -1,32 +1,54 @@
-// Bundles the CLI into one file (jsonc-parser included, borrowed from packages/cli) and copies the built
-// extension next to it, keeping the manifest key so the unpacked ID matches the helper's allowed origins.
+// Builds the published package: dist/cli.mjs (main.ts and everything it loads, with npm dependencies left
+// external and installed by npm) and extension/ (the built unpacked extension, keeping its manifest key so the
+// unpacked ID matches the host's allowed origins). Both carry this package's version.
 import { $ } from "bun"
-import { cp, rm } from "node:fs/promises"
+import { chmod, cp, rm } from "node:fs/promises"
 import path from "node:path"
 
 const here = import.meta.dir
 const extension = path.resolve(here, "..")
-// The ESM build, so its internal imports bundle (the default entry is UMD with runtime requires).
-const jsonc = path.join(path.dirname(Bun.resolveSync("jsonc-parser/package.json", path.resolve(here, "../../cli"))), "lib/esm/main.js")
+const pkg = await Bun.file(path.join(here, "package.json")).json()
+
 await $`bun run build`.cwd(extension).quiet()
 await rm(path.join(here, "dist"), { recursive: true, force: true })
 await rm(path.join(here, "extension"), { recursive: true, force: true })
+
 const result = await Bun.build({
-  entrypoints: [path.join(here, "src/cli.ts")],
+  entrypoints: [path.join(here, "src/main.ts")],
   outdir: path.join(here, "dist"),
   naming: "cli.mjs",
   target: "node",
   format: "esm",
-  plugins: [{ name: "jsonc", setup: (build) => build.onResolve({ filter: /^jsonc-parser$/ }, () => ({ path: jsonc })) }],
+  // Runtime dependencies stay external; jsonc-parser (a dev dependency) is bundled.
+  external: Object.keys(pkg.dependencies ?? {}),
+  plugins: [
+    {
+      // jsonc-parser's default entry is UMD with runtime requires; its ESM build bundles cleanly.
+      name: "jsonc-parser-esm",
+      setup(build) {
+        build.onResolve({ filter: /^jsonc-parser$/ }, () => ({
+          path: path.join(path.dirname(Bun.resolveSync("jsonc-parser/package.json", here)), "lib/esm/main.js"),
+        }))
+      },
+    },
+  ],
+  define: {
+    "globalThis.__OPENCODE_BROWSER_VERSION__": JSON.stringify(pkg.version),
+    "globalThis.__OPENCODE_BROWSER_BUILD_ID__": JSON.stringify(new Date().toISOString()),
+  },
 })
 if (!result.success) throw new AggregateError(result.logs, "build failed")
+const cli = path.join(here, "dist", "cli.mjs")
+const source = await Bun.file(cli).text()
+await Bun.write(cli, source.startsWith("#!") ? source : `#!/usr/bin/env node\n${source}`)
+await chmod(cli, 0o755)
+
 await cp(path.join(extension, "dist"), path.join(here, "extension"), {
   recursive: true,
   filter: (file) => !file.endsWith(".map"),
 })
-// The bundled extension carries the package version, like the store zip.
 const manifestFile = path.join(here, "extension", "manifest.json")
 const manifest = await Bun.file(manifestFile).json()
-manifest.version = (await Bun.file(path.join(here, "package.json")).json()).version
+manifest.version = pkg.version
 await Bun.write(manifestFile, JSON.stringify(manifest, null, 2) + "\n")
-console.log(`built dist/cli.mjs and extension/ (${manifest.version})`)
+console.log(`built dist/cli.mjs and extension/ (${pkg.version})`)
