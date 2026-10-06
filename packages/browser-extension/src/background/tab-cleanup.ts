@@ -12,7 +12,7 @@ type Tracked = { owner: Owner; touched: number }
 const STORAGE_KEY = "tabCleanup"
 /** chrome.storage.local: minutes a tracked tab may sit unused before it closes; 0 turns automatic cleanup off. */
 export const IDLE_MINUTES_KEY = "tabCleanupIdleMinutes"
-export const DEFAULT_IDLE_MINUTES = 30
+export const DEFAULT_IDLE_MINUTES = 10
 const ALARM = "opencode-browser-tab-cleanup"
 
 const tracked = new Map<number, Tracked>()
@@ -125,5 +125,5 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     if (minutes > 0) return cleanup({ minutes })
   })
 })
-void chrome.alarms.create(ALARM, { periodInMinutes: 5 })
+void chrome.alarms.create(ALARM, { periodInMinutes: 1 })
 void restore()
