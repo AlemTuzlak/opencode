@@ -1,6 +1,7 @@
 export * as AgentGroups from "./agent-groups"
 
-// Agent tab groups stay out of the way: collapsed from the moment they exist, expanded only when the user needs
+// Agent tab groups stay out of the way: at the far right of the tab strip, after the user's own tabs, and
+// collapsed from the moment they exist, expanded only when the user needs
 // them. Chrome expands a group by itself when one of its tabs becomes active (the agent focuses a tab, or the
 // user picks it), and collapsing a group that holds the active tab would switch the user to another tab, so a
 // group collapses as soon as its window's active tab is elsewhere. `expand` opens one when an agent hands a step
@@ -22,14 +23,41 @@ async function needed(groupId: number) {
   return tabs.some((tab) => tab.id !== undefined && keepers.some((check) => check(tab.id!)))
 }
 
-/** Registers a group an agent owns and collapses it unless the user is on one of its tabs. */
+/** Registers a group an agent owns, moves it to the far right, and collapses it unless the user is on one of its tabs. */
 export async function adopt(groupId: number) {
   await restore()
   if (!groups.has(groupId)) {
     groups.add(groupId)
     save()
   }
+  const group = await chrome.tabGroups.get(groupId).catch(() => undefined)
+  if (group) await keepRight(group.windowId)
   await collapseUnlessActive(groupId)
+}
+
+/** Moves a window's agent groups after every other tab, keeping their order among themselves. */
+async function keepRight(windowId: number) {
+  const tabs = await chrome.tabs.query({ windowId }).catch(() => [] as chrome.tabs.Tab[])
+  const order: number[] = []
+  for (const tab of tabs) if (groups.has(tab.groupId) && !order.includes(tab.groupId)) order.push(tab.groupId)
+  if (!order.length) return
+  // Already in place: the strip ends with exactly these groups' tabs.
+  const tail = tabs.slice(tabs.length - tabs.filter((tab) => groups.has(tab.groupId)).length)
+  if (tail.every((tab) => groups.has(tab.groupId))) return
+  for (const groupId of order) await chrome.tabGroups.move(groupId, { index: -1 }).catch(() => undefined)
+}
+
+// A tab the user opens lands at the end of the strip; put the agent groups back after it.
+const pending = new Map<number, ReturnType<typeof setTimeout>>()
+function scheduleKeepRight(windowId: number) {
+  clearTimeout(pending.get(windowId))
+  pending.set(
+    windowId,
+    setTimeout(() => {
+      pending.delete(windowId)
+      void restore().then(() => keepRight(windowId))
+    }, 150),
+  )
 }
 
 /** Opens a group so the user sees its tabs, for example when an agent waits for them on one. */
@@ -90,4 +118,10 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   })
 })
 chrome.tabGroups.onRemoved.addListener((group) => forget(group.id))
+chrome.tabs.onCreated.addListener((tab) => {
+  if (groups.size && tab.windowId !== undefined) scheduleKeepRight(tab.windowId)
+})
+chrome.tabs.onAttached.addListener((_tabId, info) => {
+  if (groups.size) scheduleKeepRight(info.newWindowId)
+})
 void restore()
