@@ -76,6 +76,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   let offscreen: Promise<void> | undefined
   const cdp = { count: 0, errors: 0 }
   const relayTabs = new Set<number>()
+  let reloading = false
   /** Tabs with a recording in progress; cleanup leaves them open. */
   const recordingTabs = new Set<number>()
   /** Each agent session's tab group, so a session keeps one group while its display name changes. */
@@ -351,7 +352,14 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
       }
       case "runtime.reload":
         log.add("runtime.reload")
-        chrome.runtime.reload()
+        // Reloading detaches every tab. Keep the stored attachments (the new worker re-attaches them) and don't
+        // tell the relay, which would otherwise drop its sessions' tabs; it gets them back on the next hello.
+        reloading = true
+        DebuggerHub.freeze()
+        setTimeout(() => {
+          socket?.close(1001, "Extension reloading")
+          chrome.runtime.reload()
+        }, 50)
         return {}
       case "tabs.cleanup": {
         const minutes = typeof params?.idleMinutes === "number" ? Math.max(0, params.idleMinutes) : undefined
@@ -557,11 +565,21 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
       await chrome.tabGroups.update(current.id, { title }).catch(() => undefined)
   }
 
+  /**
+   * The relay is done with a tab. A tab an agent opened closes with its group rather than spilling into the
+   * user's tabs; a tab the user lent an agent just leaves the group.
+   */
   const ungroup = async (tabId: number) => {
     const tab = await chrome.tabs.get(tabId).catch(() => undefined)
     if (!tab || tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) return
     const current = await chrome.tabGroups.get(tab.groupId).catch(() => undefined)
-    if (ownedGroup(current?.title)) await chrome.tabs.ungroup(tabId).catch(() => undefined)
+    if (!ownedGroup(current?.title)) return
+    if (!reloading && (await TabCleanup.isTracked(tabId))) {
+      log.add("tab.closed", { tabId, reason: "agent finished with it" })
+      await chrome.tabs.remove(tabId).catch(() => undefined)
+      return
+    }
+    await chrome.tabs.ungroup(tabId).catch(() => undefined)
   }
 
   /**
@@ -592,7 +610,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   })
   chrome.debugger.onDetach.addListener((source, reason) => {
     const tabId = source.tabId
-    if (tabId === undefined || !relayTabs.has(tabId)) return
+    if (reloading || tabId === undefined || !relayTabs.has(tabId)) return
     const sessionId = (source as chrome.debugger.DebuggerSession).sessionId
     log.add("debugger.detached", { tabId, reason, sessionId })
     if (sessionId !== undefined) {

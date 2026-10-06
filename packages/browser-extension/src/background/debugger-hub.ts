@@ -62,17 +62,28 @@ export function tabsOwnedBy(owner: string) {
 }
 
 /**
- * Restores relay ownership after a service worker restart: Chrome keeps the attachments, the worker's
- * memory does not. Opencode pages re-register on their next command.
+ * Restores relay ownership after a service worker restart (Chrome keeps the attachments, the worker's memory
+ * does not) or an extension reload or update (the attachments are gone too, so the tabs are attached again).
+ * Either way the relay gets its sessions' tabs back instead of losing them. Opencode pages re-register on their
+ * next command.
  */
 export async function restore() {
-  const stored = ((await chrome.storage.session.get(RELAY_KEY))[RELAY_KEY] ?? []) as number[]
+  const stored = ((await chrome.storage.local.get(RELAY_KEY))[RELAY_KEY] ?? []) as unknown[]
   await Promise.all(
-    stored.map(async (tabId) => {
-      if (!(await ownedByUs(tabId))) return
-      owners.set(tabId, new Set([...(owners.get(tabId) ?? []), "relay"]))
+    stored.map(async (item) => {
+      // Earlier versions stored bare tab ids.
+      const { tabId, url } = typeof item === "number" ? { tabId: item, url: undefined } : (item as { tabId: number; url?: string })
+      if (await ownedByUs(tabId)) {
+        owners.set(tabId, new Set([...(owners.get(tabId) ?? []), "relay"]))
+        return
+      }
+      // Tab ids restart with the browser; only re-attach the same page, never a stranger that reused the id.
+      const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+      if (!tab || !url || tab.url !== url) return
+      await attach(tabId, "relay").catch(() => undefined)
     }),
   )
+  void persist()
 }
 
 chrome.debugger.onDetach.addListener((source) => {
@@ -81,9 +92,28 @@ chrome.debugger.onDetach.addListener((source) => {
   void persist()
 })
 
-function persist() {
-  return chrome.storage.session.set({ [RELAY_KEY]: tabsOwnedBy("relay") }).catch(() => undefined)
+/** Set while the extension reloads itself: the detaches that follow mustn't erase the tabs it re-attaches. */
+let frozen = false
+
+/** Keeps the stored attachments as they are until the worker goes away (an extension reload). */
+export function freeze() {
+  frozen = true
 }
+
+async function persist() {
+  if (frozen) return
+  const tabs = await Promise.all(
+    tabsOwnedBy("relay").map(async (tabId) => ({ tabId, url: (await chrome.tabs.get(tabId).catch(() => undefined))?.url })),
+  )
+  return chrome.storage.local.set({ [RELAY_KEY]: tabs }).catch(() => undefined)
+}
+
+// Tab ids don't survive a browser restart.
+chrome.runtime.onStartup.addListener(() => void chrome.storage.local.remove(RELAY_KEY))
+// The stored URL identifies the page on re-attach, so keep it current.
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.url && owners.get(tabId)?.has("relay")) void persist()
+})
 
 /** Chrome's attached flag includes DevTools and other extensions; a command only succeeds for ours. */
 async function ownedByUs(tabId: number) {
