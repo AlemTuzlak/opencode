@@ -55,6 +55,11 @@ request with status and duration, faults; rotated at 1 MB) and `host.log` (each 
 `OPENCODE_BROWSER_DEBUG=1` adds per-CDP-message tracing to the relay's stderr. Environment overrides:
 `OPENCODE_BROWSER_PORT`, `OPENCODE_BROWSER_HOME`, `OPENCODE_BROWSER_EXTENSION_ORIGINS`.
 
+Agent input looks human by default (`cli/src/human-input.ts`): each mouse move becomes a curved, eased ~60 Hz
+trajectory from the last pointer position, clicks land a few pixels off center with a human settle and hold,
+and key presses are spaced 30-110 ms apart. A click costs ~0.5-1 s instead of ~0.1 s; `relay.log` records each
+movement (`input.move`). `OPENCODE_BROWSER_HUMAN_INPUT=0` turns it off.
+
 Without the host, the panel offers a manual URL and password form.
 
 ## Releasing

@@ -141,6 +141,12 @@ Use normal Playwright first. Keep dependent interactions in one execute when
 they rely on transient UI such as an open menu, selected rows, hover state, or
 an in-progress form.
 
+Clicks, hovers and key presses already move and pace like a person (curved
+mouse paths, a short settle before pressing, human key gaps), so don't add your
+own `steps` or delays. `fill()` pastes text in one go; on sites that watch
+typing (sign-ups, logins behind bot protection), type with
+`locator.pressSequentially(text)` instead.
+
 If native `locator.fill()` hangs because a browser extension interferes with
 focus, use the explicit input, textarea, or contenteditable fallback:
 
