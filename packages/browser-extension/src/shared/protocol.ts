@@ -126,6 +126,8 @@ export type ToBackground =
   /** Answer an agent's handoff on this tab, the same as the page's Continue button. */
   | { type: "agents.continue"; chromeTabID: number }
   | { type: "agents.reconnect" }
+  /** Close every tab agents opened that isn't in use (not the active tab, recording, or waiting for the user). */
+  | { type: "tabs.cleanup" }
 
 export type ToPanel =
   | { type: "service"; state: ServiceState }

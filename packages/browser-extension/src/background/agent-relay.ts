@@ -24,6 +24,7 @@ import type {
 import type { AgentRelayState, AgentRelayStatus } from "../shared/protocol"
 import { createAgentRelayLog, formatAgentRelayLog } from "./agent-relay-log"
 import { DebuggerHub } from "./debugger-hub"
+import { TabCleanup } from "./tab-cleanup"
 
 /** Badge text the relay asked for, by tab; merged with the site-script count by the caller. */
 export type AgentBadge = { text: string; title?: string }
@@ -36,7 +37,6 @@ const ALARM = "opencode-browser-relay"
 // Relay tab groups end with this marker, which Chrome renders without width: they read like the session
 // groups ("opencode", or the agent session's name) but stay distinguishable for cleanup.
 const GROUP_MARKER = "\u2063"
-const GROUP_LABEL = "opencode"
 const GROUP_COLOR = "grey"
 const MAX_RECORDING_BUFFER = 16 * 1024 * 1024
 const CONNECT_TIMEOUT = 10_000
@@ -75,6 +75,10 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   let offscreen: Promise<void> | undefined
   const cdp = { count: 0, errors: 0 }
   const relayTabs = new Set<number>()
+  /** Tabs with a recording in progress; cleanup leaves them open. */
+  const recordingTabs = new Set<number>()
+  /** Each agent session's tab group, so a session keeps one group while its display name changes. */
+  const sessionGroups = new Map<string, number>()
   const pageStatuses = new Map<number, PageStatus>()
   const badges = new Map<number, AgentBadge>()
   /** Tabs the user let agents use while the relay was not connected; announced once it is. */
@@ -257,6 +261,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
         return {}
       case "debugger.attach": {
         const tabId = number(params, "tabId")
+        TabCleanup.touch(tabId)
         await DebuggerHub.attach(tabId, OWNER)
         relayTabs.add(tabId)
         notify()
@@ -270,6 +275,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
         return {}
       }
       case "debugger.sendCommand":
+        TabCleanup.touch(number(params, "tabId"))
         return sendCommand(params)
       case "tabs.create": {
         const tab = await chrome.tabs.create({
@@ -277,6 +283,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
           active: params?.active === true,
         })
         if (tab.id === undefined) throw new Error("Created tab has no id")
+        TabCleanup.track(tab.id, "agent")
         return { tabId: tab.id }
       }
       case "tabs.remove":
@@ -338,9 +345,18 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
         log.add("runtime.reload")
         chrome.runtime.reload()
         return {}
-      case "recording.start":
-        return startRecording(params)
+      case "tabs.cleanup": {
+        const minutes = typeof params?.idleMinutes === "number" ? Math.max(0, params.idleMinutes) : undefined
+        const closed = await TabCleanup.cleanup(minutes === undefined ? {} : { minutes })
+        return { closed: closed.map((tab) => ({ tabId: tab.tabId, title: tab.title, idleMinutes: tab.idleMinutes })) }
+      }
+      case "recording.start": {
+        const result = await startRecording(params)
+        if (result.success === true) recordingTabs.add(number(params, "tabId"))
+        return result
+      }
       case "recording.stop":
+        recordingTabs.delete(number(params, "tabId"))
         return recordingCall<OffscreenStopRecordingResult>("recording.stop", number(params, "tabId")).then((result) =>
           result.success ? { success: true, tabId: result.tabId, duration: result.duration } : result,
         )
@@ -354,6 +370,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
         }
       }
       case "recording.cancel":
+        recordingTabs.delete(number(params, "tabId"))
         return recordingCall<OffscreenCancelRecordingResult>("recording.cancel", number(params, "tabId")).then((result) =>
           result.success ? { success: true } : result,
         )
@@ -497,40 +514,37 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
 
   const group = async (tabId: number, sessionId: string | undefined, current: WebSocket) => {
     const tab = await chrome.tabs.get(tabId)
-    const title = groupTitle(sessionId)
-    if (tab.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) {
-      const existing = await chrome.tabGroups.get(tab.groupId).catch(() => undefined)
-      if (existing?.title === title) return existing.id
-      // The tab's own relay group under another session's name: rename it rather than regroup.
-      if (existing && ownedGroup(existing.title)) {
-        const members = await chrome.tabs.query({ groupId: existing.id })
-        if (members.length === 1 && members[0]?.id === tabId) {
-          await chrome.tabGroups.update(existing.id, { title, color: GROUP_COLOR })
-          return existing.id
-        }
-      }
-    }
-    let target: chrome.tabGroups.TabGroup | undefined
-    for (const item of await chrome.tabGroups.query({ windowId: tab.windowId })) {
-      if (item.title !== title) continue
-      const members = await chrome.tabs.query({ groupId: item.id })
-      if (members.some((member) => member.id !== undefined && relayTabs.has(member.id))) {
-        target = item
-        break
-      }
+    const title = groupTitle(sessionId, tab.url)
+    const key = sessionId ?? ""
+    const known = sessionGroups.get(key)
+    const target = known === undefined ? undefined : await chrome.tabGroups.get(known).catch(() => undefined)
+    if (target && target.windowId === tab.windowId && ownedGroup(target.title)) {
+      if (tab.groupId !== target.id) await chrome.tabs.group({ tabIds: [tabId], groupId: target.id })
+      if (target.title !== title) await chrome.tabGroups.update(target.id, { title, color: GROUP_COLOR })
+      return target.id
     }
     if (socket !== current) throw new Error("The relay reconnected while grouping the tab")
-    const groupId = await chrome.tabs.group({
-      tabIds: [tabId],
-      ...(target ? { groupId: target.id } : { createProperties: { windowId: tab.windowId } }),
-    })
+    const groupId = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId: tab.windowId } })
     // chrome.tabs.group changes the tab before it resolves, so a stale command undoes its anonymous group.
     if (socket !== current) {
       await chrome.tabs.ungroup(tabId).catch(() => undefined)
       throw new Error("The relay reconnected while grouping the tab")
     }
-    if (!target) await chrome.tabGroups.update(groupId, { title, color: GROUP_COLOR })
+    await chrome.tabGroups.update(groupId, { title, color: GROUP_COLOR })
+    sessionGroups.set(key, groupId)
     return groupId
+  }
+
+  /** Auto-named sessions take their group name from the site the agent is on, so it follows navigation. */
+  const renameForPage = async (tabId: number, url: string | undefined) => {
+    const tab = await chrome.tabs.get(tabId).catch(() => undefined)
+    if (!tab || tab.groupId === chrome.tabGroups.TAB_GROUP_ID_NONE) return
+    const sessionId = Array.from(sessionGroups).find(([, id]) => id === tab.groupId)?.[0]
+    if (sessionId === undefined || !autoNamed(sessionId)) return
+    const current = await chrome.tabGroups.get(tab.groupId).catch(() => undefined)
+    const title = groupTitle(sessionId, url)
+    if (current && ownedGroup(current.title) && current.title !== title)
+      await chrome.tabGroups.update(current.id, { title }).catch(() => undefined)
   }
 
   const ungroup = async (tabId: number) => {
@@ -577,7 +591,12 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     forget(tabId)
     send({ method: "debugger.detached", params: { tabId, reason } })
   })
+  chrome.tabs.onUpdated.addListener((tabId, change) => {
+    if (change.url && relayTabs.has(tabId)) void renameForPage(tabId, change.url)
+  })
+  TabCleanup.guard((tabId) => recordingTabs.has(tabId) || pageStatuses.get(tabId)?.state === "waiting")
   chrome.tabs.onRemoved.addListener((tabId) => {
+    recordingTabs.delete(tabId)
     void chrome.runtime.sendMessage({ action: "recording.cancel", tabId }).catch(() => undefined)
     if (relayTabs.has(tabId)) log.add("tab.removed", { tabId })
     forget(tabId)
@@ -641,6 +660,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
       }
       if (offscreenMessage.action === "recording.cancelled") {
         log.add("recording.cancelled", { tabId: offscreenMessage.tabId })
+        recordingTabs.delete(offscreenMessage.tabId)
         send({ method: "recording.cancelled", params: { tabId: offscreenMessage.tabId } })
         return true
       }
@@ -692,8 +712,19 @@ export type AgentRelay = ReturnType<typeof createAgentRelay>
 
 const ATTACHED_TITLE = "OpenCode Browser · Agents can use this tab"
 
-function groupTitle(sessionId: string | undefined) {
-  return `${sessionId?.trim().slice(0, 24) || GROUP_LABEL}${GROUP_MARKER}`
+/** Session ids the relay or MCP server made up (mcp-1a2b3c4d, quiet-falcon-333), rather than an agent's chosen name. */
+function autoNamed(sessionId: string | undefined) {
+  return !sessionId || /^mcp-[0-9a-f]{6,}$/i.test(sessionId) || /^[a-z]+-[a-z]+-\d{3}$/.test(sessionId)
+}
+
+/**
+ * The tab group's name: the session's name when an agent chose one ("github"), else "Agent · <site>" for the
+ * page it is on, else "Agent". The trailing marker identifies the relay's groups.
+ */
+function groupTitle(sessionId: string | undefined, url?: string) {
+  const host = url && /^https?:/.test(url) ? new URL(url).hostname.replace(/^www\./, "") : undefined
+  const name = autoNamed(sessionId) ? (host ? `Agent · ${host}` : "Agent") : sessionId!.trim()
+  return `${name.length > 28 ? `${name.slice(0, 27)}…` : name}${GROUP_MARKER}`
 }
 
 function ownedGroup(title: string | undefined) {

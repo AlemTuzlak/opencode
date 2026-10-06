@@ -1037,6 +1037,30 @@ const skill = Command.make(
   }),
 ).pipe(Command.withDescription("Print the OpenCode Browser agent skill text"))
 
+const tabsCleanup = Command.make(
+  "cleanup",
+  {
+    idleMinutes: Flag.Int("idle-minutes").pipe(
+      Flag.optional,
+      Flag.withDescription("Close agent tabs idle at least this long; 0 closes every eligible agent tab (default: the extension's setting, 30)"),
+    ),
+    json: jsonFlag,
+  },
+  Effect.fn("Cli.tabsCleanup")(function* ({ idleMinutes, json }) {
+    const relay = yield* RelayClient.Service
+    yield* ensureCliRelay()
+    const result = yield* relay.tabsCleanup(Option.getOrUndefined(idleMinutes))
+    if (json) return yield* Console.log(JSON.stringify(result, null, 2))
+    if (!result.closed.length) return yield* Console.log("No idle agent tabs to close.")
+    for (const tab of result.closed) yield* Console.log(`Closed ${tab.title} (idle ${tab.idleMinutes}m)`)
+  }),
+).pipe(Command.withDescription("Close tabs agents opened that nobody has used for a while"))
+
+const tabs = Command.make("tabs").pipe(
+  Command.withDescription("Manage the tabs agents open"),
+  Command.withSubcommands([tabsCleanup]),
+)
+
 const mcp = Command.make(
   "mcp",
   {},
@@ -1047,7 +1071,7 @@ const mcp = Command.make(
 
 export const opencodeBrowser = Command.make("opencode-browser").pipe(
   Command.withDescription("Control the user's existing browser through the OpenCode Browser extension"),
-  Command.withSubcommands([serve, relay, execute, session, status, network, secrets, recording, flightRecorder, journal, doctor, skill, mcp]),
+  Command.withSubcommands([serve, relay, execute, session, tabs, status, network, secrets, recording, flightRecorder, journal, doctor, skill, mcp]),
 )
 
 const mainLayer = Layer.mergeAll(RelayClient.layerFetch, SessionStore.layer).pipe(

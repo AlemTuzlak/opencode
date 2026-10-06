@@ -483,6 +483,11 @@ export const RecordingStatusResponse = Schema.Struct({
 
 export interface RecordingStatusResponse extends Schema.Schema.Type<typeof RecordingStatusResponse> {}
 
+export const TabsCleanupResponse = Schema.Struct({
+  closed: Schema.Array(Schema.Struct({ tabId: Schema.Number, title: Schema.String, idleMinutes: Schema.Number })),
+})
+export type TabsCleanupResponse = typeof TabsCleanupResponse.Type
+
 export const RecordingCancelResponse = Schema.Struct({
   success: Schema.Boolean,
   error: Schema.optionalKey(Schema.String),

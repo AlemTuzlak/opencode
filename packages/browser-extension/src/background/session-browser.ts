@@ -9,6 +9,7 @@ import { browserFailure, unsupported } from "./errors"
 import { createBrowserPage, UnsupportedOperation, type BrowserPage } from "./page"
 import type { Recording } from "./profiling"
 import { normalizeURL, shareable } from "./policy"
+import { TabCleanup } from "./tab-cleanup"
 import type { Service } from "./service"
 
 type Entry = {
@@ -42,6 +43,7 @@ const GUIDANCE = [
   "You are running inside OpenCode Browser, opencode's side panel in the user's web browser.",
   "The browser.* tools control the user's real browser: tabs you open with browser.tabs.open and tabs the user shares from the panel (browser.tabs.list shows them). Use them for anything in the user's browser instead of other browser automation. The opencode-browser MCP server (Playwright execute, sessions, network capture, secrets, recording) is part of OpenCode Browser too, for scripted automation; for the user's tabs, use the browser.* tools.",
   "The user watches the tabs you use, and pointer actions show a cursor in the page. Move around a site the way a person would: find links and buttons with browser.snapshot or browser.find, then use browser.click, browser.fill, and browser.press. Use browser.navigate only to open a new site or an exact URL the user gave, and browser.evaluate to read data, not to click or navigate.",
+  "Close tabs you opened with browser.tabs.close when you are done with them. Tabs you open and leave unused close by themselves after about 30 minutes; tabs the user shared are never closed.",
   "If you need the page the user is looking at, or another tab they have open, and it is not shared, call browser.tabs.request (omit query for their current tab); they approve it in the panel. You can also open the URL yourself with browser.tabs.open.",
   "To change how a website looks or behaves persistently, write a site script and install it with site_scripts.install; the user approves it in the panel. Never ask the user to install Tampermonkey or Violentmonkey.",
 ].join("\n")
@@ -206,15 +208,30 @@ export async function createSessionBrowser(input: {
       )
     return entry
   }
+  /** Each conversation's tabs share one group, named after the conversation ("opencode" until it has a title). */
   const group = async (tabId: number) => {
+    const title = await groupName()
     // A group the user dissolved or closed is recreated rather than reused.
     const existing = groupId === undefined ? undefined : await chrome.tabGroups.get(groupId).catch(() => undefined)
     if (existing && existing.windowId === (await chrome.tabs.get(tabId)).windowId) {
       await chrome.tabs.group({ tabIds: [tabId], groupId: existing.id })
+      if (existing.title !== title) await chrome.tabGroups.update(existing.id, { title })
       return
     }
     groupId = await chrome.tabs.group({ tabIds: [tabId] })
-    await chrome.tabGroups.update(groupId, { title: "opencode", color: "grey" })
+    await chrome.tabGroups.update(groupId, { title, color: "grey" })
+  }
+  const groupName = async () => {
+    const info = await input.service.get().catch(() => undefined)
+    const title = info
+      ? await OpenCode.make({ baseUrl: info.url, headers: { Authorization: `Basic ${btoa(`opencode:${info.password}`)}` } })
+          .session.get({ sessionID: input.sessionID })
+          .then((session) => session.title?.trim())
+          .catch(() => undefined)
+      : undefined
+    // Untitled conversations get a placeholder title until the first reply; keep "opencode" for those.
+    if (!title || /^New session/i.test(title)) return "opencode"
+    return title.length > 28 ? `${title.slice(0, 27)}…` : title
   }
   const targetWindow = async () => {
     const window = await chrome.windows.get(windowId).catch(() => undefined)
@@ -235,6 +252,7 @@ export async function createSessionBrowser(input: {
       const url = normalizeURL(action.url ?? "about:blank")
       const tab = await chrome.tabs.create({ windowId: await targetWindow(), url, active: action.focus !== false })
       const entry = add(tab, "opened")
+      TabCleanup.track(tab.id!, "conversation")
       await group(tab.id!).catch(() => undefined)
       publish(true)
       if (url !== "about:blank") await settle(entry, signal)
@@ -242,6 +260,7 @@ export async function createSessionBrowser(input: {
       return { value: tabState(entry), files: [] }
     }
     const entry = require(action.tabID)
+    TabCleanup.touch(entry.tabId)
     if (action.type === "tabs.focus") {
       await chrome.tabs.update(entry.tabId, { active: true })
       return { value: tabState(entry), files: [] }

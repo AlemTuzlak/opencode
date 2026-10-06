@@ -167,8 +167,21 @@ opencode-browser session delete github
 Deletion is idempotent for an explicit session id, so cleanup can be safely
 retried when that session is already absent.
 
+Give a session a short, meaningful id (`github`, `checkout-test`): the tabs it
+opens are grouped in the browser under that name. Unnamed sessions are grouped as
+"Agent · <site>".
+
+Tabs agents open close by themselves after about 30 minutes without use (no
+command and not visited by the user); tabs the user shared, pinned, or is
+looking at stay open. When a task is done, tidy up right away:
+
+```bash
+opencode-browser tabs cleanup --idle-minutes 0   # MCP: tabs_cleanup { idleMinutes: 0 }
+```
+
 Every execute is journaled under
-`~/.opencode-browser/sessions/<id>/journal.jsonl`. The journal records code,
+`<data root>/sessions/<id>/journal.jsonl` (`~/.local/share/opencode-browser` on
+macOS and Linux). The journal records code,
 status, duration, URL movement, warnings, handoffs, and bounded diagnostics.
 Never place credentials directly in execute source.
 

@@ -1,3 +1,4 @@
+import type { JsonObject } from "./protocol.ts"
 import http from "node:http"
 import { Effect, Match, Predicate, Schema } from "effect"
 import * as AuthProfile from "./auth-profile.ts"
@@ -57,6 +58,8 @@ export function createHttpRequestHandler(options: {
   readonly flightRecorder: FlightRecorderRelay
   readonly registry: TargetRegistry
   readonly sessions: OpenCodeBrowserSessions
+  /** Asks the extension to close agent-opened tabs idle for `idleMinutes` (its setting when omitted). */
+  readonly cleanupTabs: (idleMinutes: number | undefined) => Effect.Effect<JsonObject, Error>
 }): (request: http.IncomingMessage, response: http.ServerResponse) => void {
   options.sessions.setUserAttachedPageUrlsProvider(() =>
     options.registry.listRootTargets()
@@ -111,6 +114,16 @@ export function createHttpRequestHandler(options: {
         "Protocol-Version": "1.3",
         webSocketDebuggerUrl: webSocketDebuggerUrl.toString(),
       })
+      return
+    }
+    if (pathname === "/tabs/cleanup" && request.method === "POST") {
+      run(Effect.gen(function* () {
+        const body = yield* readJsonBody(request)
+        const idleMinutes = typeof body === "object" && body !== null && "idleMinutes" in body && typeof body.idleMinutes === "number"
+          ? Math.max(0, body.idleMinutes)
+          : undefined
+        sendJson(response, yield* options.cleanupTabs(idleMinutes))
+      }))
       return
     }
     if (pathname === "/json/list") {

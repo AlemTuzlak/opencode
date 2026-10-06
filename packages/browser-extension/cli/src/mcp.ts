@@ -341,6 +341,20 @@ function makeToolSpecs(relay: RelayClient.Interface, currentSession: CurrentSess
       handle: (input) => relay.recordingStop({ sessionId: resolveSessionId(input) }),
     },
     {
+      name: "tabs_cleanup",
+      description: "Close tabs agents opened that nobody has used for a while (no agent command and not visited by the user). Tabs the user shared or pinned, the active tab, tabs playing audio, recording, or waiting for a handoff stay open. Call it when you finish a task to leave the user's browser tidy; OpenCode Browser also does this automatically after 30 idle minutes.",
+      inputSchema: objectSchema({
+        idleMinutes: { type: "integer", minimum: 0, description: "Close tabs idle at least this long. 0 closes every eligible agent tab. Defaults to the user's setting (30)." },
+      }),
+      readOnly: false,
+      destructive: true,
+      idempotent: true,
+      handle: (input) => {
+        const value = typeof input === "object" && input !== null && "idleMinutes" in input ? input.idleMinutes : undefined
+        return relay.tabsCleanup(typeof value === "number" && value >= 0 ? value : undefined)
+      },
+    },
+    {
       name: "recording_status",
       description: "Return bounded status and quality counters for a session recording.",
       inputSchema: sessionOnlyInputSchema,

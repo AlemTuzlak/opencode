@@ -44,6 +44,7 @@ export const commandMethods = [
   "recording.stop",
   "recording.status",
   "recording.cancel",
+  "tabs.cleanup",
 ] as const
 
 export type ExtensionCommand = {

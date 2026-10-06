@@ -105,6 +105,7 @@ const extensionCommandMethodValues = [
   "recording.stop",
   "recording.status",
   "recording.cancel",
+  "tabs.cleanup",
 ] as const
 
 const extensionEventMethodValues = [

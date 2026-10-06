@@ -26,6 +26,7 @@ import {
   type NetworkStopRequest,
   NetworkStopResponse,
   RecordingCancelResponse,
+  TabsCleanupResponse,
   type RecordingStartRequest,
   RecordingStartResponse,
   RecordingStatusResponse,
@@ -137,6 +138,7 @@ export interface Interface {
   readonly recordingStop: (target: RecordingTargetRequest) => Effect.Effect<RecordingStopResponse, RelayClientError>
   readonly recordingStatus: (target: RecordingTargetRequest) => Effect.Effect<RecordingStatusResponse, RelayClientError>
   readonly recordingCancel: (target: RecordingTargetRequest) => Effect.Effect<RecordingCancelResponse, RelayClientError>
+  readonly tabsCleanup: (idleMinutes?: number) => Effect.Effect<TabsCleanupResponse, RelayClientError>
   readonly flightRecorderStart: (request: FlightRecorderStartRequest) => Effect.Effect<FlightRecorderStatusResponse, RelayClientError>
   readonly flightRecorderStatus: (target: RecordingTargetRequest) => Effect.Effect<FlightRecorderStatusResponse, RelayClientError>
   readonly flightRecorderSaveLast: (request: FlightRecorderSaveRequest) => Effect.Effect<FlightRecorderSaveResponse, RelayClientError>
@@ -294,6 +296,7 @@ export const make = Effect.fn("RelayClient.make")(function* (options?: { readonl
     recordingStop: (target) => postJson("/recording/stop", recordingTargetBody(target), RecordingStopResponse),
     recordingStatus: (target) => getJson(`/recording/status${recordingTargetQuery(target)}`, RecordingStatusResponse),
     recordingCancel: (target) => postJson("/recording/cancel", recordingTargetBody(target), RecordingCancelResponse),
+    tabsCleanup: (idleMinutes) => postJson("/tabs/cleanup", idleMinutes === undefined ? {} : { idleMinutes }, TabsCleanupResponse),
     flightRecorderStart: ({ sessionId, tabId, ...request }) =>
       postJson("/flight-recorder/start", { ...recordingTargetBody({ sessionId, tabId }), ...request }, FlightRecorderStatusResponse),
     flightRecorderStatus: (target) => getJson(`/flight-recorder/status${recordingTargetQuery(target)}`, FlightRecorderStatusResponse),

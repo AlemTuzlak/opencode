@@ -519,6 +519,8 @@ const makeRelay = Effect.fnUntraced(function* (options: {
     recordingRelay,
     flightRecorder,
     sessions,
+    cleanupTabs: (idleMinutes) =>
+      sendToExtension({ method: "tabs.cleanup", ...(idleMinutes === undefined ? {} : { params: { idleMinutes } }) }),
     extensionStatus: () => {
       return {
         connected: extensionRpc.connected,

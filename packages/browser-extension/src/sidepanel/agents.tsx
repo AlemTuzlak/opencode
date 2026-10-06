@@ -170,7 +170,12 @@ export function AgentsMenu() {
                   {attached() ? "Agents can use this tab" : "Let agents use this tab"}
                 </span>
               </Menu.Item>
-              <Menu.Item class="!h-8" 
+              <Menu.Item class="!h-8" onSelect={() => background.send({ type: "tabs.cleanup" })}>
+                <Icon name="close-small" size="small" class="shrink-0" />
+                <span class="min-w-0 flex-1 truncate">Close agent tabs</span>
+              </Menu.Item>
+              <Menu.Item
+                class="!h-8"
                 onSelect={() =>
                   void copyAgentDiagnostics().then(
                     () => showToast({ variant: "success", description: "Copied diagnostics for a bug report" }),

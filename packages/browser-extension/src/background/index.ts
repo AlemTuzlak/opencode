@@ -20,6 +20,7 @@ import { shareable } from "./policy"
 import { createRelayLink } from "./relay-link"
 import { createService } from "./service"
 import { createSessionBrowser, type SessionBrowser } from "./session-browser"
+import { TabCleanup } from "./tab-cleanup"
 import { createSiteScripts, type Applied } from "./site-scripts"
 
 type Panel = { port: chrome.runtime.Port; windowID?: number; sessionID?: string }
@@ -154,6 +155,14 @@ async function receive(panel: Panel, message: ToBackground) {
     case "scripts.refresh":
       await scripts.reconcile()
       return
+    case "tabs.cleanup": {
+      const closed = await TabCleanup.cleanup({ minutes: 0 })
+      post(panel, {
+        type: "notice",
+        message: closed.length ? `Closed ${closed.length} agent tab${closed.length === 1 ? "" : "s"}.` : "No agent tabs to close.",
+      })
+      return
+    }
     case "agents.attach":
       agents.attachTab(message.chromeTabID)
       return
