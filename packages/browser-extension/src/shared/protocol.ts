@@ -1,25 +1,28 @@
 // Messages between the side panel and the background service worker. Each panel holds one long-lived
 // `chrome.runtime.connect({ name: PANEL_PORT })` port; the open port also keeps the worker alive.
 
-import type { PageStatus } from "../browser-control/protocol"
+import type { PageStatus } from "../agent-relay/protocol"
 import type { SiteScriptApproval, SiteScriptDraft, SiteScriptsState } from "./site-script"
 
-export type RelayStatus =
-  /** No relay is running; Browser Control's CLI or MCP server starts one on demand. */
+/** The link to the OpenCode Browser relay, which runs agent sessions for the opencode-browser CLI and MCP server. */
+export type AgentRelayStatus =
+  /** No relay is running yet; the CLI or MCP server starts one on demand. */
   | "offline"
   | "connecting"
   | "connected"
-  /** The relay runs but refused this extension (an older relay that does not know OpenCode Browser). */
-  | "rejected"
-  /** Another extension (usually the old Browser Control extension) holds this profile's connection. */
+  /** OpenCode Browser in another browser or profile holds the relay's connection. */
   | "conflict"
+  /** The relay speaks another protocol version; updating both fixes it. */
   | "incompatible"
 
-export type RelayState = {
-  status: RelayStatus
-  /** Tabs the relay has attached, with their page status when a session is running or waiting. */
+export type AgentRelayState = {
+  status: AgentRelayStatus
+  /** Tabs agents use, with their page status when an agent is working or waiting for the user. */
   tabs: { tabId: number; status?: PageStatus }[]
 }
+
+/** chrome.runtime.sendMessage request from an extension page; the worker answers with `{ text }`. */
+export const AGENT_DIAGNOSTICS = "agents.diagnostics"
 
 export const PANEL_PORT = "opencode-browser.panel"
 /** The welcome tab's port: it only watches setup status and asks for re-checks; it is not a panel. */
@@ -118,11 +121,11 @@ export type ToBackground =
   | { type: "access.reply"; id: string; allow: boolean }
   /** The user's answer to a request to share a tab. */
   | { type: "tabRequest.reply"; id: string; allow: boolean }
-  /** Let Browser Control (its CLI and MCP agents) use this tab. */
-  | { type: "browserControl.attach"; chromeTabID: number }
-  /** Answer Browser Control's handoff on this tab, the same as the page's Continue button. */
-  | { type: "browserControl.continue"; chromeTabID: number }
-  | { type: "browserControl.reconnect" }
+  /** Let agents (the opencode-browser CLI and MCP server) use this tab. */
+  | { type: "agents.attach"; chromeTabID: number }
+  /** Answer an agent's handoff on this tab, the same as the page's Continue button. */
+  | { type: "agents.continue"; chromeTabID: number }
+  | { type: "agents.reconnect" }
 
 export type ToPanel =
   | { type: "service"; state: ServiceState }
@@ -140,8 +143,8 @@ export type ToPanel =
   | { type: "tabRequests"; requests: TabRequest[] }
   /** The agent asked to show a server file (browser.preview) in the panel showing this session. */
   | { type: "preview"; sessionID: string; path: string }
-  /** The Browser Control relay connection and the tabs its sessions use. */
-  | { type: "browserControl"; state: RelayState }
+  /** The OpenCode Browser relay connection and the tabs its agents use. */
+  | { type: "agents"; state: AgentRelayState }
 
-export type ToWelcome = Extract<ToPanel, { type: "service" | "scripts" | "browserControl" }>
-export type FromWelcome = Extract<ToBackground, { type: "service.refresh" | "scripts.refresh" | "browserControl.reconnect" }>
+export type ToWelcome = Extract<ToPanel, { type: "service" | "scripts" | "agents" }>
+export type FromWelcome = Extract<ToBackground, { type: "service.refresh" | "scripts.refresh" | "agents.reconnect" }>

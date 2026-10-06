@@ -39,7 +39,7 @@ export function createCdp(tabId: number, options: { detached: (reason: string) =
   chrome.debugger.onEvent.addListener(receive)
   chrome.debugger.onDetach.addListener(detach)
 
-  // Every page registers as its own owner, so the Browser Control relay or another session on the same tab
+  // Every page registers as its own owner, so the OpenCode Browser relay or another session on the same tab
   // keeps the shared attachment alive when this page lets go.
   const owner = `page:${crypto.randomUUID()}`
   const attach = () => {

@@ -11,7 +11,7 @@ import { IconButton } from "@opencode/ui/icon-button"
 import { Spinner } from "@opencode/ui/spinner"
 import { TextShimmer } from "@opencode/ui/text-shimmer"
 import { Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
-import { BrowserControlHandoffDock } from "./browser-control"
+import { AgentHandoffDock } from "./agents"
 import { BrowserStrip } from "./browser-strip"
 import { BrowsingAccessDock } from "./browsing-access"
 import { TabRequestDock } from "./tab-request"
@@ -309,7 +309,7 @@ export default function SessionView(props: {
                 </Show>
               )}
             </Show>
-            <BrowserControlHandoffDock />
+            <AgentHandoffDock />
             <ScriptApprovalDock />
             <TabRequestDock />
             <BrowsingAccessDock />

@@ -1,24 +1,32 @@
-// In-page status for tabs Browser Control sessions use: a small pill while a session runs, and a
-// "your turn" card when a session hands the page to the user (logins, 2FA, passkeys, payments).
-// Ported from anomalyco/browser-control extension/src/content-script.ts with opencode's look. Built as a
-// classic script (content scripts cannot import modules) and injected at document_start on every page.
-import { pageStatusFromJson, type PageStatus } from "../browser-control/protocol"
+// In-page status for tabs agents use through the OpenCode Browser relay: a small pill while an agent works,
+// and a "your turn" card when it hands the page to the user (logins, 2FA, passkeys, payments). While an
+// agent drives the page it also removes other extensions' injected frames, which make Chrome drop the
+// debugger. Built as a classic script (content scripts cannot import modules) and injected at
+// document_start in top frames.
+import { pageStatusFromJson, type PageStatus } from "../agent-relay/protocol"
 
-const HOST_ID = "__opencode_browser_status__"
+// The relay's ghost cursor (cli/src/ghost-cursor.ts) reads this host's data-waiting attribute.
+const HOST_ID = "__opencode_browser_page_status__"
 const CURSOR_STYLE_ID = "__opencode_browser_cursor_style__"
-const RELAY_CURSOR_ID = "__browser_control_ghost_cursor__"
+const RELAY_CURSOR_ID = "__opencode_browser_ghost_cursor__"
 
 let current: PageStatus | undefined
 let completing: string | undefined
 let observer: MutationObserver | undefined
 
-chrome.runtime.onMessage.addListener((message: unknown) => {
+chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
   if (typeof message !== "object" || message === null || !("action" in message)) return
+  if (message.action === "evict-extension-frames") {
+    sendResponse({ removed: evictForeignFrames(document) })
+    return
+  }
   if (message.action === "page-status.clear") return clear()
   const status = "status" in message ? pageStatusFromJson(message.status) : undefined
   if (message.action !== "page-status.set" || !status) return
   current = status
   completing = undefined
+  // The user needs their password manager during a handoff; otherwise the agent's debugger comes first.
+  if (status.state !== "waiting") evictForeignFrames(document)
   render()
 })
 
@@ -43,7 +51,7 @@ function render() {
           ? "Working"
           : "Connected"
   pill.title = [
-    current.owner === "session" ? "A Browser Control session opened this tab" : "You shared this tab with Browser Control",
+    current.owner === "session" ? "An agent opened this tab" : "You let agents use this tab",
     current.sessionId ? `Session ${current.sessionId}` : undefined,
   ]
     .filter(Boolean)
@@ -59,10 +67,57 @@ function render() {
     anchor(host)
   }
   if (!host.isConnected) document.documentElement.append(host)
-  observer ??= new MutationObserver(() => {
-    if (current && !document.getElementById(HOST_ID)) render()
+  observer ??= new MutationObserver((records) => {
+    if (!current) return
+    if (current.state !== "waiting")
+      for (const record of records) for (const node of record.addedNodes) evictForeignFrames(node)
+    if (!document.getElementById(HOST_ID)) render()
   })
-  observer.observe(document.documentElement, { childList: true })
+  observer.observe(document.documentElement, { childList: true, subtree: true })
+}
+
+/**
+ * Removes other extensions' frames and password-manager hosts (1Password's custom elements keep their UI in
+ * closed shadow roots, so the host itself goes) from `root` and the open shadow roots inside it. A frame
+ * from another extension makes Chrome refuse debugger commands or detach the debugger. Returns how many
+ * elements it removed.
+ */
+function evictForeignFrames(root: Node): number {
+  const own = `chrome-extension://${chrome.runtime.id}`
+  const foreign = (element: Element) => {
+    const tag = element.tagName.toLowerCase()
+    if (
+      tag.startsWith("com-1password-") ||
+      element.hasAttribute("data-onepassword-extension") ||
+      element.hasAttribute("data-lastpass-root") ||
+      element.id.startsWith("bitwarden-")
+    )
+      return true
+    if (tag !== "iframe" && tag !== "frame" && tag !== "object" && tag !== "embed") return false
+    const src = element.getAttribute("src") ?? element.getAttribute("data") ?? ""
+    return src.startsWith("chrome-extension://") && !src.startsWith(own)
+  }
+  let removed = 0
+  const visit = (node: Element | Document | ShadowRoot) => {
+    if (node instanceof Element && foreign(node)) {
+      node.remove()
+      removed++
+      return
+    }
+    if (node instanceof Element && node.shadowRoot) visit(node.shadowRoot)
+    for (const element of Array.from(node.querySelectorAll("*"))) {
+      // Skip what went with an element removed earlier in this walk.
+      if (!node.contains(element)) continue
+      if (foreign(element)) {
+        element.remove()
+        removed++
+        continue
+      }
+      if (element.shadowRoot) visit(element.shadowRoot)
+    }
+  }
+  if (root instanceof Element || root instanceof Document || root instanceof ShadowRoot) visit(root)
+  return removed
 }
 
 function create() {
@@ -72,7 +127,7 @@ function create() {
   root.innerHTML = `<style>${STYLE}</style>
     <div id="vignette" hidden></div>
     <div id="card" role="dialog" aria-labelledby="title" aria-describedby="message" hidden>
-      <div id="head"><span id="dot"></span><span id="title">Your turn</span><span id="source">${MARK}Browser Control</span></div>
+      <div id="head"><span id="dot"></span><span id="title">Your turn</span><span id="source">${MARK}OpenCode Browser</span></div>
       <p id="message"></p>
       <div id="actions"><button id="continue" type="button">Continue</button></div>
     </div>
@@ -90,7 +145,7 @@ function create() {
   return host
 }
 
-/** Places the card next to Browser Control's cursor when it points at the step to finish. */
+/** Places the card next to the agent's cursor when it points at the step to finish. */
 function anchor(host: HTMLElement) {
   const cursor = document.getElementById(RELAY_CURSOR_ID)
   const x = Number(cursor?.dataset.targetX)
@@ -106,7 +161,7 @@ function anchor(host: HTMLElement) {
   host.dataset.anchor = "cursor"
 }
 
-/** Browser Control's relay draws its own purple cursor; give it OpenCode Browser's look. */
+/** The relay draws its own purple ghost cursor; give it the look of the panel's agent cursor. */
 function styleRelayCursor() {
   if (document.getElementById(CURSOR_STYLE_ID)) return
   const style = document.createElement("style")

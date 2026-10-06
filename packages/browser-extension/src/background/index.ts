@@ -1,5 +1,6 @@
 // Service worker: routes side panel requests, tracks tabs, and owns each session's browser.
 import {
+  AGENT_DIAGNOSTICS,
   BROWSING_PERMISSIONS,
   PANEL_PORT,
   WELCOME_PORT,
@@ -13,7 +14,7 @@ import {
 } from "../shared/protocol"
 import type { RelayCommand } from "../shared/relay-rpc"
 import { appliesTo, hostLabel, type SiteScript, type SiteScriptApproval, type SiteScriptDraft } from "../shared/site-script"
-import { createBrowserControl } from "./browser-control"
+import { createAgentRelay } from "./agent-relay"
 import { grant, granted, readBrowsing } from "./browsing"
 import { shareable } from "./policy"
 import { createRelayLink } from "./relay-link"
@@ -36,8 +37,8 @@ const approvals = new Map<string, { approval: SiteScriptApproval; answer: (appro
 const accessRequests = new Map<string, { request: AccessRequest; answer: (allow: boolean) => void }>()
 const tabRequests = new Map<string, { request: TabRequest; answer: (allow: boolean) => void }>()
 const link = createRelayLink({ service, run: runRelayCommand })
-const control = createBrowserControl({
-  changed: (state) => broadcastStatus({ type: "browserControl", state }),
+const agents = createAgentRelay({
+  changed: (state) => broadcastStatus({ type: "agents", state }),
   badgesChanged: () => void updateBadges(),
 })
 let keepalive: ReturnType<typeof setInterval> | undefined
@@ -69,11 +70,11 @@ function watch(port: chrome.runtime.Port) {
   port.onMessage.addListener((message: FromWelcome) => {
     if (message.type === "service.refresh") void service.refresh().catch(() => undefined)
     if (message.type === "scripts.refresh") void scripts.reconcile()
-    if (message.type === "browserControl.reconnect") control.reconnect()
+    if (message.type === "agents.reconnect") agents.reconnect()
   })
   postWatcher(port, { type: "service", state: service.state() })
   postWatcher(port, { type: "scripts", state: scripts.state() })
-  postWatcher(port, { type: "browserControl", state: control.state() })
+  postWatcher(port, { type: "agents", state: agents.state() })
   void service.get().catch(() => undefined)
 }
 
@@ -86,7 +87,7 @@ async function receive(panel: Panel, message: ToBackground) {
       post(panel, { type: "approvals", approvals: pendingApprovals() })
       post(panel, { type: "access", requests: pendingAccess() })
       post(panel, { type: "tabRequests", requests: pendingTabRequests() })
-      post(panel, { type: "browserControl", state: control.state() })
+      post(panel, { type: "agents", state: agents.state() })
       link.start()
       await service.get().catch(() => undefined)
       await sendActiveTab(message.windowID)
@@ -153,14 +154,14 @@ async function receive(panel: Panel, message: ToBackground) {
     case "scripts.refresh":
       await scripts.reconcile()
       return
-    case "browserControl.attach":
-      control.attachTab(message.chromeTabID)
+    case "agents.attach":
+      agents.attachTab(message.chromeTabID)
       return
-    case "browserControl.continue":
-      control.completeHandoff(message.chromeTabID)
+    case "agents.continue":
+      agents.completeHandoff(message.chromeTabID)
       return
-    case "browserControl.reconnect":
-      control.reconnect()
+    case "agents.reconnect":
+      agents.reconnect()
       return
     case "tabRequest.reply": {
       const pending = tabRequests.get(message.id)
@@ -377,7 +378,7 @@ function broadcastAccess() {
 }
 
 /**
- * The toolbar badge shows Browser Control's state for a tab it uses (ON, RUN, WAIT), otherwise how many
+ * The toolbar badge shows the agents' state for a tab they use (ON, RUN, WAIT), otherwise how many
  * enabled site scripts run on the tab's page.
  */
 async function updateBadges(tabs?: chrome.tabs.Tab[]) {
@@ -386,7 +387,7 @@ async function updateBadges(tabs?: chrome.tabs.Tab[]) {
   await Promise.all(
     targets.map(async (tab) => {
       if (tab.id === undefined) return
-      const relay = control.badge(tab.id)
+      const relay = agents.badge(tab.id)
       const count = tab.url ? enabled.filter((script) => appliesTo(script, tab.url!)).length : 0
       const text = relay?.text ?? (count ? String(count) : "")
       await chrome.action.setBadgeText({ tabId: tab.id, text }).catch(() => undefined)
@@ -564,23 +565,33 @@ function broadcast(filter: (panel: Panel) => boolean, message: ToPanel) {
 void chrome.action.setBadgeBackgroundColor({ color: BADGE_COLORS.default })
 void chrome.action.setBadgeTextColor?.({ color: "#ffffff" })
 
-// Content scripts (page status, handoffs) and the recording document talk to Browser Control.
-chrome.runtime.onMessage.addListener((message, sender) => {
-  control.runtimeMessage(message, sender)
-  return false
+// Content scripts (page status, handoffs) and the recording document talk to the relay link; extension
+// pages ask it for diagnostics.
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (agents.runtimeMessage(message, sender)) return false
+  const page = sender.id === chrome.runtime.id && sender.url?.startsWith(`chrome-extension://${chrome.runtime.id}/`)
+  if (!page || typeof message !== "object" || message?.action !== AGENT_DIAGNOSTICS) return false
+  void agents.diagnostics().then(
+    (text) => sendResponse({ text }),
+    (error: unknown) => sendResponse({ text: `Diagnostics failed: ${String(error)}` }),
+  )
+  return true
 })
 
-// Browser Control's toolbar action lets its sessions use the current tab; here the toolbar opens the panel,
-// so that action lives in the icon's menu (and in the panel).
+// The relay's toolbar click lets agents use the current tab; here the toolbar opens the panel, so that
+// action lives in the icon's menu (and in the panel).
 chrome.runtime.onInstalled.addListener((details) => {
-  chrome.contextMenus.create(
-    { id: "browser-control.attach", title: "Let Browser Control use this tab", contexts: ["action"] },
-    () => void chrome.runtime.lastError,
-  )
+  // Replaces items from earlier versions under other ids.
+  void chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create(
+      { id: "agents.attach", title: "Let agents use this tab", contexts: ["action"] },
+      () => void chrome.runtime.lastError,
+    )
+  })
   if (details.reason === "install") void chrome.tabs.create({ url: chrome.runtime.getURL("welcome.html") })
 })
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "browser-control.attach" && tab?.id !== undefined) control.attachTab(tab.id)
+  if (info.menuItemId === "agents.attach" && tab?.id !== undefined) agents.attachTab(tab.id)
 })
 
 chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {

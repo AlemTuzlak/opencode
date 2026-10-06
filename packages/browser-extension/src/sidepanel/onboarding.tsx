@@ -1,11 +1,11 @@
 // Setup pieces shared by the welcome tab and the side panel: the install command, re-checking the opencode
-// service while the user sets it up, how to allow user scripts, and how to fix Browser Control.
+// service while the user sets it up, how to allow user scripts, and what blocks agents from this browser.
 import { Button } from "@opencode/ui/button"
 import { Icon } from "@opencode/ui/icon"
 import { IconButton } from "@opencode/ui/icon-button"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { For, createEffect, createSignal, onCleanup } from "solid-js"
-import type { RelayStatus, ServiceState } from "../shared/protocol"
+import { AGENT_DIAGNOSTICS, type AgentRelayStatus, type ServiceState } from "../shared/protocol"
 
 /** Works with any opencode release; the helper ships as an npm package (packages/browser-extension/cli). */
 export const INSTALL_COMMAND = "npx opencode-browser-cli install"
@@ -123,38 +123,32 @@ export function UserScriptsSteps(props: { onCheck: () => void; class?: string })
   )
 }
 
-export type RelayProblem = Extract<RelayStatus, "conflict" | "rejected" | "incompatible">
+export type AgentRelayProblem = Extract<AgentRelayStatus, "conflict" | "incompatible">
 
-export function relayProblem(status: RelayStatus): RelayProblem | undefined {
-  return status === "conflict" || status === "rejected" || status === "incompatible" ? status : undefined
+export function agentRelayProblem(status: AgentRelayStatus): AgentRelayProblem | undefined {
+  return status === "conflict" || status === "incompatible" ? status : undefined
 }
 
-const problems: Record<RelayProblem, { title: string; short: string; body: string; command?: string }> = {
+const problems: Record<AgentRelayProblem, { title: string; short: string; body: string; command?: string }> = {
   conflict: {
-    title: "The Browser Control extension is also installed",
-    short: "Browser Control extension conflict",
-    body: "It holds Browser Control's connection, so agents can't reach OpenCode Browser. Turn it off or remove it, then reconnect.",
-  },
-  rejected: {
-    title: "Browser Control refused to connect",
-    short: "Browser Control refused to connect",
-    body: "Its relay is older than OpenCode Browser. Restart it, and update Browser Control if this keeps happening:",
-    command: "browser-control relay restart",
+    title: "Agents are using another browser",
+    short: "Agents are using another browser",
+    body: "OpenCode Browser in another browser or profile holds the relay's connection, so agents can't use this one. Quit that browser or turn off OpenCode Browser there, then reconnect.",
   },
   incompatible: {
-    title: "Browser Control needs an update",
-    short: "Browser Control needs an update",
-    body: "Browser Control and OpenCode Browser speak different versions. Update Browser Control, then restart its relay:",
-    command: "browser-control relay restart",
+    title: "OpenCode Browser needs an update",
+    short: "OpenCode Browser needs an update",
+    body: "The relay agents use and this extension speak different versions. Update OpenCode Browser, then reconnect:",
+    command: INSTALL_COMMAND,
   },
 }
 
-export function relayProblemTitle(problem: RelayProblem, short = false) {
+export function agentRelayProblemTitle(problem: AgentRelayProblem, short = false) {
   return short ? problems[problem].short : problems[problem].title
 }
 
-/** What went wrong with Browser Control and how to fix it. */
-export function RelayProblemFix(props: { problem: RelayProblem; onReconnect: () => void; hideTitle?: boolean }) {
+/** What blocks agents from using this browser, and how to fix it. */
+export function AgentRelayFix(props: { problem: AgentRelayProblem; onReconnect: () => void; hideTitle?: boolean }) {
   const info = () => problems[props.problem]
   return (
     <div class="flex min-w-0 flex-col gap-2.5">
@@ -165,23 +159,48 @@ export function RelayProblemFix(props: { problem: RelayProblem; onReconnect: () 
         <p class="text-12-regular leading-[18px] text-v2-text-text-muted">{info().body}</p>
       </div>
       {info().command ? <CommandBlock command={info().command!} /> : null}
-      <div class="flex flex-wrap items-center gap-1">
-        {props.problem === "conflict" ? (
-          <Button variant="neutral" size="small" onClick={() => openExtensionsPage(false)}>
-            Open extensions
-            <Icon name="square-arrow-top-right" size="small" />
-          </Button>
-        ) : null}
-        <Button
-          variant="ghost"
-          size="small"
-          classList={{ "-ms-2": props.problem !== "conflict" }}
-          onClick={() => props.onReconnect()}
-        >
+      <div class="-ms-2 flex flex-wrap items-center gap-1">
+        <Button variant="ghost" size="small" onClick={() => props.onReconnect()}>
           Reconnect
         </Button>
+        <CopyDiagnostics />
       </div>
     </div>
+  )
+}
+
+/** The relay link's state and recent log as text, for a bug report. */
+export async function agentDiagnostics() {
+  const response: unknown = await chrome.runtime.sendMessage({ action: AGENT_DIAGNOSTICS })
+  if (typeof response === "object" && response !== null && "text" in response && typeof response.text === "string")
+    return response.text
+  throw new Error("OpenCode Browser did not answer")
+}
+
+/** Puts the diagnostics on the clipboard. */
+export async function copyAgentDiagnostics() {
+  await navigator.clipboard.writeText(await agentDiagnostics())
+}
+
+export function CopyDiagnostics() {
+  const [state, setState] = createSignal<"idle" | "copied" | "failed">("idle")
+  let timer: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => clearTimeout(timer))
+  return (
+    <Button
+      variant="ghost"
+      size="small"
+      onClick={() => {
+        void copyAgentDiagnostics().then(
+          () => setState("copied"),
+          () => setState("failed"),
+        )
+        clearTimeout(timer)
+        timer = setTimeout(() => setState("idle"), 2_000)
+      }}
+    >
+      {state() === "copied" ? "Copied" : state() === "failed" ? "Couldn't copy" : "Copy diagnostics"}
+    </Button>
   )
 }
 

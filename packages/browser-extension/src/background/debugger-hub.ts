@@ -1,12 +1,12 @@
 export * as DebuggerHub from "./debugger-hub"
 
 // One chrome.debugger attachment per tab, shared by everything in this extension that drives tabs:
-// opencode sessions (browser.* tools) and the Browser Control relay. Chrome allows a single attachment
+// opencode sessions (browser.* tools) and the OpenCode Browser relay's agents. Chrome allows a single attachment
 // per extension per tab, so each user registers as an owner and the tab detaches when the last one leaves.
 
 const owners = new Map<number, Set<string>>()
 const pending = new Map<number, Promise<void>>()
-const RELAY_KEY = "browserControlAttached"
+const RELAY_KEY = "agentRelayAttached"
 
 /** Attaches `owner` to the tab, attaching the debugger only for the first owner. */
 export async function attach(tabId: number, owner: string) {

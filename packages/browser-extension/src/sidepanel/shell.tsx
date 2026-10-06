@@ -7,7 +7,7 @@ import { Logo } from "@opencode/ui/logo"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { Match, Show, Suspense, Switch, createMemo, createSignal, lazy, onCleanup, onMount } from "solid-js"
 import type { SiteScript } from "../shared/site-script"
-import { BrowserControlHandoffDock, BrowserControlMenu, BrowserControlNotice } from "./browser-control"
+import { AgentHandoffDock, AgentRelayNotice, AgentsMenu } from "./agents"
 import { BrowsingAccessDock } from "./browsing-access"
 import { TabRequestDock } from "./tab-request"
 import { Composer, prefillDraft } from "./composer"
@@ -140,7 +140,7 @@ export function Shell() {
             <SessionPicker title={session()?.title || "New conversation"} current={view()} onOpen={open} />
           </Match>
         </Switch>
-        <BrowserControlMenu />
+        <AgentsMenu />
         <Show
           when={running() > 0}
           fallback={
@@ -186,14 +186,14 @@ export function Shell() {
         </Tooltip>
       </header>
       <ConnectionNotice />
-      <BrowserControlNotice />
+      <AgentRelayNotice />
       <Show
         when={!managing()}
         fallback={
           <>
             <SiteScriptsView onTweak={tweak} />
             <div class="flex shrink-0 flex-col gap-1 px-2 empty:hidden [&:not(:empty)]:pb-2">
-              <BrowserControlHandoffDock />
+              <AgentHandoffDock />
               <ScriptApprovalDock />
               <TabRequestDock />
               <BrowsingAccessDock />
@@ -215,7 +215,7 @@ export function Shell() {
                 </p>
               </div>
               <div class="flex shrink-0 flex-col gap-1 px-2 pb-2">
-                <BrowserControlHandoffDock />
+                <AgentHandoffDock />
                 <ScriptApprovalDock />
                 <TabRequestDock />
                 <BrowsingAccessDock />

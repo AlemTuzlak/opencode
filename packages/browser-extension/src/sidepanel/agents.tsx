@@ -1,18 +1,21 @@
-// Browser Control in the panel: a header menu while its relay is connected (the tabs its agents use, and
-// letting them use the active tab), a dock when an agent hands a tab back to the user, and a notice when
-// something blocks the connection. Nothing shows while Browser Control is idle.
+// Agents in the panel (sessions the OpenCode Browser relay runs for the opencode-browser CLI and MCP
+// server): a header menu while the relay is connected (the tabs agents use, and letting them use the
+// active tab), a dock when an agent hands a tab back to the user, and a notice when something blocks the
+// connection. Nothing shows while no relay runs.
 import { DockPrompt } from "@opencode/session-ui/dock-prompt"
 import { Button } from "@opencode/ui/button"
 import { Icon } from "@opencode/ui/icon"
 import { IconButton } from "@opencode/ui/icon-button"
 import { Menu } from "@opencode/ui/menu"
+import { showToast } from "@opencode/ui/toast"
 import { Tooltip } from "@opencode/ui/tooltip"
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
-import type { PageStatus } from "../browser-control/protocol"
+import type { PageStatus } from "../agent-relay/protocol"
 import { Favicon } from "./composer"
 import { useServer } from "./connection"
-import { RelayProblemFix, relayProblem, relayProblemTitle } from "./onboarding"
+import { toastError } from "./format"
+import { AgentRelayFix, agentRelayProblem, agentRelayProblemTitle, copyAgentDiagnostics } from "./onboarding"
 
 type TabInfo = { title: string; url: string; favIconUrl?: string; windowId: number }
 
@@ -70,10 +73,10 @@ function StateDot(props: { status: PageStatus | undefined; class?: string }) {
   )
 }
 
-/** Header button: shown while the relay is connected or still holds tabs. */
-export function BrowserControlMenu() {
+/** Header button: shown while the relay is connected or agents still hold tabs. */
+export function AgentsMenu() {
   const background = useServer().background
-  const relay = () => background.state.browserControl
+  const relay = () => background.state.agents
   const tabs = () => relay().tabs
   const info = createTabInfo(() => tabs().map((tab) => tab.tabId))
   const visible = () => relay().status === "connected" || tabs().length > 0
@@ -86,9 +89,9 @@ export function BrowserControlMenu() {
   }
   const canAttach = () => relay().status === "connected" && !!active()?.shareable && !attached()
   const summary = () => {
-    if (waiting()) return "Browser Control is waiting for you"
-    if (running()) return "Browser Control is working"
-    return "Browser Control"
+    if (waiting()) return "An agent is waiting for you"
+    if (running()) return "An agent is working"
+    return "Agents"
   }
 
   return (
@@ -121,7 +124,7 @@ export function BrowserControlMenu() {
             <Menu.Content class="w-[min(300px,calc(100vw-16px))]">
               <Menu.Group>
                 <div class="flex items-center justify-between gap-2 pe-2.5">
-                  <Menu.GroupLabel>Browser Control</Menu.GroupLabel>
+                  <Menu.GroupLabel>Agents</Menu.GroupLabel>
                   <span class="shrink-0 text-[12px] font-[440] text-v2-text-text-faint">
                     {relay().status === "connected" ? "Connected" : "Reconnecting…"}
                   </span>
@@ -159,13 +162,24 @@ export function BrowserControlMenu() {
                 disabled={!canAttach()}
                 onSelect={() => {
                   const tab = active()
-                  if (tab) background.send({ type: "browserControl.attach", chromeTabID: tab.chromeTabID })
+                  if (tab) background.send({ type: "agents.attach", chromeTabID: tab.chromeTabID })
                 }}
               >
                 <Icon name={attached() ? "check-small" : "plus-small"} size="small" class="shrink-0" />
                 <span class="min-w-0 flex-1 truncate">
-                  {attached() ? "Browser Control can use this tab" : "Let Browser Control use this tab"}
+                  {attached() ? "Agents can use this tab" : "Let agents use this tab"}
                 </span>
+              </Menu.Item>
+              <Menu.Item class="!h-8" 
+                onSelect={() =>
+                  void copyAgentDiagnostics().then(
+                    () => showToast({ variant: "success", description: "Copied diagnostics for a bug report" }),
+                    toastError("Couldn't copy diagnostics"),
+                  )
+                }
+              >
+                <Icon name="copy" size="small" class="shrink-0" />
+                <span class="min-w-0 flex-1 truncate">Copy diagnostics</span>
               </Menu.Item>
             </Menu.Content>
           </Menu.Portal>
@@ -176,10 +190,10 @@ export function BrowserControlMenu() {
 }
 
 /** The oldest tab an agent handed back to the user (a login, 2FA, a payment), above the composer. */
-export function BrowserControlHandoffDock() {
+export function AgentHandoffDock() {
   const background = useServer().background
   const waiting = createMemo(() =>
-    background.state.browserControl.tabs.filter((tab) => tab.status?.state === "waiting" && tab.status.handoffId),
+    background.state.agents.tabs.filter((tab) => tab.status?.state === "waiting" && tab.status.handoffId),
   )
   const info = createTabInfo(() => waiting().map((tab) => tab.tabId))
   // By handoff, so the next one starts answerable.
@@ -224,7 +238,7 @@ export function BrowserControlHandoffDock() {
                     disabled={busy()}
                     onClick={() => {
                       setAnswered(tab().status?.handoffId)
-                      background.send({ type: "browserControl.continue", chromeTabID: tab().tabId })
+                      background.send({ type: "agents.continue", chromeTabID: tab().tabId })
                     }}
                   >
                     {busy() ? "Continuing…" : "Continue"}
@@ -245,7 +259,7 @@ export function BrowserControlHandoffDock() {
                   onClick={() => focusTab(tab().tabId, info[tab().tabId]?.windowId)}
                 >
                   <Favicon url={info[tab().tabId]?.favIconUrl} />
-                  <span class="truncate">{info[tab().tabId]?.title ?? "Browser Control tab"}</span>
+                  <span class="truncate">{info[tab().tabId]?.title ?? "Agent tab"}</span>
                 </button>
               </div>
             </div>
@@ -256,10 +270,10 @@ export function BrowserControlHandoffDock() {
   )
 }
 
-/** A notice under the header when the relay refuses this extension or another extension holds it. */
-export function BrowserControlNotice() {
+/** A notice under the header when the relay speaks another version or another browser holds it. */
+export function AgentRelayNotice() {
   const background = useServer().background
-  const problem = () => relayProblem(background.state.browserControl.status)
+  const problem = () => agentRelayProblem(background.state.agents.status)
   const [open, setOpen] = createSignal(false)
   const [dismissed, setDismissed] = createSignal<string>()
   return (
@@ -269,7 +283,7 @@ export function BrowserControlNotice() {
           <div class="flex h-8 items-center gap-1 bg-v2-state-bg-warning ps-3 pe-1">
             <Icon name="warning" size="small" class="shrink-0 text-v2-state-fg-warning" />
             <span class="ms-1 min-w-0 flex-1 truncate text-12-medium text-v2-text-text-base">
-              {relayProblemTitle(value(), true)}
+              {agentRelayProblemTitle(value(), true)}
             </span>
             <Button
               variant="ghost"
@@ -293,10 +307,10 @@ export function BrowserControlNotice() {
           </div>
           <Show when={open()}>
             <div class="border-t border-v2-border-border-muted px-3 pt-2.5 pb-3 ps-[34px]">
-              <RelayProblemFix
+              <AgentRelayFix
                 problem={value()}
                 hideTitle
-                onReconnect={() => background.send({ type: "browserControl.reconnect" })}
+                onReconnect={() => background.send({ type: "agents.reconnect" })}
               />
             </div>
           </Show>

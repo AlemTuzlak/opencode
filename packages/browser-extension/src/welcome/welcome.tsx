@@ -1,4 +1,4 @@
-// The first-run tab: a live checklist for connecting to opencode, allowing site scripts, Browser Control,
+// The first-run tab: a live checklist for connecting to opencode, allowing site scripts, agents,
 // and opening the side panel. It watches the background's setup status over its own port.
 import { Button } from "@opencode/ui/button"
 import { Icon } from "@opencode/ui/icon"
@@ -10,7 +10,7 @@ import { createStore, reconcile } from "solid-js/store"
 import {
   WELCOME_PORT,
   type FromWelcome,
-  type RelayState,
+  type AgentRelayState,
   type ServiceState,
   type ToWelcome,
 } from "../shared/protocol"
@@ -20,13 +20,13 @@ import {
   INSTALL_COMMAND,
   sentence,
   KeyCaps,
-  RelayProblemFix,
+  AgentRelayFix,
   UserScriptsSteps,
   Waiting,
   createServiceWatch,
   createShortcut,
-  relayProblem,
-  relayProblemTitle,
+  agentRelayProblem,
+  agentRelayProblemTitle,
 } from "../sidepanel/onboarding"
 
 const reconnectDelay = 300
@@ -35,12 +35,12 @@ function createStatus() {
   const [state, setState] = createStore<{
     service: ServiceState
     scripts: SiteScriptsState
-    browserControl: RelayState
+    agents: AgentRelayState
   }>({
     service: { status: "loading" },
     // Assume allowed until the worker says otherwise, so the step does not flash its instructions.
     scripts: { available: true, scripts: [] },
-    browserControl: { status: "offline", tabs: [] },
+    agents: { status: "offline", tabs: [] },
   })
   let port: chrome.runtime.Port | undefined
   let disposed = false
@@ -51,7 +51,7 @@ function createStatus() {
     next.onMessage.addListener((message: ToWelcome) => {
       if (message.type === "service") return setState("service", message.state)
       if (message.type === "scripts") return setState("scripts", reconcile(message.state))
-      if (message.type === "browserControl") setState("browserControl", reconcile(message.state))
+      if (message.type === "agents") setState("agents", reconcile(message.state))
     })
     // The worker may restart at any time; reconnect and it sends the current status again.
     next.onDisconnect.addListener(() => {
@@ -127,8 +127,8 @@ function Page() {
     document.removeEventListener("visibilitychange", recheck)
   })
 
-  const relay = () => status.state.browserControl.status
-  const problem = () => relayProblem(relay())
+  const relay = () => status.state.agents.status
+  const problem = () => agentRelayProblem(relay())
   const ready = () => {
     const state = service.state()
     return state.status === "ready" ? state.info : undefined
@@ -236,7 +236,7 @@ function Page() {
 
           <Step
             n={3}
-            title="Browser Control"
+            title="Agents"
             marker={problem() ? "attention" : "done"}
             label={
               <Switch fallback={<StatusLabel>Idle</StatusLabel>}>
@@ -254,19 +254,19 @@ function Page() {
               fallback={
                 <Description>
                   {relay() === "connected"
-                    ? "Connected. Browser Control agents can use the tabs you let them."
-                    : "Ready. It connects on its own when an agent starts using Browser Control."}
+                    ? "Connected. Agents can use the tabs they open and the ones you let them use."
+                    : "Ready. Agents using the opencode-browser CLI or MCP server connect on their own."}
                 </Description>
               }
             >
               {(value) => (
                 <>
-                  <Description>{relayProblemTitle(value())}.</Description>
+                  <Description>{agentRelayProblemTitle(value())}.</Description>
                   <div class="mt-2">
-                    <RelayProblemFix
+                    <AgentRelayFix
                       problem={value()}
                       hideTitle
-                      onReconnect={() => status.send({ type: "browserControl.reconnect" })}
+                      onReconnect={() => status.send({ type: "agents.reconnect" })}
                     />
                   </div>
                 </>

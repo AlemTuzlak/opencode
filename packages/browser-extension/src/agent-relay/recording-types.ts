@@ -1,4 +1,4 @@
-// Ported from anomalyco/browser-control extension/src/recording-types.ts.
+// Messages between the background and the recording offscreen document.
 export type ChromeTabCaptureAudioConstraints = {
   readonly mandatory: {
     readonly chromeMediaSource: "tab"
@@ -35,7 +35,7 @@ export type OffscreenStatusRecordingMessage = {
   readonly tabId: number
 }
 
-export type OffscreenCancelRecordingMessage = {
+type OffscreenCancelRecordingMessage = {
   readonly action: "recording.cancel"
   readonly tabId: number
 }

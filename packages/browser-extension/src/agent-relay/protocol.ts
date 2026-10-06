@@ -1,12 +1,21 @@
-// The Browser Control relay's extension protocol (version 2), ported from anomalyco/browser-control
-// src/protocol.ts and src/recording-protocol.ts. OpenCode Browser speaks it so the relay, its CLI, and
-// its MCP server drive tabs through this extension. Keep it in step with the relay.
+// The extension side of the OpenCode Browser relay's protocol (version 2). The relay (cli/src/relay.ts)
+// runs agent sessions for the opencode-browser CLI and MCP server and drives tabs through this extension.
+// Keep it in step with cli/src/protocol.ts and cli/src/recording-protocol.ts.
 
 type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue }
 export type JsonObject = { readonly [key: string]: JsonValue }
 
 export const extensionProtocolVersion = 2
+
+/** The relay's default port (cli/src/relay-helpers.ts defaultPort). */
+export const defaultRelayPort = 19988
+
+/**
+ * Chrome's minimum alarm period. A disconnected extension's MV3 worker sleeps until this alarm fires, so the
+ * relay waits at least this long for the extension to reconnect.
+ */
+export const extensionReconnectAlarmPeriodMs = 30_000
 
 export type PageStatus = {
   readonly state: "attached" | "running" | "waiting"
@@ -17,7 +26,7 @@ export type PageStatus = {
   readonly handoffId?: string
 }
 
-const commandMethods = [
+export const commandMethods = [
   "ping",
   "debugger.attach",
   "debugger.detach",
@@ -31,7 +40,6 @@ const commandMethods = [
   "pageStatus.set",
   "pageStatus.clear",
   "runtime.reload",
-  "profile.rename",
   "recording.start",
   "recording.stop",
   "recording.status",
