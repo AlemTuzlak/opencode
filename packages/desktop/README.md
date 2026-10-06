@@ -40,6 +40,15 @@ CLI preparation uses these channel rules:
 default. `bun dev --download-server <version>` instead downloads that CLI version for local development. Neither path
 requires `OPENCODE_CLI_DIST` or runs the production prebuild.
 
+To run alongside another dev instance, use a separate profile and ports:
+
+```bash
+OPENCODE_DESKTOP_TEST_ROOT="$TMPDIR/opencode-desktop-worktree" \
+OPENCODE_DESKTOP_SERVER_PORT=3085 \
+OPENCODE_DESKTOP_REMOTE_DEBUGGING_PORT=9223 \
+bun dev
+```
+
 ## Startup benchmark
 
 `bun run bench:startup` measures a **packaged** build from process spawn to the restored tab being ready and the
