@@ -14,6 +14,7 @@ import workspaceNameMigration from "@opencode/core/database/migration/2026041017
 import { Database } from "@opencode/core/database/database"
 import { tmpdir } from "./fixture/tmpdir"
 import legacyCredentialsMigration from "@opencode/core/database/migration/20260805200742_import_legacy_credentials"
+import keyCredentialConfigurationMigration from "@opencode/core/database/migration/20261006120000_key_credential_configuration"
 import worktreeMigration from "@opencode/core/database/migration/20260812213948_worktree"
 import previousV2Migration from "@opencode/core/database/migration/20260804233008_loose_psylocke"
 import workspaceMigration from "@opencode/core/database/migration/20260808023530_workspace_domain"
@@ -484,7 +485,7 @@ describe("DatabaseMigration", () => {
             {
               integration_id: "google",
               label: "API key",
-              value: JSON.stringify({ type: "key", key: "google-key", metadata: { region: "us" } }),
+              value: JSON.stringify({ type: "key", key: "google-key", configuration: { region: "us" } }),
             },
             {
               integration_id: "https://example.com",
@@ -513,6 +514,63 @@ describe("DatabaseMigration", () => {
     )
 
     expect(await Bun.file(source).text()).toBe(content)
+  })
+
+  test("moves imported API key metadata into configuration", async () => {
+    const values = {
+      azure: { type: "key", key: "azure-key", metadata: { resourceName: "legacy-resource" } },
+      cloudflare: {
+        type: "key",
+        key: "cloudflare-key",
+        metadata: { accountId: "legacy-account", gatewayId: "legacy-gateway" },
+        configuration: { accountId: "current-account" },
+      },
+      nested: { type: "key", key: "nested-key", metadata: { nested: { value: true } } },
+      plain: { type: "key", key: "plain-key" },
+      oauth: {
+        type: "oauth",
+        methodID: "azure-cli",
+        refresh: "refresh",
+        access: "access",
+        expires: 123,
+        metadata: { resourceName: "cli-resource" },
+      },
+    }
+
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+        const now = Date.now()
+        yield* Effect.forEach(Object.entries(values), ([id, value]) =>
+          db.run(sql`
+            INSERT INTO credential (id, integration_id, label, value, time_created, time_updated)
+            VALUES (${id}, ${id}, 'API key', ${JSON.stringify(value)}, ${now}, ${now})
+          `),
+        )
+
+        yield* db.run(sql`DELETE FROM migration WHERE id = ${keyCredentialConfigurationMigration.id}`)
+        yield* DatabaseMigration.applyOnly(db, [keyCredentialConfigurationMigration])
+
+        expect(yield* db.all(sql`SELECT id, value FROM credential ORDER BY id`)).toEqual([
+          {
+            id: "azure",
+            value: JSON.stringify({ type: "key", key: "azure-key", configuration: { resourceName: "legacy-resource" } }),
+          },
+          {
+            id: "cloudflare",
+            value: JSON.stringify({
+              type: "key",
+              key: "cloudflare-key",
+              configuration: { accountId: "current-account", gatewayId: "legacy-gateway" },
+            }),
+          },
+          { id: "nested", value: JSON.stringify(values.nested) },
+          { id: "oauth", value: JSON.stringify(values.oauth) },
+          { id: "plain", value: JSON.stringify(values.plain) },
+        ])
+      }),
+    )
   })
 
   test("skips legacy credential import when the source file is absent", async () => {

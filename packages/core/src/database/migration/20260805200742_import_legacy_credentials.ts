@@ -63,7 +63,7 @@ export function importLegacyCredentials(tx: Parameters<DatabaseMigration.Migrati
 
       const credential =
         value.type === "api"
-          ? Credential.Key.make({ type: "key", key: value.key, metadata: value.metadata })
+          ? Credential.Key.make({ type: "key", key: value.key, configuration: value.metadata })
           : value.type === "wellknown"
             ? Credential.Key.make({ type: "key", key: value.token })
             : Credential.OAuth.make({
