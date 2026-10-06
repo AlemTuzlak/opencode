@@ -7,6 +7,7 @@
 // The host answers the extension with the URL and password of the user's own opencode service, found with
 // `opencode service start` and `opencode service get password`, and installs the extension's plugin.
 import { spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, chmodSync, appendFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
@@ -146,7 +147,23 @@ function configFile() {
   return candidates.find((file) => existsSync(file) && statSync(file).isFile()) ?? candidates[0]!
 }
 
-type Servers = Record<string, { command?: unknown }>
+type Servers = Record<string, { type?: unknown; command?: unknown; environment?: unknown }>
+
+/** Changes whenever the installed runtime does. */
+function fingerprint(entry: string) {
+  return createHash("sha256").update(readFileOr(entry, entry)).digest("hex").slice(0, 16)
+}
+
+/**
+ * After an update, a relay still running the old build refuses the new CLI and MCP server; restart it from
+ * the new runtime. Restarting keeps browser tabs open but ends in-flight agent work, so it's announced.
+ */
+function restartOutdatedRelay(entry: string, node: string) {
+  const status = spawnSync(node, [entry, "status", "--json"], { encoding: "utf8", timeout: 15_000 })
+  if (!/"stale":\s*true/.test(status.stdout ?? "")) return undefined
+  const restart = spawnSync(node, [entry, "relay", "restart"], { encoding: "utf8", timeout: 60_000 })
+  return restart.status === 0 ? "restarted with the new version" : `could not restart: ${(restart.stderr || restart.stdout).trim()}`
+}
 
 function mcpServers() {
   return ((parse(readFileOr(configFile(), "{}")) ?? {}) as { mcp?: { servers?: Servers } }).mcp?.servers ?? {}
@@ -156,9 +173,12 @@ function mcpServers() {
 function configureMcp(entry: string) {
   const file = configFile()
   const text = readFileOr(file, "{}")
-  const server = { type: "local", command: [process.execPath, entry, "mcp"] }
+  // A running MCP server keeps its old code after an update, and its relay calls then fail on the build check.
+  // Stamping the runtime's fingerprint into the entry changes the config whenever the runtime changes, which
+  // makes opencode restart the server with the new code.
+  const server = { type: "local", command: [process.execPath, entry, "mcp"], environment: { OPENCODE_BROWSER_RUNTIME: fingerprint(entry) } }
   const existing = mcpServers()[MCP_NAME]
-  if (existing && JSON.stringify(existing.command) === JSON.stringify(server.command)) return `"${MCP_NAME}" is up to date`
+  if (existing && JSON.stringify(existing) === JSON.stringify(server)) return `"${MCP_NAME}" is up to date`
   const edits = modify(text, ["mcp", "servers", MCP_NAME], server, { formattingOptions: { tabSize: 2, insertSpaces: true } })
   mkdirSync(path.dirname(file), { recursive: true })
   writeFileSync(file, applyEdits(text, edits))
@@ -256,6 +276,8 @@ function install(args: string[]) {
   log(`✓ Registered with ${browsersFound.map((browser) => browser.name).join(", ")}`)
   log(`✓ Using opencode at ${opencode}`)
   log(`✓ MCP server ${configureMcp(entry)}`)
+  const relay = restartOutdatedRelay(entry, node)
+  if (relay) log(`${relay.startsWith("restarted") ? "✓" : "!"} Relay ${relay}`)
   const legacy = legacyBrowserControl()
   if (legacy.length)
     log(`! Browser Control MCP server${legacy.length === 1 ? "" : "s"} ${legacy.map((name) => `"${name}"`).join(", ")} also configured. OpenCode Browser replaces it; remove ${legacy.length === 1 ? "it" : "them"} from ${configFile()} to avoid two sets of browser tools.`)
