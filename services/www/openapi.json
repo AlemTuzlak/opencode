@@ -13511,6 +13511,9 @@
           "worktree": {
             "$ref": "#/components/schemas/Config.Worktree"
           },
+          "plan": {
+            "$ref": "#/components/schemas/Config.Plan"
+          },
           "warming": {
             "anyOf": [
               {
@@ -13783,6 +13786,16 @@
           }
         },
         "required": ["shell"],
+        "additionalProperties": false
+      },
+      "Config.Plan": {
+        "type": "object",
+        "properties": {
+          "directory": {
+            "type": "string"
+          }
+        },
+        "required": ["directory"],
         "additionalProperties": false
       },
       "Config.Plugin.EntryEncoded": {

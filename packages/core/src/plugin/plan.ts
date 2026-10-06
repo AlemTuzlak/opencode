@@ -7,6 +7,9 @@ import type { SessionEvent } from "@opencode/schema/session-event"
 import { Global } from "@opencode/util/global"
 import { Effect, Stream } from "effect"
 import path from "path"
+import { Config } from "../config.js"
+import { ConfigEntryObserver } from "../config/plugin/entry-observer.js"
+import { FileAccess } from "../file-access.js"
 import { Permission } from "../permission.js"
 
 const plan = Agent.ID.make("plan")
@@ -27,18 +30,29 @@ You are NO LONGER in Plan mode. The previous Plan restrictions no longer apply. 
 export const Plugin = define({
   id: "opencode.plan",
   effect: Effect.fn(function* (ctx) {
+    const config = yield* Config.Service
     const global = yield* Global.Service
-    const directory = path.join(global.home, ".opencode", "plan")
-    const enterReminder = enter(directory)
+    const loaded = yield* ConfigEntryObserver.observe(config, ctx.event, ctx.agent.reload())
+    const directory = () =>
+      FileAccess.resolvePath(
+        ctx.location.project.directory,
+        Config.latest(loaded.entries, "plan")?.directory ?? "~/.opencode/plan",
+        global.home,
+      )
     yield* ctx.agent.transform((editor) => {
+      const dir = directory()
       editor.update(plan, (item) => {
         item.name = Agent.Name.make("Plan")
         item.description = "Read-only agent for exploring the codebase and planning work before implementation."
         item.mode = "primary"
         item.permissions.push({ action: "question", resource: "*", effect: "allow" })
         item.permissions.push({ action: "edit", resource: "*", effect: "deny" })
-        item.permissions.push({ action: "edit", resource: path.join(directory, "*"), effect: "allow" })
-        item.permissions.push({ action: "external_directory", resource: path.join(directory, "*"), effect: "allow" })
+        item.permissions.push({
+          action: "edit",
+          resource: path.join(FileAccess.resource(ctx.location, dir), "*"),
+          effect: "allow",
+        })
+        item.permissions.push({ action: "external_directory", resource: path.join(dir, "*"), effect: "allow" })
       })
     })
 
@@ -48,7 +62,7 @@ export const Plugin = define({
       if (event.tool !== "edit" && event.tool !== "write" && event.tool !== "patch") return Effect.void
       if (!(event.error.error instanceof Permission.BlockedError)) return Effect.void
       event.error = new ToolFailure({
-        message: `Cannot use ${event.tool} to modify files outside the Plan directory: ${directory}`,
+        message: `Cannot use ${event.tool} to modify files outside the Plan directory: ${directory()}`,
       })
       return Effect.void
     })
@@ -56,6 +70,7 @@ export const Plugin = define({
     // Compaction and committed reverts can strip reminders while the session's agent stays
     // put. Reconcile per request, appending near the tail so the cached prefix stays warm.
     yield* ctx.session.hook("context", (event) => {
+      const enterReminder = enter(directory())
       const reminder = lastReminder(event.messages, enterReminder)
       const missing = event.agent === plan && reminder !== enterReminder
       const stale = event.agent !== plan && reminder === enterReminder
@@ -79,7 +94,7 @@ export const Plugin = define({
           event.type === "session.created" || event.type === "session.agent.selected",
       ),
       Stream.runForEach((event) => {
-        const text = switchReminder(event, enterReminder)
+        const text = switchReminder(event, enter(directory()))
         if (!text) return Effect.void
         return ctx.session
           .synthetic({

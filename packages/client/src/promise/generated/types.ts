@@ -443,6 +443,8 @@ export type McpProtocol = "legacy" | "auto" | "2026-07-28"
 
 export type ConfigWorktree = { directory: string }
 
+export type ConfigPlan = { directory: string }
+
 export type ConfigModelCapabilities = { tools?: boolean; input?: Array<string>; output?: Array<string> }
 
 export type ConfigShellOption = { path: string; name: string; acceptable: boolean }
@@ -2148,6 +2150,7 @@ export type ConfigEntry =
         websearch?: false | { provider: "random" | (string & {}) }
         plugins?: Array<string | { package: string; options?: { [x: string]: JsonValue } }>
         worktree?: ConfigWorktree
+        plan?: ConfigPlan
         warming?: boolean | { prompt?: string; interval?: string; duration?: string }
         providers?: {
           [x: string]: {
