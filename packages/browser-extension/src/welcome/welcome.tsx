@@ -16,7 +16,9 @@ import {
 } from "../shared/protocol"
 import type { SiteScriptsState } from "../shared/site-script"
 import {
+  CONNECT_COMMAND,
   CommandBlock,
+  ConnectForm,
   INSTALL_COMMAND,
   sentence,
   KeyCaps,
@@ -137,6 +139,8 @@ function Page() {
     const state = service.state()
     return state.status === "error" ? state : undefined
   }
+  const unpaired = () => service.state().status === "unpaired"
+  const [manual, setManual] = createSignal(false)
   const host = (url: string) => {
     try {
       return new URL(url).host
@@ -164,14 +168,14 @@ function Page() {
           <Step
             n={1}
             title="Connect to opencode"
-            marker={ready() ? "done" : failure()?.hostMissing ? "todo" : failure() ? "attention" : "loading"}
+            marker={ready() ? "done" : unpaired() ? "todo" : failure() ? "attention" : "loading"}
             label={
               <Switch fallback={<StatusLabel>Checking…</StatusLabel>}>
                 <Match when={ready()}>
                   <StatusLabel tone="success">Connected</StatusLabel>
                 </Match>
-                <Match when={failure()?.hostMissing}>
-                  <StatusLabel>Not set up</StatusLabel>
+                <Match when={unpaired()}>
+                  <StatusLabel>Not connected</StatusLabel>
                 </Match>
                 <Match when={failure()}>
                   <StatusLabel tone="warning">Not reachable</StatusLabel>
@@ -183,29 +187,38 @@ function Page() {
               <Match when={ready()}>
                 {(info) => (
                   <Description>
-                    Using opencode at <span class="text-v2-text-text-base">{host(info().url)}</span>
-                    {info().source === "manual" ? ", set manually." : "."}
+                    Using opencode at <span class="text-v2-text-text-base">{host(info().url)}</span>.
                   </Description>
                 )}
               </Match>
-              <Match when={failure()?.hostMissing}>
+              <Match when={unpaired()}>
                 <Description>
-                  OpenCode Browser reaches opencode through a small helper. Run this once in a terminal. It installs the
-                  helper and starts opencode.
+                  Run this once in a terminal. It sets up OpenCode Browser, starts opencode, and opens a page here that
+                  connects this browser.
                 </Description>
                 <CommandBlock command={INSTALL_COMMAND} class="mt-3" />
-                <Waiting checking={service.checking()} onRetry={service.retry}>
-                  Waiting for opencode. This page updates on its own.
-                </Waiting>
+                <Button
+                  variant="ghost-muted"
+                  size="small"
+                  class="-ms-2 mt-3 self-start"
+                  aria-expanded={manual()}
+                  onClick={() => setManual((value) => !value)}
+                >
+                  Connect a server by hand
+                  <Icon name="chevron-down" size="small" classList={{ "rotate-180": manual() }} />
+                </Button>
+                <Show when={manual()}>
+                  <ConnectForm class="mt-2" />
+                </Show>
               </Match>
               <Match when={failure()}>
                 {(error) => (
                   <>
                     <Description>
-                      <span class="break-words">{sentence(error().message)}</span> Run the install command again to
-                      start opencode.
+                      <span class="break-words">{sentence(error().message)}</span> Start opencode, or run this to
+                      connect again.
                     </Description>
-                    <CommandBlock command={INSTALL_COMMAND} class="mt-3" />
+                    <CommandBlock command={CONNECT_COMMAND} class="mt-3" />
                     <Waiting checking={service.checking()} onRetry={service.retry}>
                       Checking again every few seconds.
                     </Waiting>
@@ -255,7 +268,7 @@ function Page() {
                 <Description>
                   {relay() === "connected"
                     ? "Connected. Agents can use the tabs they open and the ones you let them use."
-                    : "Ready. Agents using the opencode-browser CLI or MCP server connect on their own."}
+                    : "Ready. Agents' browse tools connect on their own."}
                 </Description>
               }
             >

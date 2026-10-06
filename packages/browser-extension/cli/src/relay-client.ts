@@ -27,6 +27,7 @@ import {
   NetworkStopResponse,
   RecordingCancelResponse,
   TabsCleanupResponse,
+  ExtensionRequestResponse,
   type RecordingStartRequest,
   RecordingStartResponse,
   RecordingStatusResponse,
@@ -139,6 +140,8 @@ export interface Interface {
   readonly recordingStatus: (target: RecordingTargetRequest) => Effect.Effect<RecordingStatusResponse, RelayClientError>
   readonly recordingCancel: (target: RecordingTargetRequest) => Effect.Effect<RecordingCancelResponse, RelayClientError>
   readonly tabsCleanup: (idleMinutes?: number) => Effect.Effect<TabsCleanupResponse, RelayClientError>
+  /** Asks the extension for something it owns (site scripts, browsing data, a user's tab); may wait for the user. */
+  readonly extensionRequest: (request: Record<string, unknown>) => Effect.Effect<Record<string, unknown>, RelayClientError>
   readonly flightRecorderStart: (request: FlightRecorderStartRequest) => Effect.Effect<FlightRecorderStatusResponse, RelayClientError>
   readonly flightRecorderStatus: (target: RecordingTargetRequest) => Effect.Effect<FlightRecorderStatusResponse, RelayClientError>
   readonly flightRecorderSaveLast: (request: FlightRecorderSaveRequest) => Effect.Effect<FlightRecorderSaveResponse, RelayClientError>
@@ -297,6 +300,7 @@ export const make = Effect.fn("RelayClient.make")(function* (options?: { readonl
     recordingStatus: (target) => getJson(`/recording/status${recordingTargetQuery(target)}`, RecordingStatusResponse),
     recordingCancel: (target) => postJson("/recording/cancel", recordingTargetBody(target), RecordingCancelResponse),
     tabsCleanup: (idleMinutes) => postJson("/tabs/cleanup", idleMinutes === undefined ? {} : { idleMinutes }, TabsCleanupResponse),
+    extensionRequest: (request) => postJson("/extension/request", { request }, ExtensionRequestResponse),
     flightRecorderStart: ({ sessionId, tabId, ...request }) =>
       postJson("/flight-recorder/start", { ...recordingTargetBody({ sessionId, tabId }), ...request }, FlightRecorderStatusResponse),
     flightRecorderStatus: (target) => getJson(`/flight-recorder/status${recordingTargetQuery(target)}`, FlightRecorderStatusResponse),

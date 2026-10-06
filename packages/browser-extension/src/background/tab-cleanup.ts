@@ -1,8 +1,8 @@
 export * as TabCleanup from "./tab-cleanup"
 
 // Closes tabs agents opened once nobody has touched them for a while, so agent work doesn't leave a trail of
-// tabs behind. Only tabs an agent created are tracked (opencode conversations' browser.tabs.open and the
-// relay's tabs.create); tabs the user shared are never closed. A tab is "touched" when an agent sends it a
+// tabs behind. Only tabs an agent created are tracked (the relay's
+// tabs.create); tabs the user shared are never closed. A tab is "touched" when an agent sends it a
 // command or the user switches to it. A tab the user claims (pins, or drags out of the agent's group) is
 // forgotten. `cleanup()` runs every few minutes from an alarm and on demand (panel, relay `tabs.cleanup`).
 

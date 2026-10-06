@@ -4,7 +4,7 @@
 import type { PageStatus } from "../agent-relay/protocol"
 import type { SiteScriptApproval, SiteScriptDraft, SiteScriptsState } from "./site-script"
 
-/** The link to the OpenCode Browser relay, which runs agent sessions for the opencode-browser CLI and MCP server. */
+/** The link to the OpenCode Browser relay, which runs agent sessions for the browse MCP server and CLI. */
 export type AgentRelayStatus =
   /** No relay is running yet; the CLI or MCP server starts one on demand. */
   | "offline"
@@ -28,41 +28,32 @@ export const PANEL_PORT = "opencode-browser.panel"
 /** The welcome tab's port: it only watches setup status and asks for re-checks; it is not a panel. */
 export const WELCOME_PORT = "opencode-browser.welcome"
 
-export type ServiceInfo = { url: string; password: string; source: "host" | "manual" }
+/**
+ * A saved opencode server. `secret` is a pairing token (`kind: "token"`, renewed automatically) or the service
+ * password (`kind: "password"`). It stays in the background worker; panels get only the active server's.
+ */
+export type Server = { id: string; name: string; url: string; secret: string; kind: "token" | "password" }
+
+/** A saved server as panels list it, without its secret. */
+export type ServerSummary = Omit<Server, "secret"> & { active: boolean }
+
+/** The active server: what a panel connects to. `password` is the token or password, sent as Basic auth. */
+export type ServiceInfo = { id: string; name: string; url: string; password: string; kind: Server["kind"] }
 
 export type ServiceState =
   | { status: "loading" }
   | { status: "ready"; info: ServiceInfo }
-  | { status: "error"; message: string; hostMissing: boolean }
+  /** No server saved yet: run `npx opencode-browser-cli install`, or connect one by hand. */
+  | { status: "unpaired" }
+  | { status: "error"; message: string }
 
 /**
- * - idle: no attachment requested for this session.
- * - connecting: attaching or reconnecting after a dropped connection.
- * - connected: the agent can use this session's tabs.
- * - replaced: another client (usually the desktop app) took the session's browser.
- * - unsupported: the server has no compatible browser plugin.
+ * chrome.runtime.sendMessage from an extension page (connect.html, the welcome tab, the panel's setup): connect a
+ * server with a pairing code or, failing that, the service password. Answers a ConnectResponse.
  */
-export type BrowserStatus = "idle" | "connecting" | "connected" | "replaced" | "unsupported"
-
-export type PanelTab = {
-  /** The tab ID the agent sees, `tab_<uuid>`. */
-  id: string
-  chromeTabID: number
-  title: string
-  url: string
-  favIconUrl?: string
-  /** opened: the agent opened it. shared: the user shared an existing tab. */
-  kind: "opened" | "shared"
-  active: boolean
-  loading: boolean
-}
-
-export type BrowserState = {
-  sessionID: string
-  status: BrowserStatus
-  error?: string
-  tabs: PanelTab[]
-}
+export const CONNECT_REQUEST = "servers.connect"
+export type ConnectRequest = { action: typeof CONNECT_REQUEST; url: string; secret: string }
+export type ConnectResponse = { ok: true; name: string } | { ok: false; message: string }
 
 export type ActiveTab = {
   chromeTabID: number
@@ -71,8 +62,8 @@ export type ActiveTab = {
   favIconUrl?: string
   /** http(s) pages only; browser pages and the web store cannot be debugged. */
   shareable: boolean
-  /** The session that already has this tab, if any. */
-  sessionID?: string
+  /** Whether agents (the browse tools) can use this tab. */
+  shared: boolean
 }
 
 /** Optional manifest permissions, requested from the side panel the first time the user allows access. */
@@ -86,7 +77,7 @@ export type AccessRequest = {
   reason: "history" | "bookmarks" | "top_sites" | "recently_closed"
 }
 
-/** A conversation asking the user to share one of their open tabs (browser.tabs.request). */
+/** An agent asking the user to share one of their open tabs (browse's tabs_request). */
 export type TabRequest = {
   id: string
   sessionID: string
@@ -99,16 +90,8 @@ export type TabRequest = {
 export type ToBackground =
   | { type: "panel.hello"; windowID: number }
   | { type: "service.refresh" }
-  | { type: "service.manual"; url: string; password: string }
-  | { type: "service.clearManual" }
-  /** Show this session in the panel: attach its browser unless the user turned it off. */
-  | { type: "session.show"; sessionID: string; directory: string; workspaceID?: string }
-  | { type: "session.hide" }
-  /** Take the session's browser back after another client replaced it. */
-  | { type: "browser.takeover"; sessionID: string }
-  | { type: "tab.share"; sessionID: string; chromeTabID: number }
-  | { type: "tab.unshare"; sessionID: string; tabID: string }
-  | { type: "tab.focus"; sessionID: string; tabID: string }
+  | { type: "servers.use"; id: string }
+  | { type: "servers.remove"; id: string }
   /** The user installed a script from the panel (for example a userscript in a reply); no approval needed. */
   | { type: "scripts.install"; draft: SiteScriptDraft }
   | { type: "scripts.setEnabled"; id: string; enabled: boolean }
@@ -121,8 +104,10 @@ export type ToBackground =
   | { type: "access.reply"; id: string; allow: boolean }
   /** The user's answer to a request to share a tab. */
   | { type: "tabRequest.reply"; id: string; allow: boolean }
-  /** Let agents (the opencode-browser CLI and MCP server) use this tab. */
+  /** Toggle whether agents (the browse tools) may use this tab. */
   | { type: "agents.attach"; chromeTabID: number }
+  /** Let agents use this tab (no-op when they already can). */
+  | { type: "agents.share"; chromeTabID: number }
   /** Answer an agent's handoff on this tab, the same as the page's Continue button. */
   | { type: "agents.continue"; chromeTabID: number }
   | { type: "agents.reconnect" }
@@ -130,8 +115,7 @@ export type ToBackground =
   | { type: "tabs.cleanup" }
 
 export type ToPanel =
-  | { type: "service"; state: ServiceState }
-  | { type: "browser"; state: BrowserState }
+  | { type: "service"; state: ServiceState; servers: ServerSummary[] }
   | { type: "activeTab"; tab: ActiveTab | null }
   /** A panel request failed, for example sharing a tab the browser will not let extensions debug. */
   | { type: "error"; message: string }
@@ -143,8 +127,6 @@ export type ToPanel =
   /** Sessions asking to read browsing history, bookmarks, top sites, and recently closed tabs. */
   | { type: "access"; requests: AccessRequest[] }
   | { type: "tabRequests"; requests: TabRequest[] }
-  /** The agent asked to show a server file (browser.preview) in the panel showing this session. */
-  | { type: "preview"; sessionID: string; path: string }
   /** The OpenCode Browser relay connection and the tabs its agents use. */
   | { type: "agents"; state: AgentRelayState }
 

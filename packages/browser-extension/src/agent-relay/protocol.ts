@@ -1,5 +1,5 @@
 // The extension side of the OpenCode Browser relay's protocol (version 2). The relay (cli/src/relay.ts)
-// runs agent sessions for the opencode-browser CLI and MCP server and drives tabs through this extension.
+// runs agent sessions for the browse MCP server and the opencode-browser CLI, and drives tabs through this extension.
 // Keep it in step with cli/src/protocol.ts and cli/src/recording-protocol.ts.
 
 type JsonPrimitive = string | number | boolean | null
@@ -45,6 +45,7 @@ export const commandMethods = [
   "recording.status",
   "recording.cancel",
   "tabs.cleanup",
+  "extension.request",
 ] as const
 
 export type ExtensionCommand = {

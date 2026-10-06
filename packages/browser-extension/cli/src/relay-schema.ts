@@ -70,6 +70,8 @@ export const SessionAdoptRequest = Schema.Struct({
   sessionId: Schema.optionalKey(Schema.String),
   createIfMissing: Schema.Boolean,
   targetSelection: Schema.optionalKey(TargetSelection),
+  /** The Chrome tab id of an attached tab, as OpenCode Browser's side panel reports it. */
+  tabId: Schema.optionalKey(Schema.Int),
 })
 
 export interface SessionAdoptRequest extends Schema.Schema.Type<typeof SessionAdoptRequest> {}
@@ -238,6 +240,8 @@ export const TargetSummaries = Schema.Array(TargetSummary)
 export const ExtensionStatus = Schema.Struct({
   connected: Schema.Boolean,
   version: Schema.NullOr(Schema.String),
+  /** When the connected extension was built: changes when a reload or update took effect. */
+  build: Schema.optionalKey(Schema.NullOr(Schema.String)),
   protocolVersion: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   protocolCompatible: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
   protocolLegacy: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
@@ -482,6 +486,9 @@ export const RecordingStatusResponse = Schema.Struct({
 })
 
 export interface RecordingStatusResponse extends Schema.Schema.Type<typeof RecordingStatusResponse> {}
+
+export const ExtensionRequestResponse = Schema.Record(Schema.String, Schema.Unknown)
+export type ExtensionRequestResponse = typeof ExtensionRequestResponse.Type
 
 export const TabsCleanupResponse = Schema.Struct({
   closed: Schema.Array(Schema.Struct({ tabId: Schema.Number, title: Schema.String, idleMinutes: Schema.Number })),

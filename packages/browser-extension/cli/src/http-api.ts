@@ -7,6 +7,7 @@ import { NetworkCaptureError } from "./network-capture.ts"
 import {
   HttpRouteError,
   formatHostForUrl,
+  getObject,
   headerValue,
   optionalSessionId,
   readJsonBody,
@@ -52,7 +53,7 @@ export function createHttpRequestHandler(options: {
   readonly relayInstance: { readonly id: string; readonly startedAt: string; readonly pid: number; readonly managed: boolean }
   readonly shutdown: RelayShutdown
   readonly extensionStatus: () => Pick<ExtensionStatus,
-    "connected" | "version" | "protocolVersion" | "protocolCompatible" | "protocolLegacy" | "rejectedConnections" | "cdpClients"
+    "connected" | "version" | "build" | "protocolVersion" | "protocolCompatible" | "protocolLegacy" | "rejectedConnections" | "cdpClients"
   >
   readonly recordingRelay: RecordingRelay
   readonly flightRecorder: FlightRecorderRelay
@@ -62,6 +63,8 @@ export function createHttpRequestHandler(options: {
   readonly cleanupTabs: (idleMinutes: number | undefined) => Effect.Effect<JsonObject, Error>
   /** Reloads the extension so an unpacked install picks up files `install` just replaced. */
   readonly reloadExtension: () => Effect.Effect<JsonObject, Error>
+  /** Site scripts, browsing data, and tab requests: features the extension owns (see ExtensionRequest). */
+  readonly extensionRequest: (request: JsonObject) => Effect.Effect<JsonObject, Error>
 }): (request: http.IncomingMessage, response: http.ServerResponse) => void {
   options.sessions.setUserAttachedPageUrlsProvider(() =>
     options.registry.listRootTargets()
@@ -124,6 +127,16 @@ export function createHttpRequestHandler(options: {
       }))
       return
     }
+    if (pathname === "/extension/request" && request.method === "POST") {
+      run(Effect.gen(function* () {
+        const body = yield* readJsonBody(request)
+        const extensionRequest = getObject(body.request)
+        if (!extensionRequest || typeof extensionRequest.action !== "string")
+          throw new HttpRouteError({ message: "request.action is required", status: 400, code: "invalid-request" })
+        sendJson(response, yield* options.extensionRequest(extensionRequest))
+      }))
+      return
+    }
     if (pathname === "/tabs/cleanup" && request.method === "POST") {
       run(Effect.gen(function* () {
         const body = yield* readJsonBody(request)
@@ -143,6 +156,7 @@ export function createHttpRequestHandler(options: {
       sendJson(response, {
         connected: extensionStatus.connected,
         version: extensionStatus.version,
+        ...(extensionStatus.build === undefined ? {} : { build: extensionStatus.build }),
         ...(extensionStatus.protocolVersion === undefined ? {} : { protocolVersion: extensionStatus.protocolVersion }),
         ...(extensionStatus.protocolCompatible === undefined ? {} : { protocolCompatible: extensionStatus.protocolCompatible }),
         ...(extensionStatus.protocolLegacy === undefined ? {} : { protocolLegacy: extensionStatus.protocolLegacy }),
@@ -459,7 +473,10 @@ function handleCliRequest(options: {
       const request = yield* decodeRequest(SessionAdoptRequest, body, "session adopt")
       const requestedSessionId = optionalSessionId(request.sessionId)
       const allTargets = options.registry.listRootTargets()
-      const candidates = request.targetSelection
+      const byTab = request.tabId === undefined ? undefined : allTargets.find((target) => target.tabId === request.tabId)
+      if (request.tabId !== undefined && !byTab)
+        throw new Error(`Tab ${request.tabId} is not available to agents. Ask the user to share it from the OpenCode Browser side panel, or call tabs_request.`)
+      const candidates = byTab ? [byTab] : request.targetSelection
         ? allTargets
         : (() => {
             const adoptableUserTargets = allTargets.filter((target) =>

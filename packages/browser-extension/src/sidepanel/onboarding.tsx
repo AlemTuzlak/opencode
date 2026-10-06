@@ -3,9 +3,18 @@
 import { Button } from "@opencode/ui/button"
 import { Icon } from "@opencode/ui/icon"
 import { IconButton } from "@opencode/ui/icon-button"
+import { TextField } from "@opencode/ui/text-field"
 import { Tooltip } from "@opencode/ui/tooltip"
-import { For, createEffect, createSignal, onCleanup } from "solid-js"
-import { AGENT_DIAGNOSTICS, type AgentRelayStatus, type ServiceState } from "../shared/protocol"
+import { For, Show, createEffect, createSignal, onCleanup } from "solid-js"
+import { createStore } from "solid-js/store"
+import {
+  AGENT_DIAGNOSTICS,
+  CONNECT_REQUEST,
+  type AgentRelayStatus,
+  type ConnectRequest,
+  type ConnectResponse,
+  type ServiceState,
+} from "../shared/protocol"
 
 /** Works with any opencode release; the helper ships as an npm package (packages/browser-extension/cli). */
 export const INSTALL_COMMAND = "npx opencode-browser-cli install"
@@ -16,30 +25,29 @@ export function sentence(message: string) {
   return /[.!?]$/.test(text) ? text : `${text}.`
 }
 
-type ServiceError = Extract<ServiceState, { status: "error" }>
+type ServiceProblem = Extract<ServiceState, { status: "error" | "unpaired" }>
 
 /**
- * The service state to show while the user fixes setup. A re-check keeps showing the last error instead of
- * flashing a spinner, and an error re-checks itself so running the install command is enough to connect.
+ * The service state to show while the user fixes setup. A re-check keeps showing the last problem instead of
+ * flashing a spinner, and an unreachable server is re-checked on its own. Pairing needs no polling: the connect
+ * page pairs through the background, which reports the new server to every page.
  */
 export function createServiceWatch(input: { state: () => ServiceState; refresh: () => void }) {
-  const [held, setHeld] = createSignal<ServiceError>()
+  const [held, setHeld] = createSignal<ServiceProblem>()
   // Only a re-check the user asked for shows progress; automatic ones stay quiet.
   const [manual, setManual] = createSignal(false)
   createEffect(() => {
     const state = input.state()
-    if (state.status === "error") setHeld(state)
+    if (state.status === "error" || state.status === "unpaired") setHeld(state)
     if (state.status === "ready") setHeld(undefined)
     if (state.status !== "loading") setManual(false)
   })
   createEffect(() => {
-    const error = held()
-    if (!error) return
+    if (held()?.status !== "error") return
     const check = () => {
       if (document.visibilityState === "visible" && input.state().status === "error") input.refresh()
     }
-    // The helper fails fast while it is missing; a running but unreachable server is checked less often.
-    const timer = setInterval(check, error.hostMissing ? 3_000 : 10_000)
+    const timer = setInterval(check, 10_000)
     document.addEventListener("visibilitychange", check)
     onCleanup(() => {
       clearInterval(timer)
@@ -57,6 +65,54 @@ export function createServiceWatch(input: { state: () => ServiceState; refresh: 
       input.refresh()
     },
   }
+}
+
+/** Shown before any server is paired: one command sets everything up and pairs this browser. */
+export const CONNECT_COMMAND = "npx opencode-browser-cli connect"
+
+/**
+ * Connects a server by hand: its URL and a pairing code (`opencode pair`, or the connect command with --no-open)
+ * or the service password (`opencode service get password`).
+ */
+export function ConnectForm(props: { class?: string; onConnected?: (name: string) => void }) {
+  const [form, setForm] = createStore({ url: "http://127.0.0.1:4096", secret: "", busy: false, error: "" })
+  const submit = async () => {
+    setForm({ busy: true, error: "" })
+    const response: ConnectResponse | undefined = await chrome.runtime
+      .sendMessage({ action: CONNECT_REQUEST, url: form.url.trim(), secret: form.secret } satisfies ConnectRequest)
+      .catch((error: unknown) => ({ ok: false as const, message: String(error) }))
+    if (!response?.ok) return setForm({ busy: false, error: response?.message ?? "The extension did not answer." })
+    setForm({ busy: false, secret: "" })
+    props.onConnected?.(response.name)
+  }
+  return (
+    <form
+      class={`flex flex-col gap-3 rounded-xl border border-v2-border-border-muted bg-v2-background-bg-layer-01 p-3 ${props.class ?? ""}`}
+      onSubmit={(event) => {
+        event.preventDefault()
+        void submit()
+      }}
+    >
+      <TextField label="Server URL" value={form.url} onChange={(value) => setForm("url", value)} required />
+      <TextField
+        label="Pairing code or password"
+        type="password"
+        value={form.secret}
+        onChange={(value) => setForm("secret", value)}
+        description="Get a code with: opencode pair. Or use the password from: opencode service get password"
+      />
+      <Show when={form.error}>
+        <p role="alert" class="text-12-regular text-v2-state-fg-danger">
+          {sentence(form.error)}
+        </p>
+      </Show>
+      <div class="flex justify-end">
+        <Button type="submit" variant="neutral" size="normal" disabled={form.busy || !form.url.trim() || !form.secret.trim()}>
+          {form.busy ? "Connecting…" : "Connect"}
+        </Button>
+      </div>
+    </form>
+  )
 }
 
 /** A terminal command with a copy button. */

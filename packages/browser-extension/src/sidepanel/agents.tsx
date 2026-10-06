@@ -1,5 +1,5 @@
-// Agents in the panel (sessions the OpenCode Browser relay runs for the opencode-browser CLI and MCP
-// server): a header menu while the relay is connected (the tabs agents use, and letting them use the
+// Agents in the panel (sessions the OpenCode Browser relay runs for the browse MCP server and the
+// opencode-browser CLI): a header menu while the relay is connected (the tabs agents use, and letting them use the
 // active tab), a dock when an agent hands a tab back to the user, and a notice when something blocks the
 // connection. Nothing shows while no relay runs.
 import { DockPrompt } from "@opencode/session-ui/dock-prompt"

@@ -444,8 +444,9 @@ const sessionAdopt = Command.make(
     session: sessionFlag("Adopt into this OpenCode Browser session, creating it when it does not exist yet; omit to create a fresh readable id"),
     targetUrl: Flag.String("target-url").pipe(Flag.optional, Flag.withDescription("Adopt the attached page whose URL contains this text")),
     targetIndex: Flag.Int("target-index").pipe(Flag.optional, Flag.withDescription("Adopt the attached page at this zero-based target index")),
+    tabId: tabIdFlag("Adopt the user's shared tab with this Chrome tab id (the side panel's browse tabId)"),
   },
-  Effect.fn("Cli.sessionAdopt")(function* ({ session, targetUrl, targetIndex }) {
+  Effect.fn("Cli.sessionAdopt")(function* ({ session, targetUrl, targetIndex, tabId }) {
     const relay = yield* RelayClient.Service
     yield* ensureCliRelayAndExtension()
     const explicitSessionId = Option.getOrUndefined(session) ?? Option.getOrUndefined(yield* sessionIdConfig)
@@ -454,8 +455,9 @@ const sessionAdopt = Command.make(
     if (targetIndexValue !== undefined && targetIndexValue < 0) {
       return yield* Effect.fail(new Error("Target index must be a non-negative integer"))
     }
-    if (targetUrlValue && targetIndexValue !== undefined) {
-      return yield* Effect.fail(new Error("Use only one target selector: --target-url or --target-index"))
+    const tabIdValue = Option.getOrUndefined(tabId)
+    if ([targetUrlValue, targetIndexValue, tabIdValue].filter((value) => value !== undefined).length > 1) {
+      return yield* Effect.fail(new Error("Use only one target selector: --target-url, --target-index, or --tab-id"))
     }
     const targetSelection = targetUrlValue
       ? { urlIncludes: targetUrlValue }
@@ -468,6 +470,7 @@ const sessionAdopt = Command.make(
       ...(explicitSessionId ? { sessionId: explicitSessionId } : {}),
       createIfMissing: true,
       ...(targetSelection ? { targetSelection } : {}),
+      ...(tabIdValue === undefined ? {} : { tabId: tabIdValue }),
     })
     yield* Console.log(`${result.session.created ? "Created and adopted" : "Adopted"} session '${result.session.id}' default page: ${result.adoptedUrl}`)
     if (result.session.created) {
@@ -1030,7 +1033,7 @@ const skill = Command.make(
   {},
   Effect.fn("Cli.skill")(function* () {
     const fs = yield* FileSystem.FileSystem
-    const text = yield* fs.readFileString(path.join(packageRoot, "skills", "opencode-browser", "SKILL.md")).pipe(
+    const text = yield* fs.readFileString(path.join(packageRoot, "skills", "browse", "SKILL.md")).pipe(
       Effect.mapError((cause) => new Error("read opencode-browser skill", { cause })),
     )
     yield* Console.log(text.trimEnd())

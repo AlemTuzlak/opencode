@@ -23,10 +23,10 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 
 type DraftTarget = { sessionID?: string; directory?: string }
 
-// The page context last sent to each session. It goes out only with a prompt from this panel, so the user
-// switching tabs while an agent works (or while chatting from another client) doesn't touch the session.
+// The page context last sent to each session. It goes out as a synthetic message just before a prompt from this
+// panel, and only when it changed, so switching tabs while an agent works (or chatting from another client)
+// doesn't touch the session, and repeated prompts on one page don't repeat it.
 const sentPage = new Map<string, string>()
-const PAGE_KEY = "opencode-browser.page"
 
 const keyFor = (target: DraftTarget) => target.sessionID ?? `new:${target.directory ?? ""}`
 
@@ -143,7 +143,7 @@ export function Composer(props: {
   const busy = () => !!props.sessionID && data.session.status(props.sessionID) === "running"
   const stopping = () => busy() && !ready()
   const activeTab = () => server.background.state.activeTab
-  const includable = () => !props.sessionID && !!activeTab()?.shareable
+  const includable = () => !props.sessionID && !!activeTab()?.shareable && !activeTab()?.shared
 
   const selectAgent = (id: string) => {
     const sessionID = props.sessionID
@@ -162,26 +162,32 @@ export function Composer(props: {
     void server.api.session.interrupt({ sessionID }).catch(toastError("Couldn't stop the session"))
   }
 
-  /** "Which page the user is looking at" for a prompt sent now; resent only when it changed. */
+  /**
+   * "Which page the user is looking at", as a synthetic message admitted (without starting a run) just before a
+   * prompt sent now. A tab shared with agents comes with its Chrome tab id, which the browse tools adopt.
+   */
   const sendPage = (sessionID: string, includedTab?: number) => {
     const tab = activeTab()
-    const shared = server.background.browser(sessionID)?.tabs.find((item) => item.chromeTabID === tab?.chromeTabID)
-    const value = !tab?.url
-      ? "The user is not looking at a web page."
-      : [
-          `The user is looking at: ${tab.title || "Untitled"} (${tab.url}).`,
-          shared
-            ? `It is shared with you as tabID ${shared.id}.`
-            : includedTab === tab.chromeTabID
-              ? "The user shared it with you; find its tabID with browser.tabs.list({})."
-              : tab.shareable
-                ? "It is not shared with you. Call browser.tabs.request({}) to ask the user to share it, or open the URL in your own tab with browser.tabs.open."
-                : "It is a browser page that extensions cannot control.",
-        ].join(" ")
-    if (sentPage.get(sessionID) === value) return Promise.resolve()
-    return server.api.session.instructions.entry
-      .put({ sessionID, key: PAGE_KEY, value })
-      .then(() => void sentPage.set(sessionID, value))
+    if (!tab?.url) return Promise.resolve()
+    const shared = tab.shared || includedTab === tab.chromeTabID
+    const text = [
+      `The user sent the next message from the OpenCode Browser side panel while looking at: ${tab.title || "Untitled"} (${tab.url}).`,
+      shared
+        ? `They shared this tab with agents (browse tabId ${tab.chromeTabID}). To work in it, call the browse tool session_adopt({ tabId: ${tab.chromeTabID} }); execute then drives this tab.`
+        : tab.shareable
+          ? "It is not shared with agents. If you need it, call the browse tool tabs_request (the user approves in the side panel), or open the URL in your own browse session."
+          : "It is a browser page that agents can't control.",
+    ].join(" ")
+    if (sentPage.get(sessionID) === text) return Promise.resolve()
+    return server.api.session
+      .synthetic({
+        sessionID,
+        text,
+        description: "Browser context",
+        metadata: { source: "opencode-browser", url: tab.url, ...(shared ? { tabId: tab.chromeTabID } : {}) },
+        resume: false,
+      })
+      .then(() => void sentPage.set(sessionID, text))
       .catch(() => undefined)
   }
 
@@ -217,15 +223,11 @@ export function Composer(props: {
     setImages(key, [])
     setInclude(false)
     props.onCreate?.(created.id, created.request)
-    void created.request
-      .then(() => {
-        // The background attaches the session's browser on `session.show`, sent by onCreate first.
-        if (tab) server.background.send({ type: "tab.share", sessionID: created.id, chromeTabID: tab.chromeTabID })
-      })
-      .catch((error: unknown) => {
-        restore()
-        toastError("Couldn't start a session")(error)
-      })
+    if (tab) server.background.send({ type: "agents.share", chromeTabID: tab.chromeTabID })
+    void created.request.catch((error: unknown) => {
+      restore()
+      toastError("Couldn't start a session")(error)
+    })
     void data.session
       .prompt({ sessionID: created.id, text: value, files, prepare: () => sendPage(created.id, tab?.chromeTabID) })
       .catch((error: unknown) => {
@@ -333,11 +335,7 @@ export function Composer(props: {
             {(tab) => (
               <Tooltip
                 placement="top"
-                value={
-                  tab().sessionID
-                    ? `Share “${tab().title}” with the new session. It moves from the session using it now.`
-                    : `Share “${tab().title}” with the new session so the agent can use it.`
-                }
+                value={`Share “${tab().title}” with agents so this conversation can use it.`}
               >
                 <Button
                   type="button"

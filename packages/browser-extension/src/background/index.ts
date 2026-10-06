@@ -1,4 +1,5 @@
-// Service worker: routes side panel requests, tracks tabs, and owns each session's browser.
+// Service worker: routes side panel requests, keeps the saved opencode servers, and runs what agents ask of the
+// extension through the browse relay (site scripts, browsing data, sharing a user's tab).
 import {
   AGENT_DIAGNOSTICS,
   BROWSING_PERMISSIONS,
@@ -7,7 +8,12 @@ import {
   type AccessRequest,
   type ActiveTab,
   type FromWelcome,
+  CONNECT_REQUEST,
+  type ConnectRequest,
+  type ConnectResponse,
+  type ServerSummary,
   type ToBackground,
+  type ServiceState,
   type ToPanel,
   type TabRequest,
   type ToWelcome,
@@ -17,19 +23,16 @@ import { appliesTo, hostLabel, type SiteScript, type SiteScriptApproval, type Si
 import { createAgentRelay } from "./agent-relay"
 import { grant, granted, readBrowsing } from "./browsing"
 import { shareable } from "./policy"
-import { createRelayLink } from "./relay-link"
-import { createService } from "./service"
-import { createSessionBrowser, type SessionBrowser } from "./session-browser"
+import { createServers } from "./servers"
 import { TabCleanup } from "./tab-cleanup"
 import { createSiteScripts, type Applied } from "./site-scripts"
 
-type Panel = { port: chrome.runtime.Port; windowID?: number; sessionID?: string }
+type Panel = { port: chrome.runtime.Port; windowID?: number }
 
 const panels = new Set<Panel>()
 /** Welcome tabs: they see setup status but are not panels, so they never answer approvals. */
 const watchers = new Set<chrome.runtime.Port>()
-const browsers = new Map<string, Promise<SessionBrowser>>()
-const service = createService((state) => broadcastStatus({ type: "service", state }))
+const service = createServers((state) => broadcastStatus(serviceMessage(state)))
 const scripts = createSiteScripts((state) => {
   broadcastStatus({ type: "scripts", state })
   void updateBadges()
@@ -37,12 +40,15 @@ const scripts = createSiteScripts((state) => {
 const approvals = new Map<string, { approval: SiteScriptApproval; answer: (approve: boolean) => void }>()
 const accessRequests = new Map<string, { request: AccessRequest; answer: (allow: boolean) => void }>()
 const tabRequests = new Map<string, { request: TabRequest; answer: (allow: boolean) => void }>()
-const link = createRelayLink({ service, run: runRelayCommand })
 const agents = createAgentRelay({
-  changed: (state) => broadcastStatus({ type: "agents", state }),
+  changed: (state) => {
+    broadcastStatus({ type: "agents", state })
+    // Which tabs agents may use changed; the panels' "Share tab" state follows.
+    panelWindows().forEach((id) => void sendActiveTab(id))
+  },
   badgesChanged: () => void updateBadges(),
+  request: (request, signal) => runRelayCommand(request as unknown as RelayCommand, signal),
 })
-let keepalive: ReturnType<typeof setInterval> | undefined
 
 void chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true })
 
@@ -57,12 +63,7 @@ chrome.runtime.onConnect.addListener((port) => {
       post(panel, { type: "error", message: error instanceof Error ? error.message : String(error) })
     })
   })
-  port.onDisconnect.addListener(() => {
-    panels.delete(panel)
-    // Site script requests are relayed while a panel is open, since only a panel can approve them.
-    if (panels.size === 0) link.stop()
-    void release(panel.sessionID)
-  })
+  port.onDisconnect.addListener(() => panels.delete(panel))
 })
 
 function watch(port: chrome.runtime.Port) {
@@ -73,7 +74,7 @@ function watch(port: chrome.runtime.Port) {
     if (message.type === "scripts.refresh") void scripts.reconcile()
     if (message.type === "agents.reconnect") agents.reconnect()
   })
-  postWatcher(port, { type: "service", state: service.state() })
+  postWatcher(port, serviceMessage(service.state()))
   postWatcher(port, { type: "scripts", state: scripts.state() })
   postWatcher(port, { type: "agents", state: agents.state() })
   void service.get().catch(() => undefined)
@@ -83,13 +84,12 @@ async function receive(panel: Panel, message: ToBackground) {
   switch (message.type) {
     case "panel.hello": {
       panel.windowID = message.windowID
-      post(panel, { type: "service", state: service.state() })
+      post(panel, serviceMessage(service.state()))
       post(panel, { type: "scripts", state: scripts.state() })
       post(panel, { type: "approvals", approvals: pendingApprovals() })
       post(panel, { type: "access", requests: pendingAccess() })
       post(panel, { type: "tabRequests", requests: pendingTabRequests() })
       post(panel, { type: "agents", state: agents.state() })
-      link.start()
       await service.get().catch(() => undefined)
       await sendActiveTab(message.windowID)
       return
@@ -97,43 +97,11 @@ async function receive(panel: Panel, message: ToBackground) {
     case "service.refresh":
       await service.refresh().catch(() => undefined)
       return
-    case "service.manual":
-      await service.manual(message.url, message.password).catch(() => undefined)
+    case "servers.use":
+      await service.use(message.id)
       return
-    case "service.clearManual":
-      await service.clearManual().catch(() => undefined)
-      return
-    case "session.show": {
-      const previous = panel.sessionID
-      panel.sessionID = message.sessionID
-      const browser = await ensure(message.sessionID, {
-        directory: message.directory,
-        ...(message.workspaceID ? { workspaceID: message.workspaceID } : {}),
-      }, panel.windowID)
-      browser.want(panel.windowID ?? chrome.windows.WINDOW_ID_CURRENT)
-      post(panel, { type: "browser", state: browser.snapshot() })
-      if (panel.windowID !== undefined) await sendActiveTab(panel.windowID)
-      if (previous !== message.sessionID) await release(previous)
-      return
-    }
-    case "session.hide": {
-      const previous = panel.sessionID
-      panel.sessionID = undefined
-      await release(previous)
-      return
-    }
-    case "browser.takeover":
-      ;(await browsers.get(message.sessionID))?.takeover(panel.windowID ?? chrome.windows.WINDOW_ID_CURRENT)
-      return
-    case "tab.share":
-      await shareTab(message.sessionID, message.chromeTabID)
-      return
-    case "tab.unshare":
-      ;(await browsers.get(message.sessionID))?.unshare(message.tabID)
-      if (panel.windowID !== undefined) await sendActiveTab(panel.windowID)
-      return
-    case "tab.focus":
-      await (await browsers.get(message.sessionID))?.focus(message.tabID)
+    case "servers.remove":
+      await service.remove(message.id)
       return
     case "scripts.install": {
       const result = await scripts.install(message.draft)
@@ -165,6 +133,9 @@ async function receive(panel: Panel, message: ToBackground) {
     }
     case "agents.attach":
       agents.attachTab(message.chromeTabID)
+      return
+    case "agents.share":
+      if (!agents.shared(message.chromeTabID)) agents.attachTab(message.chromeTabID)
       return
     case "agents.continue":
       agents.completeHandoff(message.chromeTabID)
@@ -240,42 +211,23 @@ async function runRelayCommand(command: RelayCommand, signal: AbortSignal): Prom
   }
 }
 
-/** Shares a user's tab with one session; a tab belongs to one session at a time. Returns its tabID. */
-async function shareTab(sessionID: string, chromeTabID: number) {
-  const browser = await browsers.get(sessionID)
-  if (!browser) return undefined
-  await Promise.all(
-    Array.from(browsers.values(), async (other) => {
-      const resolved = await other
-      if (resolved !== browser) resolved.release(chromeTabID)
-    }),
-  )
-  const tabID = await browser.share(chromeTabID)
-  const windows = new Set(Array.from(panels, (panel) => panel.windowID).filter((id) => id !== undefined))
-  await Promise.all(Array.from(windows, (id) => sendActiveTab(id)))
-  return tabID
-}
-
 /**
- * browser.tabs.request: finds the tab the agent asked for (the user's current tab, or an open tab matching
- * its query), asks the user in the panel, and shares it with the session.
+ * browse's tabs_request: finds the tab the agent asked for (the user's current tab, or an open tab matching its
+ * query), asks the user in the panel, and lets agents use it. Returns its Chrome tab id for session_adopt.
  */
 async function requestTab(command: Extract<RelayCommand, { action: "request_tab" }>, signal: AbortSignal) {
-  const browser = await browsers.get(command.sessionID)
-  const showing = Array.from(panels).filter((panel) => panel.sessionID === command.sessionID)
-  if (!browser || !showing.length)
-    throw new Error("No OpenCode Browser side panel is showing this conversation. Ask the user to open it here, then retry.")
+  if (!panels.size)
+    throw new Error("The OpenCode Browser side panel is closed. Ask the user to open it so they can share a tab, then retry.")
   const query = command.query?.trim()
-  const tab = query ? await matchTab(query) : await currentTab(showing.map((panel) => panel.windowID))
+  const tab = query ? await matchTab(query) : await currentTab(Array.from(panels, (panel) => panel.windowID))
   if (!tab?.id)
     throw new Error(
       query
-        ? `No open tab matches "${query}". Ask the user which tab they mean, or open the page yourself with browser.tabs.open.`
+        ? `No open tab matches "${query}". Ask the user which tab they mean, or open the page yourself.`
         : "Could not find the tab the user is looking at.",
     )
   const summary = { title: tab.title || hostLabel(tab.url ?? ""), url: tab.url ?? "" }
-  const existing = browser.tabIDFor(tab.id)
-  if (existing) return { tabID: existing, ...summary, note: "This tab was already available to this conversation." }
+  if (agents.shared(tab.id)) return { tabId: tab.id, ...summary, note: "Agents could already use this tab." }
   if (!shareable(tab.url))
     throw new Error(
       `The ${query ? "matching" : "user's current"} tab (${summary.url || "a browser page"}) is a browser or extension page, which cannot be shared. Ask the user to switch to a regular web page.`,
@@ -303,10 +255,9 @@ async function requestTab(command: Extract<RelayCommand, { action: "request_tab"
     signal.addEventListener("abort", withdraw, { once: true })
     broadcastTabRequests()
   })
-  if (!allowed) throw new Error("The user chose Don't share in the side panel; the tab was not shared with this conversation.")
-  const tabID = await shareTab(command.sessionID, tab.id)
-  if (!tabID) throw new Error("The conversation's browser closed before the tab could be shared. Retry.")
-  return { tabID, ...summary }
+  if (!allowed) throw new Error("The user chose Don't share in the side panel; the tab was not shared.")
+  await agents.share(tab.id)
+  return { tabId: tab.id, ...summary }
 }
 
 /** The active tab in a window showing the conversation, else the last focused window's. */
@@ -474,59 +425,8 @@ function appliedText(script: SiteScript, applied: Applied) {
   return parts.length ? parts.join(" ") : `It applies the next time you open ${sites(script)}.`
 }
 
-function ensure(sessionID: string, location: { directory: string; workspaceID?: string }, windowID?: number) {
-  const existing = browsers.get(sessionID)
-  if (existing) return existing
-  const created = createSessionBrowser({
-    sessionID,
-    location,
-    windowId: windowID ?? chrome.windows.WINDOW_ID_CURRENT,
-    service,
-    preview: (path) => {
-      const showing = Array.from(panels).filter((panel) => panel.sessionID === sessionID)
-      if (!showing.length)
-        throw new Error("No side panel is showing this conversation, so the file cannot be shown. Tell the user the path instead.")
-      showing.forEach((panel) => post(panel, { type: "preview", sessionID, path }))
-    },
-    changed: (state) => {
-      broadcast((panel) => panel.sessionID === sessionID, { type: "browser", state })
-      const windows = new Set(Array.from(panels, (panel) => panel.windowID).filter((id) => id !== undefined))
-      windows.forEach((id) => void sendActiveTab(id))
-    },
-  })
-  browsers.set(sessionID, created)
-  updateKeepalive()
-  return created
-}
-
-/** A session's browser stays while a panel shows it or the agent still has tabs; then it detaches. */
-async function release(sessionID: string | undefined) {
-  if (!sessionID) return
-  if (Array.from(panels).some((panel) => panel.sessionID === sessionID)) return
-  const browser = await browsers.get(sessionID)
-  if (!browser || !browser.empty) return
-  browsers.delete(sessionID)
-  updateKeepalive()
-  await browser.dispose()
-}
-
-// Chrome stops an idle worker after 30 seconds even while a fetch stream is open. Extension API calls
-// reset that timer, so ping one while any session's browser is attached.
-function updateKeepalive() {
-  if (browsers.size > 0 && !keepalive) keepalive = setInterval(() => void chrome.runtime.getPlatformInfo(), 20_000)
-  if (browsers.size === 0 && keepalive) {
-    clearInterval(keepalive)
-    keepalive = undefined
-  }
-}
-
-async function forEachBrowser(callback: (browser: SessionBrowser) => void) {
-  await Promise.all(Array.from(browsers.values(), async (browser) => callback(await browser)))
-}
-
 async function sendActiveTab(windowID: number) {
   const [tab] = await chrome.tabs.query({ active: true, windowId: windowID })
-  const owners = await Promise.all(Array.from(browsers.values()))
   const active: ActiveTab | null = tab?.id
     ? {
         chromeTabID: tab.id,
@@ -534,13 +434,40 @@ async function sendActiveTab(windowID: number) {
         url: tab.url ?? "",
         ...(tab.favIconUrl ? { favIconUrl: tab.favIconUrl } : {}),
         shareable: shareable(tab.url),
-        ...(() => {
-          const owner = owners.find((browser) => browser.owns(tab.id!))
-          return owner ? { sessionID: owner.sessionID } : {}
-        })(),
+        shared: agents.shared(tab.id),
       }
     : null
   broadcast((panel) => panel.windowID === windowID, { type: "activeTab", tab: active })
+}
+
+/** A pairing code is single use and short-lived; anything else is tried as the service password. */
+async function connectServer(url: string, secret: string) {
+  const value = secret.trim()
+  if (!value) throw new Error("Enter a pairing code or the server's password.")
+  return service.pair(url, value).catch((error: unknown) => {
+    if (!/expired or was already used/.test(String(error))) throw error
+    return service.addPassword(url, value).catch((cause: unknown) => {
+      if (/no longer accepts/.test(String(cause))) throw new Error("That is neither a current pairing code nor the server's password.")
+      throw cause
+    })
+  })
+}
+
+function panelWindows() {
+  return new Set(Array.from(panels, (panel) => panel.windowID).filter((id) => id !== undefined))
+}
+
+/** The service state with the saved servers, without their secrets. */
+function serviceMessage(state: ServiceState): Extract<ToPanel, { type: "service" }> {
+  const active = state.status === "ready" ? state.info.id : undefined
+  const servers: ServerSummary[] = service.servers().map((server) => ({
+    id: server.id,
+    name: server.name,
+    url: server.url,
+    kind: server.kind,
+    active: server.id === active,
+  }))
+  return { type: "service", state, servers }
 }
 
 function post(panel: Panel, message: ToPanel) {
@@ -579,6 +506,15 @@ void chrome.action.setBadgeTextColor?.({ color: "#ffffff" })
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (agents.runtimeMessage(message, sender)) return false
   const page = sender.id === chrome.runtime.id && sender.url?.startsWith(`chrome-extension://${chrome.runtime.id}/`)
+  if (page && typeof message === "object" && message?.action === CONNECT_REQUEST) {
+    const request = message as ConnectRequest
+    void connectServer(request.url, request.secret).then(
+      (info) => sendResponse({ ok: true, name: info.name } satisfies ConnectResponse),
+      (error: unknown) =>
+        sendResponse({ ok: false, message: error instanceof Error ? error.message : String(error) } satisfies ConnectResponse),
+    )
+    return true
+  }
   if (!page || typeof message !== "object" || message?.action !== AGENT_DIAGNOSTICS) return false
   void agents.diagnostics().then(
     (text) => sendResponse({ text }),
@@ -604,35 +540,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
 })
 
 chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {
-  void forEachBrowser((browser) => browser.tabUpdated(tab))
   if (change.url || change.status === "loading") void updateBadges([tab])
   if (tab.active && (change.url || change.title || change.favIconUrl || change.status)) void sendActiveTab(tab.windowId)
 })
-chrome.tabs.onActivated.addListener((info) => {
-  void sendActiveTab(info.windowId)
-  // The previously active tab changed too; refresh every owned tab's active flag.
-  void chrome.tabs.query({ windowId: info.windowId }).then((tabs) =>
-    forEachBrowser((browser) => tabs.forEach((tab) => browser.tabUpdated(tab))),
-  )
-})
-chrome.tabs.onRemoved.addListener((tabId) => {
-  void forEachBrowser((browser) => browser.tabRemoved(tabId))
-})
-chrome.webNavigation.onCommitted.addListener((details) => {
-  if (details.frameId !== 0 || details.documentLifecycle === "prerender") return
-  void forEachBrowser((browser) => browser.committed(details.tabId))
-})
-chrome.downloads.onCreated.addListener((item) => {
-  void (async () => {
-    for (const browser of await Promise.all(Array.from(browsers.values()))) if (browser.download(item)) return
-  })()
-})
-chrome.downloads.onChanged.addListener((delta) => {
-  void chrome.downloads.search({ id: delta.id }).then(([item]) => {
-    if (item) void forEachBrowser((browser) => browser.downloadChanged(item))
-  })
-})
-chrome.webNavigation.onErrorOccurred.addListener((details) => {
-  if (details.frameId !== 0) return
-  void forEachBrowser((browser) => browser.loadFailed(details.tabId, details.error))
-})
+chrome.tabs.onActivated.addListener((info) => void sendActiveTab(info.windowId))

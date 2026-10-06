@@ -11,9 +11,9 @@ OpenCode Browser is a browser extension that connects your browser to OpenCode r
 - **History, bookmarks, top sites, and recently closed tabs**, only after you click Allow for a conversation and grant the browser permission.
 
 ## Where it goes
-- To **OpenCode on your computer**, over a local connection (127.0.0.1) found through a helper you install with `npx opencode-browser-cli install`, and to the local Browser Control relay if you use it.
+- To **the OpenCode server you connected**: usually OpenCode on your computer (127.0.0.1), paired with a one-time code from `npx opencode-browser-cli install`. You can also connect another server you run. Agents' browse tools reach your tabs through a local relay on your computer (127.0.0.1).
 - OpenCode may send it to the AI model provider **you** configured in OpenCode, under that provider's terms. The extension itself doesn't choose or contact any provider.
-- Settings, site scripts, and permissions are stored in your browser's extension storage.
+- Settings, site scripts, permissions, and connected servers (address and pairing token) are stored in your browser's extension storage.
 
 Anomaly, the maker of OpenCode, doesn't run a server for this extension and doesn't receive, sell, or share your data. There's no analytics or tracking.
 

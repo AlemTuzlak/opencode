@@ -1,5 +1,5 @@
 // The link to the OpenCode Browser relay (ws://127.0.0.1:19988/extension). The relay runs agent sessions
-// for the opencode-browser CLI and MCP server (Playwright `execute`, recordings, handoffs) and drives tabs
+// for the browse MCP server and the opencode-browser CLI (Playwright `execute`, recordings, handoffs) and drives tabs
 // through this extension; this module runs its commands. The wire protocol is in ../agent-relay/protocol.ts,
 // the relay itself in cli/src/relay.ts.
 import {
@@ -62,7 +62,12 @@ const CLOSE_CODES: Record<number, string> = {
   4004: "another browser or profile is connected",
 }
 
-export function createAgentRelay(input: { changed: (state: AgentRelayState) => void; badgesChanged: () => void }) {
+export function createAgentRelay(input: {
+  changed: (state: AgentRelayState) => void
+  badgesChanged: () => void
+  /** Features the extension owns (site scripts, browsing data, tab requests), asked for by browse tools. */
+  request: (request: JsonObject, signal: AbortSignal) => Promise<unknown>
+}) {
   const log = createAgentRelayLog()
   let socket: WebSocket | undefined
   let starting: Promise<void> | undefined
@@ -171,7 +176,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
       void chrome.runtime.sendMessage({ action: "recording.cancelAll" }).catch(() => undefined)
       if (event.code === 4003) setStatus("incompatible")
       else if (event.code === 4004) setStatus("conflict")
-      // A missing relay is normal until the opencode-browser CLI or MCP server starts one.
+      // A missing relay is normal until an agent's browse tools (or the opencode-browser CLI) start one.
       else setStatus(openedAt === undefined ? "offline" : "connecting")
       schedule(quiet && openedAt === undefined)
     }
@@ -357,10 +362,18 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
         reloading = true
         DebuggerHub.freeze()
         setTimeout(() => {
-          socket?.close(1001, "Extension reloading")
+          // Browsers only let pages close with 1000 or 3000-4999; any other code throws and the reload never runs.
+          socket?.close(1000, "Extension reloading")
           chrome.runtime.reload()
         }, 50)
         return {}
+      case "extension.request": {
+        const request = params?.request
+        if (!isJsonObject(request)) throw new Error("extension.request needs a request object")
+        // The relay gives up after 10 minutes; so does the prompt waiting for the user.
+        const value = await input.request(request, AbortSignal.timeout(10 * 60_000))
+        return isJsonObject(value) ? value : { value: value as JsonObject[string] }
+      }
       case "tabs.cleanup": {
         const minutes = typeof params?.idleMinutes === "number" ? Math.max(0, params.idleMinutes) : undefined
         const closed = await TabCleanup.cleanup(minutes === undefined ? {} : { minutes })
@@ -651,7 +664,21 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
   return {
     state: snapshot,
     badge: (tabId: number) => badges.get(tabId),
-    /** The user lets agents use this tab (the toolbar menu or the panel). */
+    /**
+     * Whether agents can use this tab: they opened it, or the user shared it. A tab shared while no relay runs counts
+     * too; it is attached as soon as an agent's browse tools start the relay.
+     */
+    shared: (tabId: number) => relayTabs.has(tabId) || pendingAttach.has(tabId),
+    /** Lets agents use this tab and waits until the relay has it (it attaches asynchronously). */
+    async share(tabId: number) {
+      if (relayTabs.has(tabId)) return
+      this.attachTab(tabId)
+      for (let waited = 0; waited < 8_000 && !relayTabs.has(tabId); waited += 100)
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      if (!relayTabs.has(tabId))
+        throw new Error("The browse relay did not take the tab. Make sure an agent's browse tools have started (they start the relay), then retry.")
+    },
+    /** The user lets agents use this tab (the toolbar menu or the panel); toggles. */
     attachTab(tabId: number) {
       log.add("attach.requested", { tabId, connected: !!open() })
       if (open() && status === "connected") return send({ method: "toolbar.clicked", params: { tabId } })

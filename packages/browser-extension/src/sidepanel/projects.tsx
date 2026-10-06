@@ -86,16 +86,29 @@ export function ProjectPicker(props: { directory?: string; home?: string; onSele
             </Menu.Group>
             <Menu.Separator />
             <Menu.Group>
-              <Menu.GroupLabel>
-                <span class="truncate">
-                  {server.info.url}
-                  {server.info.source === "manual" ? " · manual" : ""}
-                </span>
-              </Menu.GroupLabel>
+              <Menu.GroupLabel>Server</Menu.GroupLabel>
+              <Menu.RadioGroup
+                value={server.info.id}
+                onChange={(id) => server.background.send({ type: "servers.use", id })}
+              >
+                <For each={server.background.state.servers}>
+                  {(item) => (
+                    <Menu.RadioItem value={item.id} closeOnSelect title={item.url}>
+                      <span class="flex min-w-0 flex-1 flex-col">
+                        <span class="truncate">{item.name}</span>
+                        <span class="truncate text-[12px] text-v2-text-text-faint">{item.url}</span>
+                      </span>
+                    </Menu.RadioItem>
+                  )}
+                </For>
+              </Menu.RadioGroup>
               <Menu.Item onSelect={() => server.background.send({ type: "service.refresh" })}>Reconnect</Menu.Item>
-              <Show when={server.info.source === "manual"}>
-                <Menu.Item onSelect={() => server.background.send({ type: "service.clearManual" })}>
-                  Use automatic discovery
+              <Menu.Item onSelect={() => void chrome.tabs.create({ url: chrome.runtime.getURL("connect.html") })}>
+                Add a server…
+              </Menu.Item>
+              <Show when={server.background.state.servers.length > 1}>
+                <Menu.Item onSelect={() => server.background.send({ type: "servers.remove", id: server.info.id })}>
+                  Forget {server.info.name}
                 </Menu.Item>
               </Show>
             </Menu.Group>

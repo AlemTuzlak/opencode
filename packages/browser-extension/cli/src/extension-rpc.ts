@@ -137,9 +137,12 @@ export class ExtensionRpc {
       const id = this.nextRequestId++
       const message: ExtensionCommand = { ...command, id }
       let completed = false
+      // extension.request waits for the user to answer in the side panel.
       const timeoutMs = command.method === "debugger.sendCommand"
         ? this.timeouts.debuggerCommandTimeoutMs ?? 60_000
-        : this.timeouts.commandTimeoutMs ?? 15_000
+        : command.method === "extension.request"
+          ? 10 * 60_000
+          : this.timeouts.commandTimeoutMs ?? 15_000
       const finish = (effect: Effect.Effect<JsonObject, Error>) => {
         if (completed) {
           return

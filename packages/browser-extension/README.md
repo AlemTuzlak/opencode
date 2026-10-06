@@ -3,13 +3,16 @@
 opencode in the side panel of Chromium browsers (Chrome, Edge, Brave, Opera, Vivaldi, Chromium, Helium, Arc). Chat with the
 local opencode service next to any page, let the agent use real tabs, and extend sites with site scripts.
 
-- **Side panel chat** with the desktop app's session timeline, composer, and permission and question docks.
-- **Browser control:** the built-in `browser.*` tools drive the tabs the agent opens and the tabs you share,
-  with a visible agent cursor. Agent tabs are grouped as "opencode".
+- **Side panel chat:** an opencode client like the desktop app and TUI (session timeline, composer, permission
+  and question docks), connected to one of the servers you paired. Each prompt sent from the panel is preceded by
+  a synthetic "Browser context" message naming the page you're on and, when you shared it, its tab id.
+- **browse:** agents drive your browser through the `browse` MCP server (Playwright `execute`, sessions, network
+  capture, recordings, handoffs) with human-like input. They use the tabs they open and the tabs you share
+  (**Share tab** above the composer, or their `tabs_request`, which you approve in the panel).
 - **Site scripts:** userscripts the extension injects itself (`chrome.userScripts`), installed from replies or
-  by the agent with your approval, toggled live per site.
-- **Browsing data:** history, bookmarks, top sites, and recently closed tabs, after you allow it per
-  conversation.
+  by an agent (browse's `site_scripts_*`) with your approval, toggled live per site.
+- **Browsing data:** history, bookmarks, top sites, and recently closed tabs (browse's `browsing_*`), after you
+  allow it per agent session.
 
 ## Install
 
@@ -17,12 +20,25 @@ local opencode service next to any page, let the agent use real tabs, and extend
 npx opencode-browser-cli install
 ```
 
-1. Open the browser's extensions page, turn on **Developer mode**, choose **Load unpacked**, and select
-   the folder `install` prints (or `packages/browser-extension/dist` when building from source). The
-   manifest key keeps the unpacked extension ID stable (`afeafocngkodbmaipcngoamamfmekgfo`); the Chrome
-   Web Store build is `mfnicocicmmlkpjnaffgihfjhdgjkdjg`.
-2. For site scripts, choose **Details** on OpenCode Browser and turn on **Allow user scripts**.
-3. Click the toolbar icon, or press <kbd>⌘</kbd><kbd>⇧</kbd><kbd>.</kbd>, to open the panel.
+It installs the CLI, registers the `browse` MCP server with opencode, starts the opencode service, and then pairs
+the extension: it finds the browsers and profiles that have OpenCode Browser (your default browser first) and opens
+`chrome-extension://<id>/connect.html#server=<url>&code=<one-time code>` there. Without the extension it opens the
+Chrome Web Store listing; install it and run `npx opencode-browser-cli connect`. Over SSH, in CI, or with
+`--no-open` it prints the link and code instead, for the panel's **Connect a server by hand**.
+
+For development, load `packages/browser-extension/dist` unpacked (Developer mode, **Load unpacked**). The manifest
+key keeps that ID stable (`afeafocngkodbmaipcngoamamfmekgfo`); the Chrome Web Store build is
+`mfnicocicmmlkpjnaffgihfjhdgjkdjg`. For site scripts, turn on **Allow user scripts** in the extension's details.
+
+## Servers
+
+The extension keeps a list of opencode servers (`src/background/servers.ts`, in `chrome.storage.local`); the panel's
+directory menu switches between them, adds one (connect.html), or forgets one. Pairing uses opencode's own flow:
+`POST /api/pair` (authenticated) issues a one-time code (5 minutes), and `GET /auth/connect/:code` with
+`Accept: application/json` returns a session token that works like the service password for 30 days. The extension
+renews it a week before it expires, by pairing again with the token. A server can also be added with a code from
+`opencode pair` or with the service password. Links to a server on this computer pair right away; links to another
+server ask first.
 
 ## The CLI (`cli/`, npm `opencode-browser-cli`)
 
@@ -31,27 +47,25 @@ One package for everything outside the browser. Its commands are `opencode-brows
 
 - **Setup** (`cli/src/setup.ts`)
   - `install` installs this exact version into the data root (`~/.local/share/opencode-browser`,
-    `%LOCALAPPDATA%\opencode-browser` on Windows) so nothing depends on the npx cache, registers the
-    `ai.opencode.browser` native messaging host for every installed Chromium browser (manifests in each
-    browser's `NativeMessagingHosts` directory on macOS and Linux, per-user registry keys on Windows; the
-    browsers ChatGPT's extension supports, plus Helium and Arc), adds the `opencode-browser` MCP server to
-    opencode's global config, starts the opencode service, and copies the unpacked extension.
-  - `host` is what the browser starts. It answers the extension with the service URL and password from
-    `opencode service start` / `opencode service get password`, and writes the extension's opencode plugin
-    (`plugin/opencode-browser.ts`: `site_scripts`, `browsing`, and `browser.tabs.request`) to
-    `~/.config/opencode/plugins/opencode-browser.ts` whenever it changes.
+    `%LOCALAPPDATA%\opencode-browser` on Windows) so nothing depends on the npx cache, adds the `browse` MCP
+    server to opencode's global config, starts the opencode service, copies and reloads the unpacked extension, and
+    runs `connect`. It also removes what earlier versions set up (the native messaging host and the opencode plugin).
+  - `connect [--browser <name>] [--profile <dir>] [--no-open] [--yes]` pairs the extension with the local service
+    (above).
   - `extension` opens the unpacked extension folder; `uninstall` removes everything `install` set up.
 - **Automation** (the rest of `cli/src`): a local relay (`ws://127.0.0.1:19988`) the extension connects to,
-  and the clients that drive it: `execute` (Playwright against the user's browser), `session`, `network`
+  and the clients that drive it: `execute` (Patchright against the user's browser), `session`, `network`
   (capture, redacted HAR), `secrets`, `recording`, `flight-recorder`, `journal`, `doctor`, `status`, and
-  `mcp` (the same as an MCP server over stdio, which `install` registers with opencode). The CLI and MCP
-  server start the relay on demand. The agent guide is `cli/skills/opencode-browser/SKILL.md`.
+  `mcp` (the same as the `browse` MCP server over stdio, which `install` registers with opencode). The CLI and MCP
+  server start the relay on demand. Features the extension owns (site scripts, browsing data, tab requests) go
+  through the relay's `POST /extension/request` as an `extension.request` command. The agent guide is
+  `cli/skills/browse/SKILL.md`.
 
   This was Browser Control (anomalyco/browser-control 8c80ac2), now part of OpenCode Browser: renamed, on its
   own port, accepting only OpenCode Browser's extension IDs, with files under the data root.
 
 Logs live in `<data root>/logs`: `relay.log` (relay lifecycle, extension connects and disconnects, every HTTP
-request with status and duration, faults; rotated at 1 MB) and `host.log` (each native messaging request).
+request with status and duration, faults; rotated at 1 MB).
 `OPENCODE_BROWSER_DEBUG=1` adds per-CDP-message tracing to the relay's stderr. Environment overrides:
 `OPENCODE_BROWSER_PORT`, `OPENCODE_BROWSER_HOME`, `OPENCODE_BROWSER_EXTENSION_ORIGINS`.
 

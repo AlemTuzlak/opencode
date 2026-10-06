@@ -1,5 +1,5 @@
-// A conversation asking to see one of the user's open tabs (browser.tabs.request). Sharing gives the agent
-// that tab the same way the Share tab button does; any open panel may answer.
+// An agent asking to see one of the user's open tabs (browse's tabs_request). Sharing lets agents use that tab
+// the same way the Share tab button does; any open panel may answer.
 import { DockPrompt } from "@opencode/session-ui/dock-prompt"
 import { Button } from "@opencode/ui/button"
 import { Icon } from "@opencode/ui/icon"

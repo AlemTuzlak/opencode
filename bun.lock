@@ -115,14 +115,12 @@
       "version": "2.0.22",
       "dependencies": {
         "@opencode/client": "workspace:*",
-        "@opencode/plugin-browser": "workspace:*",
         "@opencode/session-ui": "workspace:*",
         "@opencode/ui": "workspace:*",
         "effect": "catalog:",
         "solid-js": "catalog:",
       },
       "devDependencies": {
-        "@opencode/plugin": "workspace:*",
         "@tailwindcss/vite": "4.3.3",
         "@tsconfig/node22": "catalog:",
         "@types/bun": "catalog:",

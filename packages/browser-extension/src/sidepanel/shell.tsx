@@ -46,32 +46,16 @@ export function Shell() {
     onCleanup(() => cancelIdleCallback(idle))
   })
 
-  // Tell the background which session this panel shows, so the agent's browser follows the panel.
-  const announce = (info: SessionInfo) => {
-    if (view() !== info.id) return
-    server.background.show({ sessionID: info.id, directory: info.location.directory })
-  }
-
   const open = (sessionID: string) => {
     setManaging(false)
     setView(sessionID)
-    const info = data.session.get(sessionID)
-    // A session still being created is announced once the server has it (see `create`).
-    if (info && !data.session.creating(sessionID)) return announce(info)
-    if (info) return
-    void data.session
-      .sync(sessionID)
-      .then(() => {
-        const loaded = data.session.get(sessionID)
-        if (loaded) announce(loaded)
-      })
-      .catch(toastError("Couldn't open session"))
+    if (data.session.get(sessionID)) return
+    void data.session.sync(sessionID).catch(toastError("Couldn't open session"))
   }
 
   const startNew = () => {
     setManaging(false)
     setView(undefined)
-    server.background.hide()
     focusComposer()
   }
 
@@ -86,7 +70,7 @@ export function Shell() {
 
   const create = (sessionID: string, request: Promise<SessionInfo>) => {
     open(sessionID)
-    void request.then(announce).catch(() => {
+    void request.catch(() => {
       if (view() === sessionID) startNew()
     })
   }

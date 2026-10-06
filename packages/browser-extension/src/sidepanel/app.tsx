@@ -9,10 +9,11 @@ import { Shell } from "./shell"
 
 export function App() {
   const background = createBackground()
-  // A repeated `ready` with the same URL and password keeps the open connection and its data.
+  // A repeated `ready` for the same server and credential keeps the open connection and its data; switching
+  // servers (or a renewed token) reconnects.
   const info = createMemo(() => background.service(), undefined, {
     equals: (previous, next) =>
-      previous?.url === next?.url && previous?.password === next?.password && previous?.source === next?.source,
+      previous?.id === next?.id && previous?.url === next?.url && previous?.password === next?.password,
   })
 
   return (
@@ -23,7 +24,11 @@ export function App() {
           keyed
           fallback={
             <Setup
-              state={background.state.service.status === "error" ? background.state.service : { status: "loading" }}
+              state={
+                background.state.service.status === "error" || background.state.service.status === "unpaired"
+                  ? background.state.service
+                  : { status: "loading" }
+              }
               background={background}
             />
           }

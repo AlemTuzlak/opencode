@@ -27,6 +27,7 @@ export default defineConfig(({ mode }) => ({
       input: {
         sidepanel: fileURLToPath(new URL("./sidepanel.html", import.meta.url)),
         welcome: fileURLToPath(new URL("./welcome.html", import.meta.url)),
+        connect: fileURLToPath(new URL("./connect.html", import.meta.url)),
         offscreen: fileURLToPath(new URL("./offscreen.html", import.meta.url)),
         background: fileURLToPath(new URL("./src/background/index.ts", import.meta.url)),
       },

@@ -165,6 +165,7 @@ const makeRelay = Effect.fnUntraced(function* (options: {
   const tabGroupingWorkers = new Map<number, Promise<void>>()
   let extensionGeneration = 0
   let rejectedExtensionConnections = 0
+  let extensionBuild: string | undefined
   const extensionRpc = new ExtensionRpc()
   const sendToExtension = (command: Parameters<ExtensionRpc["send"]>[0]) => extensionRpc.send(command)
   const sendExtensionBestEffort = (command: Parameters<ExtensionRpc["send"]>[0]): void => {
@@ -521,12 +522,14 @@ const makeRelay = Effect.fnUntraced(function* (options: {
     flightRecorder,
     sessions,
     reloadExtension: () => sendToExtension({ method: "runtime.reload" }),
+    extensionRequest: (request) => sendToExtension({ method: "extension.request", params: { request } }),
     cleanupTabs: (idleMinutes) =>
       sendToExtension({ method: "tabs.cleanup", ...(idleMinutes === undefined ? {} : { params: { idleMinutes } }) }),
     extensionStatus: () => {
       return {
         connected: extensionRpc.connected,
         version: extensionRpc.version ?? null,
+        build: extensionBuild ?? null,
         protocolVersion: extensionRpc.protocolVersion ?? null,
         protocolCompatible: extensionRpc.protocolCompatible ?? null,
         protocolLegacy: extensionRpc.protocolLegacy ?? null,
@@ -803,6 +806,7 @@ const makeRelay = Effect.fnUntraced(function* (options: {
       getString(message.params, "version"),
       message.params?.protocolVersion,
     )
+    extensionBuild = getString(message.params, "build")
     relayLog("extension.connected", {
       version: getString(message.params, "version"),
       build: getString(message.params, "build"),
