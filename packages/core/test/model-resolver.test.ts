@@ -88,9 +88,10 @@ describe("ModelResolver", () => {
         model(Provider.aisdk("@ai-sdk/azure"), {
           providerID: Provider.ID.azure,
           modelID: "responses-deployment",
-          settings: { resourceName: "modern-resource", apiVersion: "2025-01-01-preview" },
+          settings: { apiVersion: "2025-01-01-preview" },
+          body: {},
         }),
-        Credential.Key.make({ type: "key", key: "secret" }),
+        Credential.Key.make({ type: "key", key: "secret", metadata: { resourceName: "modern-resource" } }),
       )
       const chat = yield* ModelResolver.fromCatalogModel(
         model(Provider.aisdk("@ai-sdk/azure"), {
@@ -127,6 +128,9 @@ describe("ModelResolver", () => {
         endpoint: {
           baseURL: "https://modern-resource.openai.azure.com/openai/v1",
           query: { "api-version": "2025-01-01-preview" },
+        },
+        defaults: {
+          http: { body: {} },
         },
       })
       expect(chat).toMatchObject({ id: "chat-deployment", provider: "azure" })
@@ -728,7 +732,7 @@ describe("ModelResolver", () => {
       })
 
       expect(headers.authorization).toBe("Bearer stored-secret")
-      expect(resolved.route.defaults.http?.body).toEqual({ tenant: "work" })
+      expect(resolved.route.defaults.http?.body).toEqual({})
     }),
   )
 
