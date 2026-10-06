@@ -164,45 +164,49 @@ function createServerController(
   const connKey = ServerConnection.key(conn)
   const sdk = createServerSdkContext(conn, scope)
 
-  const source = createData({
-    api: () => sdk.api,
-    initialMessageLimit: () => (timelinePreset(settings.general.timelineDetail())?.id === "compact" ? 40 : 20),
-    event: {
-      on: sdk.event.on,
-      listen: (handler) => sdk.event.listen((event) => handler({ name: event.type, details: event })),
-    },
-    connection: sdk.connection,
-    directory: "",
-    onError(error) {
-      showToast({
-        variant: "error",
-        title: language.t("common.requestFailed"),
-        description: formatServerError(error, language.t),
-      })
-    },
-  })
-
   const data = createDesktopData({
-    data: source,
     remove: (sessionID) => sdk.api.session.remove({ sessionID }),
-    // Local deletes close their own tabs. Like the TUI, a deletion from elsewhere closes the session's tab and
-    // explains the navigation only when it was the session being viewed.
-    deletedElsewhere: (event) => {
-      const current = route()
-      const viewed = current.type === "session" ? findSessionTab(tabs.store, connKey, current.sessionId) : undefined
-      const wasViewed = viewed?.type === "session" && viewed.sessionId === event.data.sessionID
-      // Read the title before removing the tab drops its cached info.
-      const title = wasViewed ? sessionTitle(tabs.info[tabKey(viewed)]?.title) : undefined
-      tabs.removeSessions({
-        server: connKey,
-        directory: event.location?.directory ?? "",
-        sessionIDs: [event.data.sessionID],
-      })
-      if (!wasViewed) return
-      showToast({
-        title: title
-          ? language.t("toast.session.deleted.named", { title })
-          : language.t("toast.session.deleted.current"),
+    createData: (session) => {
+      // Local deletes close their own tabs. Like the TUI, a deletion from elsewhere closes the session's tab and
+      // explains the navigation only when it was the session being viewed.
+      onCleanup(
+        sdk.event.on("session.deleted", (event) => {
+          if (session.removing(event.data.sessionID)) return
+          const current = route()
+          const viewed = current.type === "session" ? findSessionTab(tabs.store, connKey, current.sessionId) : undefined
+          const wasViewed = viewed?.type === "session" && viewed.sessionId === event.data.sessionID
+          // Read the title before removing the tab drops its cached info.
+          const title = wasViewed ? sessionTitle(tabs.info[tabKey(viewed)]?.title) : undefined
+          tabs.removeSessions({
+            server: connKey,
+            directory: event.location?.directory ?? "",
+            sessionIDs: [event.data.sessionID],
+          })
+          if (!wasViewed) return
+          showToast({
+            title: title
+              ? language.t("toast.session.deleted.named", { title })
+              : language.t("toast.session.deleted.current"),
+          })
+        }),
+      )
+
+      return createData({
+        api: () => sdk.api,
+        initialMessageLimit: () => (timelinePreset(settings.general.timelineDetail())?.id === "compact" ? 40 : 20),
+        event: {
+          on: sdk.event.on,
+          listen: (handler) => sdk.event.listen((event) => handler({ name: event.type, details: event })),
+        },
+        connection: sdk.connection,
+        directory: "",
+        onError(error) {
+          showToast({
+            variant: "error",
+            title: language.t("common.requestFailed"),
+            description: formatServerError(error, language.t),
+          })
+        },
       })
     },
   })
