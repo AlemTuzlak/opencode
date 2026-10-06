@@ -13,7 +13,7 @@ import {
   replayTargetCreated,
 } from "./cdp-shims.ts"
 import { CdpClientPool } from "./cdp-client-pool.ts"
-import * as HumanInput from "./human-input.ts"
+import { beforeInput, forgetTab } from "./human-input.ts"
 import { CdpRouter } from "./cdp-router.ts"
 import { CdpRuntime } from "./cdp-runtime.ts"
 import { ExtensionRpc } from "./extension-rpc.ts"
@@ -1357,7 +1357,7 @@ const makeRelay = Effect.fnUntraced(function* (options: {
     yield* Effect.all([
       applyGhostCursorMouseEvent({ tabId, message }).pipe(Effect.ignore),
       Effect.promise(() =>
-        HumanInput.beforeInput(tabId, command.method, command.params, (method, params) =>
+        beforeInput(tabId, command.method, command.params, route.chromeSessionId === undefined, (method, params) =>
           Effect.runPromise(sendDebuggerCommand({ ...command, method, params })),
         ).catch(() => undefined),
       ),
@@ -1463,7 +1463,7 @@ const makeRelay = Effect.fnUntraced(function* (options: {
     mainFrameIdsByTab.delete(tabId)
     protectedFrames.forgetTab(tabId)
     ghostCursorPositionsByTab.delete(tabId)
-    HumanInput.forgetTab(tabId)
+    forgetTab(tabId)
     for (const [sessionId, childTabId] of suppressedChildSessions) {
       if (childTabId === tabId) {
         suppressedChildSessions.delete(sessionId)
