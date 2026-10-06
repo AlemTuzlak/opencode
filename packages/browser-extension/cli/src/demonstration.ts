@@ -1,5 +1,5 @@
 import { Match, Schema } from "effect"
-import type { Frame, Page } from "playwright-core"
+import type { Frame, Page } from "patchright-core"
 
 const DemonstrationStep = Schema.Union([
   Schema.Struct({

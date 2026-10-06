@@ -356,7 +356,18 @@ multi-statement scripts need `return`. Use `--file` for longer scripts:
 opencode-browser execute --session github --file ./perform-flow.js
 ```
 
-Human CLI output includes logs, warnings, and a concise aftermath. Use `--json`
+Human CLI output includes logs, warnings, and a concise aftermath. Logs hold your
+own `console.log` output; the page's console messages and uncaught errors are
+off by default, because capturing them lets the page detect a debugger (bot
+checks look for it). When you need them, for example to debug a broken page,
+turn them on for that page; they then appear in each execute's logs:
+
+```js
+await pageConsole.start()   // or pageConsole.start(otherPage)
+await pageConsole.stop()    // when done, so the page looks undebugged again
+```
+
+ Use `--json`
 when another command needs to branch on `ok`, `value`, `error`, `warnings`, or
 `aftermath`:
 

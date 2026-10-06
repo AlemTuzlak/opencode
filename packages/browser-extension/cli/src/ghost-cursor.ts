@@ -1,5 +1,5 @@
 import { Match, Predicate } from "effect"
-import type { Locator, Page } from "playwright-core"
+import type { Locator, Page } from "patchright-core"
 import type { JsonObject } from "./protocol.ts"
 
 type GhostCursorStyle = "distance-glide" | "spring-inertia"

@@ -3,7 +3,7 @@ import path from "node:path"
 import { Predicate } from "effect"
 import pixelmatch from "pixelmatch"
 import { PNG } from "pngjs"
-import type { Page } from "playwright-core"
+import type { Page } from "patchright-core"
 
 const maxImageBytes = 32 * 1024 * 1024
 const maxImagePixels = 16 * 1024 * 1024

@@ -1,4 +1,4 @@
-import type { Page } from "playwright-core"
+import type { Page } from "patchright-core"
 
 const installed = new WeakSet<object>()
 

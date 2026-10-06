@@ -1,6 +1,6 @@
 import { Effect, Predicate, Schema, Semaphore } from "effect"
 import path from "node:path"
-import type { Page, Request, Response } from "playwright-core"
+import type { Page, Request, Response } from "patchright-core"
 import * as AuthProfile from "./auth-profile.ts"
 import { writeJsonFileAtomically } from "./fs-durability.ts"
 import { SecretCollector } from "./network-redaction.ts"

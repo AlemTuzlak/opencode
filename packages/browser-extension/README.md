@@ -61,6 +61,15 @@ and key presses are spaced 30-110 ms apart. Wheel events glide (eased ~60 Hz bur
 into view before a click happens in wheel flicks instead of a one-frame jump. A click costs ~0.5-1 s instead of
 ~0.1 s; `relay.log` records each movement (`input.move`) and scroll (`input.scroll`). `OPENCODE_BROWSER_HUMAN_INPUT=0` turns it off.
 
+`execute` runs Playwright's API through [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)
+(`patchright-core`, pinned to the matching Playwright version), which never enables CDP's `Runtime` domain:
+pages can detect that domain (bot checks log an `Error` and see whether a debugger inspected it). The cost is that
+a page's console messages and uncaught errors are only captured after `pageConsole.start()` (`cli/src/page-console.ts`),
+which makes that one page detectable until `pageConsole.stop()`. `cli/src/patchright-tuning.ts` restores
+Playwright's fast lookup for `count()` and `all()` (Patchright walks every match over CDP to reach closed shadow
+roots, ~650 ms instead of ~9 ms for 900 links); relay.log records `patchright.tuning` if a Patchright update
+moves the internals it patches.
+
 Without the host, the panel offers a manual URL and password form.
 
 ## Releasing

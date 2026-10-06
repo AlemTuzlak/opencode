@@ -1,6 +1,6 @@
 import { Effect, Predicate, Schema } from "effect"
 import { installPageReadTimeout } from "./page-read-timeout.ts"
-import { chromium, errors, type Browser, type BrowserContext, type ConsoleMessage, type Frame, type Locator, type Page } from "playwright-core"
+import { chromium, errors, type Browser, type BrowserContext, type ConsoleMessage, type Frame, type Locator, type Page } from "patchright-core"
 import * as acorn from "acorn"
 import fs from "node:fs"
 import path from "node:path"
@@ -33,6 +33,8 @@ import type { HandoffOutcome } from "./handoff.ts"
 import * as AuthProfile from "./auth-profile.ts"
 import * as AuthenticatedOrigin from "./authenticated-origin.ts"
 import * as NetworkCapture from "./network-capture.ts"
+import { PageConsole } from "./page-console.ts"
+import { tunePatchright } from "./patchright-tuning.ts"
 import { AuthenticatedJsonOutcome, type AuthenticatedJsonRequest, type ExecuteAftermath, type ExecuteLogEntry, type ExecuteLogSummary, type ExecuteMedia } from "./relay-schema.ts"
 import type { SessionTarget } from "./relay-types.ts"
 import { executionContextFailureDiagnostic, runtimeFailureKind } from "./runtime-diagnostics.ts"
@@ -59,6 +61,8 @@ import { createWebMcpHelper, type WebMcpHelper } from "./webmcp.ts"
 import { startDemonstrationRecorder, type DemonstrationResult } from "./demonstration.ts"
 
 export { createAriaSnapshotHelper, createSnapshotHelpers, defaultAriaSnapshotTimeoutMs, fillInputs }
+
+tunePatchright()
 
 const nodeModules = { fs, path, os, crypto, url, util, events, stream, buffer, http, https, zlib }
 const nodeModuleAliases = Object.keys(nodeModules).join(", ")
@@ -357,6 +361,10 @@ type SandboxGlobals = {
     readonly status: () => NetworkCapture.NetworkCaptureStatus
     readonly stop: (options?: NetworkCapture.NetworkCaptureStopOptions) => Promise<NetworkCapture.NetworkCaptureResult>
     readonly cancel: () => Promise<{ readonly cancelled: boolean }>
+  }
+  readonly pageConsole: {
+    readonly start: (page?: Page) => Promise<{ readonly capturing: boolean }>
+    readonly stop: (page?: Page) => Promise<{ readonly capturing: boolean }>
   }
   readonly handoffTracker: { count: number }
 }
@@ -972,6 +980,10 @@ export class ExecuteSandbox {
         status: () => this.networkCapture.status(),
         stop: (options) => Effect.runPromise(this.networkCapture.stop(options)),
         cancel: () => Effect.runPromise(this.networkCapture.cancel()),
+      },
+      pageConsole: {
+        start: (target) => PageConsole.start(target ?? page),
+        stop: (target) => PageConsole.stop(target ?? page),
       },
       handoffTracker,
     }
@@ -1748,6 +1760,7 @@ export async function runUserCode({ code, globals }: { readonly code: string; re
   const startUrl = safePageUrl(globals.page)
   globals.page.on("console", onConsole)
   globals.page.on("pageerror", onPageError)
+  const stopListening = PageConsole.listen(globals.page, logCapture.add)
   globals.page.on("framenavigated", onFrameNavigated)
   const buildResultMetadata = () => {
     const captured = logCapture.snapshot()
@@ -1777,6 +1790,7 @@ export async function runUserCode({ code, globals }: { readonly code: string; re
     globals.page.off("console", onConsole)
     globals.page.off("pageerror", onPageError)
     globals.page.off("framenavigated", onFrameNavigated)
+    stopListening()
   }
 }
 
@@ -1800,6 +1814,7 @@ const sandboxGlobalKeys = [
   "handoff",
   "demonstrate",
   "network",
+  "pageConsole",
 ] as const satisfies readonly (keyof Omit<SandboxGlobals, "handoffTracker">)[]
 
 function safePageUrl(page: Page): string | null {

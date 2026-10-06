@@ -1,6 +1,6 @@
 import path from "node:path"
 import { Effect, Predicate } from "effect"
-import type { ElementHandle, Frame, Locator, Page } from "playwright-core"
+import type { ElementHandle, Frame, Locator, Page } from "patchright-core"
 import { ariaSnapshotWithoutTextControlValues } from "./aria-snapshot.ts"
 import { runPlaywrightOperation } from "./execute.ts"
 import { runtimeFailureKind } from "./runtime-diagnostics.ts"

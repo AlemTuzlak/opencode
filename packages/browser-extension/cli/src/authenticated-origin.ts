@@ -1,5 +1,5 @@
 import { Effect, Match, Schema } from "effect"
-import type { Page } from "playwright-core"
+import type { Page } from "patchright-core"
 import {
   AuthenticatedJsonOutcome,
   type AuthenticatedJsonMethod,

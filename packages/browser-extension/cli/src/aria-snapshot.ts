@@ -1,4 +1,4 @@
-import { selectors, type BrowserContext, type Frame, type Locator, type Page } from "playwright-core"
+import { selectors, type BrowserContext, type Frame, type Locator, type Page } from "patchright-core"
 import { runtimeFailureKind } from "./runtime-diagnostics.ts"
 
 const redactionCleanupErrorMessage = "OpenCode Browser could not confirm ARIA snapshot value-redaction cleanup"

@@ -1,4 +1,4 @@
-import type { Frame, Page } from "playwright-core"
+import type { Frame, Page } from "patchright-core"
 
 const defaultFrameTimeoutMs = 5_000
 const maxTools = 100
