@@ -9,6 +9,7 @@ import { browserFailure, unsupported } from "./errors"
 import { createBrowserPage, UnsupportedOperation, type BrowserPage } from "./page"
 import type { Recording } from "./profiling"
 import { normalizeURL, shareable } from "./policy"
+import { AgentGroups } from "./agent-groups"
 import { TabCleanup } from "./tab-cleanup"
 import type { Service } from "./service"
 
@@ -216,10 +217,12 @@ export async function createSessionBrowser(input: {
     if (existing && existing.windowId === (await chrome.tabs.get(tabId)).windowId) {
       await chrome.tabs.group({ tabIds: [tabId], groupId: existing.id })
       if (existing.title !== title) await chrome.tabGroups.update(existing.id, { title })
+      await AgentGroups.adopt(existing.id)
       return
     }
     groupId = await chrome.tabs.group({ tabIds: [tabId] })
     await chrome.tabGroups.update(groupId, { title, color: "grey" })
+    await AgentGroups.adopt(groupId)
   }
   const groupName = async () => {
     const info = await input.service.get().catch(() => undefined)

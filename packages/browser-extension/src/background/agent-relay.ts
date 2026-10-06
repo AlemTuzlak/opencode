@@ -23,6 +23,7 @@ import type {
 } from "../agent-relay/recording-types"
 import type { AgentRelayState, AgentRelayStatus } from "../shared/protocol"
 import { createAgentRelayLog, formatAgentRelayLog } from "./agent-relay-log"
+import { AgentGroups } from "./agent-groups"
 import { DebuggerHub } from "./debugger-hub"
 import { TabCleanup } from "./tab-cleanup"
 
@@ -328,14 +329,20 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
         const tabId = number(params, "tabId")
         const page = pageStatusFromJson(params?.status)
         if (!page) throw new Error("Invalid page status")
+        const wasWaiting = pageStatuses.get(tabId)?.state === "waiting"
         pageStatuses.set(tabId, page)
         notify()
+        // A handoff opens the agent's group so the user can find the tab; it folds up again afterwards.
+        if (page.state === "waiting") void AgentGroups.expandTab(tabId)
+        else if (wasWaiting) void AgentGroups.settleTab(tabId)
         await chrome.tabs.sendMessage(tabId, { action: "page-status.set", status: page })
         return {}
       }
       case "pageStatus.clear": {
         const tabId = number(params, "tabId")
+        const wasWaiting = pageStatuses.get(tabId)?.state === "waiting"
         pageStatuses.delete(tabId)
+        if (wasWaiting) void AgentGroups.settleTab(tabId)
         notify()
         // Restricted pages have no content script; the status is best-effort there.
         await chrome.tabs.sendMessage(tabId, { action: "page-status.clear" }).catch(() => undefined)
@@ -521,6 +528,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     if (target && target.windowId === tab.windowId && ownedGroup(target.title)) {
       if (tab.groupId !== target.id) await chrome.tabs.group({ tabIds: [tabId], groupId: target.id })
       if (target.title !== title) await chrome.tabGroups.update(target.id, { title, color: GROUP_COLOR })
+      await AgentGroups.adopt(target.id)
       return target.id
     }
     if (socket !== current) throw new Error("The relay reconnected while grouping the tab")
@@ -532,6 +540,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     }
     await chrome.tabGroups.update(groupId, { title, color: GROUP_COLOR })
     sessionGroups.set(key, groupId)
+    await AgentGroups.adopt(groupId)
     return groupId
   }
 
@@ -595,6 +604,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     if (change.url && relayTabs.has(tabId)) void renameForPage(tabId, change.url)
   })
   TabCleanup.guard((tabId) => recordingTabs.has(tabId) || pageStatuses.get(tabId)?.state === "waiting")
+  AgentGroups.keepOpenWhile((tabId) => pageStatuses.get(tabId)?.state === "waiting")
   chrome.tabs.onRemoved.addListener((tabId) => {
     recordingTabs.delete(tabId)
     void chrome.runtime.sendMessage({ action: "recording.cancel", tabId }).catch(() => undefined)
