@@ -1,14 +1,22 @@
 import type { Data } from "@opencode/client/solid"
-import type { SessionInfo } from "@opencode/client/promise"
+import type { OpenCodeEvent, SessionInfo } from "@opencode/client/promise"
 import { onCleanup } from "solid-js"
 import { createStore } from "solid-js/store"
 import { uuid } from "@/runtime/persistence/uuid"
 
 type SessionMutation = { readonly id: string; readonly type: "remove"; readonly sessionID: string }
 
-export function createDesktopData(input: { data: Data; remove: (sessionID: string) => Promise<void> }) {
+export function createDesktopData(input: {
+  data: Data
+  remove: (sessionID: string) => Promise<void>
+  deletedElsewhere: (event: Extract<OpenCodeEvent, { type: "session.deleted" }>) => void
+}) {
   const mutation = createSessionMutations(input.remove)
-  onCleanup(input.data.on("session.deleted", (event) => mutation.deleted(event.data.sessionID)))
+  onCleanup(
+    input.data.on("session.deleted", (event) => {
+      if (!mutation.deleted(event.data.sessionID)) input.deletedElsewhere(event)
+    }),
+  )
 
   return {
     ...input.data,
@@ -47,8 +55,12 @@ export function createSessionMutations(remove: (sessionID: string) => Promise<vo
           throw error
         })
     },
+    /** Settles local removals of a deleted session; returns whether this client requested the deletion. */
     deleted(sessionID: string) {
+      const local = store.session.some((mutation) => mutation.sessionID === sessionID)
       setStore("session", (current) => current.filter((mutation) => mutation.sessionID !== sessionID))
+
+      return local
     },
   }
 }

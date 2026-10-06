@@ -24,6 +24,16 @@ const c = { id: "ses_tab_c", title: "Tab C session" }
 
 test.use({ serviceWorkers: "block" })
 
+const deleted = (sessionID: string, directory: string) =>
+  ({
+    id: `evt_${sessionID}_deleted`,
+    created: 2,
+    type: "session.deleted",
+    durable: { aggregateID: sessionID, seq: 1, version: 2 },
+    location: { directory },
+    data: { sessionID },
+  }) satisfies Extract<OpenCodeEvent, { type: "session.deleted" }>
+
 test("tab strip keeps draft tabs as wide as session tabs and navigates on mouse down", async ({ page }) => {
   const workspace = await mockWorkspace(page, {
     name: "Tabs",
@@ -223,6 +233,41 @@ test("closing the active server's last tab opens the remaining server tab", asyn
   const reads = requests.filter((url) => url.includes(`/session/${sessionB.id}`))
   expect(reads.length).toBeGreaterThan(0)
   expect(reads.filter((url) => !url.startsWith(REMOTE_SERVER))).toEqual([])
+})
+
+test("a session deleted elsewhere closes its tab, and only the viewed one shows a notice, as in the TUI", async ({
+  page,
+}) => {
+  const workspace = await openSession(page, { name: "TabDeleted", sessions: [a, b, c], sessionID: b.id })
+  const tab = (id: string) => page.locator(`[data-titlebar-tab-slot]:has(a[href="${sessionHref(id)}"])`)
+  await expect(tab(c.id).locator("[data-titlebar-tab-title]")).toHaveText(c.title)
+
+  await workspace.push([deleted(c.id, workspace.directory)])
+  await expect(tab(c.id)).toHaveCount(0)
+  await expectPath(page, sessionHref(b.id))
+
+  await workspace.push([deleted(b.id, workspace.directory)])
+  await expect(tab(b.id)).toHaveCount(0)
+  await expectPath(page, sessionHref(a.id))
+  await expect(page.getByText(/was deleted$/)).toHaveText(`Session "${b.title}" was deleted`)
+})
+
+test("a parent deleted elsewhere closes the tab showing its subagent", async ({ page }) => {
+  const parent = { id: "ses_tab_parent", title: "Parent session" }
+  const child = { id: "ses_tab_child", title: "Child session", parentID: parent.id }
+  const workspace = await mockWorkspace(page, {
+    name: "TabDeletedChild",
+    sessions: [a, parent, child],
+    seed: { tabs: [a.id, parent.id] },
+  })
+  await page.goto(sessionHref(child.id))
+  await expectSessionTitle(page, child.title)
+
+  // The server deletes children before their parent.
+  await workspace.push([deleted(child.id, workspace.directory), deleted(parent.id, workspace.directory)])
+  await expectPath(page, sessionHref(a.id))
+  await expect(page.locator("[data-titlebar-tab-title]")).toHaveText([a.title])
+  await expect(page.getByText(/was deleted$/)).toHaveCount(1)
 })
 
 test("a remote tab stays busy while a child session runs", async ({ page }) => {

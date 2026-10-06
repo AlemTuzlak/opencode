@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import type { OpenCodeEvent } from "@opencode/client/promise"
 import { holdRoute, seed, sessionHref } from "../utils/app"
 import { fixture, mockStressTimeline } from "../utils/session-fixture"
 import { expectAppVisible } from "../utils/waits"
@@ -9,12 +10,14 @@ const row = (page: Page, title: string) =>
   page.locator('[data-component="home-session-row"]').filter({ hasText: title })
 
 async function openHome(page: Page, input: Parameters<typeof mockStressTimeline>[1] = {}) {
-  await mockStressTimeline(page, input)
+  const mock = await mockStressTimeline(page, input)
   await seed(page, {
     projects: { local: [{ worktree: fixture.directory, expanded: true }] },
     lastProject: { local: fixture.directory },
   })
   await page.goto("/")
+
+  return mock
 }
 
 test("the session context menu renames, exports, and deletes a Home session", async ({ page }) => {
@@ -73,6 +76,28 @@ test("the session context menu renames, exports, and deletes a Home session", as
   await dialog.getByRole("button", { name: "Delete session" }).click()
   await removed
   await expect(renamedRow).toBeHidden()
+})
+
+test("a session deleted elsewhere leaves Home before its page refills", async ({ page }) => {
+  const mock = await openHome(page)
+  const target = row(page, fixture.expected.targetTitle)
+  await expect(target).toBeVisible()
+  const refill = await holdRoute(page, (url) => url.pathname === "/api/session", { method: "GET" })
+
+  await mock.push([
+    {
+      id: "evt_home_target_deleted",
+      created: 2,
+      type: "session.deleted",
+      durable: { aggregateID: fixture.targetID, seq: 1, version: 2 },
+      location: { directory: fixture.directory },
+      data: { sessionID: fixture.targetID },
+    } satisfies Extract<OpenCodeEvent, { type: "session.deleted" }>,
+  ])
+  await refill.arrived
+  await expect(target).toHaveCount(0)
+  await expect(row(page, fixture.expected.sourceTitle)).toBeVisible()
+  refill.release()
 })
 
 test("Home shows loaded sessions before the location request resolves", async ({ page }) => {

@@ -1,5 +1,6 @@
 import { createSimpleContext } from "@opencode/ui/context"
-import { Accessor, batch, createEffect, createMemo, createResource, createRoot, getOwner } from "solid-js"
+import { Accessor, batch, createEffect, createMemo, createResource, createRoot, getOwner, onCleanup } from "solid-js"
+import { useQueryClient } from "@tanstack/solid-query"
 import { createServerProjects, RECENTLY_CLOSED_DISPLAY_LIMIT, ServerConnection, useServers } from "./registry"
 import { pathKey } from "@/workspaces/path-key"
 import { useServerHealth } from "@/runtime/server/health"
@@ -20,6 +21,9 @@ import { useSettings } from "@/settings/model"
 import { timelinePreset } from "@opencode/session-ui/timeline/detail"
 import type { SessionInfo } from "@opencode/client/promise"
 import { resolveProjectForSession, resolveSessionDetailsProject } from "@/shell/layout/helpers"
+import { findSessionTab, tabKey, useTabs } from "@/shell/tabs/tabs"
+import { useCurrentRoute } from "@/shell/state/layout"
+import { sessionTitle } from "@/session/title"
 
 export const { use: useGlobal, provider: GlobalProvider } = createSimpleContext({
   name: "Global",
@@ -154,6 +158,9 @@ function createServerController(
 ) {
   const language = useLanguage()
   const settings = useSettings()
+  const tabs = useTabs()
+  const route = useCurrentRoute()
+  const queryClient = useQueryClient()
   const connKey = ServerConnection.key(conn)
   const sdk = createServerSdkContext(conn, scope)
 
@@ -178,7 +185,38 @@ function createServerController(
   const data = createDesktopData({
     data: source,
     remove: (sessionID) => sdk.api.session.remove({ sessionID }),
+    // Local deletes close their own tabs. Like the TUI, a deletion from elsewhere closes the session's tab and
+    // explains the navigation only when it was the session being viewed.
+    deletedElsewhere: (event) => {
+      const current = route()
+      const viewed = current.type === "session" ? findSessionTab(tabs.store, connKey, current.sessionId) : undefined
+      const wasViewed = viewed?.type === "session" && viewed.sessionId === event.data.sessionID
+      // Read the title before removing the tab drops its cached info.
+      const title = wasViewed ? sessionTitle(tabs.info[tabKey(viewed)]?.title) : undefined
+      tabs.removeSessions({
+        server: connKey,
+        directory: event.location?.directory ?? "",
+        sessionIDs: [event.data.sessionID],
+      })
+      if (!wasViewed) return
+      showToast({
+        title: title
+          ? language.t("toast.session.deleted.named", { title })
+          : language.t("toast.session.deleted.current"),
+      })
+    },
   })
+  // The Home index is a paginated server snapshot; drop a deleted row immediately, then refill the page.
+  onCleanup(
+    sdk.event.on("session.deleted", (event) => {
+      const key = ["home-sessions", conn]
+      if (!queryClient.getQueryData<SessionInfo[]>(key)?.some((session) => session.id === event.data.sessionID)) return
+      queryClient.setQueryData<SessionInfo[]>(key, (current) =>
+        current?.filter((session) => session.id !== event.data.sessionID),
+      )
+      void queryClient.invalidateQueries({ queryKey: key, exact: true })
+    }),
+  )
 
   const sync = createServerSyncContext(sdk, data)
   createPermissionAutoApprover({ sdk, data })
