@@ -42,7 +42,8 @@ const files = {
 }
 /** This package's root: dist/cli.mjs when published, src/setup.ts from source. */
 const packageRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
-const fromSource = existsSync(path.join(packageRoot, "src", "main.ts"))
+/** Running from a source checkout without a package to install: the host and MCP run main.ts in place with bun. */
+const fromSource = existsSync(path.join(packageRoot, "src", "main.ts")) && !process.env.OPENCODE_BROWSER_PACKAGE
 const bundledExtension = path.join(packageRoot, "extension")
 
 type Settings = { opencode?: string; entry?: string; version?: string }
@@ -195,7 +196,7 @@ function readFileOr(file: string, fallback: string) {
  * OPENCODE_BROWSER_PACKAGE installs a specific spec instead, for example a local tarball.
  */
 function installRuntime() {
-  if (fromSource && !process.env.OPENCODE_BROWSER_PACKAGE) return path.join(packageRoot, "src", "main.ts")
+  if (fromSource) return path.join(packageRoot, "src", "main.ts")
   const spec = process.env.OPENCODE_BROWSER_PACKAGE ?? `${PACKAGE}@${opencodeBrowserVersion}`
   mkdirSync(files.runtime, { recursive: true })
   if (!existsSync(path.join(files.runtime, "package.json"))) writeFileSync(path.join(files.runtime, "package.json"), "{\"private\":true}\n")
