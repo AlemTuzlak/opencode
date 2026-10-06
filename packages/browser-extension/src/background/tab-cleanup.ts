@@ -40,7 +40,9 @@ export function forget(tabId: number) {
   if (tracked.delete(tabId)) save()
 }
 
-export function isTracked(tabId: number) {
+/** Whether an agent opened this tab (and it hasn't been handed to the user). */
+export async function isTracked(tabId: number) {
+  await restore()
   return tracked.has(tabId)
 }
 
@@ -97,7 +99,7 @@ export async function cleanup(options: { minutes?: number } = {}) {
 }
 
 function restore() {
-  restored ??= chrome.storage.session.get(STORAGE_KEY).then((stored) => {
+  restored ??= chrome.storage.local.get(STORAGE_KEY).then((stored) => {
     const saved = (stored[STORAGE_KEY] ?? {}) as Record<string, Tracked>
     for (const [tabId, entry] of Object.entries(saved))
       if (!tracked.has(Number(tabId))) tracked.set(Number(tabId), entry)
@@ -108,11 +110,17 @@ function restore() {
 function save() {
   clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
-    void chrome.storage.session.set({ [STORAGE_KEY]: Object.fromEntries(tracked) }).catch(() => undefined)
+    void chrome.storage.local.set({ [STORAGE_KEY]: Object.fromEntries(tracked) }).catch(() => undefined)
   }, 500)
 }
 
 // The user switching to a tab counts as using it; a tab the user moves out of the agent's group is theirs now.
+// Kept in local storage so an extension reload or update doesn't forget which tabs agents opened; tab ids
+// don't survive a browser restart, so the list starts over then.
+chrome.runtime.onStartup.addListener(() => {
+  tracked.clear()
+  void chrome.storage.local.remove(STORAGE_KEY)
+})
 chrome.tabs.onActivated.addListener(({ tabId }) => touch(tabId))
 chrome.tabs.onRemoved.addListener((tabId) => forget(tabId))
 chrome.tabs.onUpdated.addListener((tabId, change) => {

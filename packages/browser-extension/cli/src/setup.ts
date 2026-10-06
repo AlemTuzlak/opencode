@@ -230,7 +230,7 @@ function installRuntime() {
 
 // ---- commands -------------------------------------------------------------------------------------
 
-function install(args: string[]) {
+async function install(args: string[]) {
   const opencode = findOpencode(args)
   if (!opencode) fail("Could not find opencode. Install it (https://opencode.ai) or pass --opencode <path>.")
   const browsersFound = installed()
@@ -288,6 +288,11 @@ function install(args: string[]) {
   if (existsSync(bundledExtension)) {
     rmSync(files.extension, { recursive: true, force: true })
     cpSync(bundledExtension, files.extension, { recursive: true })
+    // A browser already running the unpacked extension keeps its old code until it reloads; ask it to.
+    if (await reloadConnectedExtension()) {
+      log("✓ Reloaded OpenCode Browser in your browser")
+      return
+    }
     log("")
     log("Add the extension (until it's in the Chrome Web Store):")
     log("  1. Open chrome://extensions and turn on Developer mode")
@@ -335,6 +340,27 @@ function uninstall() {
   log(found.length ? `✓ Removed from ${found.map((b) => b.name).join(", ")}` : "✓ Nothing was registered")
   if (mcp) log(`✓ Removed the "${MCP_NAME}" MCP server`)
   log("Remove the extension from your browser to finish.")
+}
+
+/** Reloads the extension through the relay when it is connected; false when there is nothing to reload. */
+async function reloadConnectedExtension() {
+  const port = Number(process.env.OPENCODE_BROWSER_PORT) || 19988
+  const base = `http://127.0.0.1:${port}`
+  const connected = () =>
+    fetch(`${base}/extension/status`, { signal: AbortSignal.timeout(3_000) })
+      .then((response) => (response.ok ? (response.json() as Promise<{ connected?: boolean }>) : undefined))
+      .then((status) => (status ? status.connected === true : undefined))
+      .catch(() => undefined)
+  // A relay restarted moments ago waits a second or two for the browser to reconnect.
+  let state = await connected()
+  for (let attempt = 0; state === false && attempt < 10; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    state = await connected()
+  }
+  if (!state) return false
+  return fetch(`${base}/extension/reload`, { method: "POST", body: "{}", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(5_000) })
+    .then(() => true)
+    .catch(() => true)
 }
 
 function findOnPath(name: string) {

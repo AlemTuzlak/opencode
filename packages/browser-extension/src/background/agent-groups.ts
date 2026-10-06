@@ -103,14 +103,14 @@ function forget(groupId: number) {
 }
 
 function restore() {
-  restored ??= chrome.storage.session.get(STORAGE_KEY).then((stored) => {
+  restored ??= chrome.storage.local.get(STORAGE_KEY).then((stored) => {
     for (const id of (stored[STORAGE_KEY] ?? []) as number[]) groups.add(id)
   })
   return restored
 }
 
 function save() {
-  void chrome.storage.session.set({ [STORAGE_KEY]: Array.from(groups) }).catch(() => undefined)
+  void chrome.storage.local.set({ [STORAGE_KEY]: Array.from(groups) }).catch(() => undefined)
 }
 
 // The user moved to another tab: fold away every agent group in that window that doesn't hold it.
@@ -127,6 +127,11 @@ chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
   })
 })
 chrome.tabGroups.onRemoved.addListener((group) => forget(group.id))
+// Group ids don't survive a browser restart.
+chrome.runtime.onStartup.addListener(() => {
+  groups.clear()
+  void chrome.storage.local.remove(STORAGE_KEY)
+})
 chrome.tabs.onCreated.addListener((tab) => {
   if (groups.size && tab.windowId !== undefined) scheduleKeepFirst(tab.windowId)
 })

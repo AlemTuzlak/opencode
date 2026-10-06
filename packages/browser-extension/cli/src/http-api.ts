@@ -60,6 +60,8 @@ export function createHttpRequestHandler(options: {
   readonly sessions: OpenCodeBrowserSessions
   /** Asks the extension to close agent-opened tabs idle for `idleMinutes` (its setting when omitted). */
   readonly cleanupTabs: (idleMinutes: number | undefined) => Effect.Effect<JsonObject, Error>
+  /** Reloads the extension so an unpacked install picks up files `install` just replaced. */
+  readonly reloadExtension: () => Effect.Effect<JsonObject, Error>
 }): (request: http.IncomingMessage, response: http.ServerResponse) => void {
   options.sessions.setUserAttachedPageUrlsProvider(() =>
     options.registry.listRootTargets()
@@ -114,6 +116,12 @@ export function createHttpRequestHandler(options: {
         "Protocol-Version": "1.3",
         webSocketDebuggerUrl: webSocketDebuggerUrl.toString(),
       })
+      return
+    }
+    if (pathname === "/extension/reload" && request.method === "POST") {
+      run(Effect.gen(function* () {
+        sendJson(response, yield* options.reloadExtension())
+      }))
       return
     }
     if (pathname === "/tabs/cleanup" && request.method === "POST") {

@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url"
 // The extension is loaded unpacked from dist/. The service worker must keep a stable name for the
 // manifest; everything else is content-hashed.
 export default defineConfig(({ mode }) => ({
+  // Identifies this build in the relay's log, so a browser still running an older build is visible.
+  define: { __OPENCODE_BROWSER_BUILD__: JSON.stringify(new Date().toISOString()) },
   root: fileURLToPath(new URL(".", import.meta.url)),
   publicDir: "public",
   base: "./",

@@ -199,6 +199,7 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
         method: "hello",
         params: {
           version: chrome.runtime.getManifest().version,
+          build: __OPENCODE_BROWSER_BUILD__,
           protocolVersion: extensionProtocolVersion,
           profileId: profile.id,
           profileName: profile.name ?? "OpenCode Browser",
@@ -563,12 +564,17 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     if (ownedGroup(current?.title)) await chrome.tabs.ungroup(tabId).catch(() => undefined)
   }
 
-  /** After a restart, relay groups may hold tabs the relay no longer uses. */
+  /**
+   * After a restart, relay groups may hold tabs the relay no longer uses. Tabs an agent opened stay in their group
+   * (the relay reclaims a named session's tabs, and idle cleanup closes the rest), so a restart never leaves loose
+   * agent tabs behind; a tab the user lent an agent goes back to being an ordinary tab.
+   */
   const ungroupStale = async () => {
     const groups = (await chrome.tabGroups.query({})).filter((item) => ownedGroup(item.title))
     for (const item of groups)
       for (const tab of await chrome.tabs.query({ groupId: item.id }))
-        if (tab.id !== undefined && !relayTabs.has(tab.id)) await chrome.tabs.ungroup(tab.id).catch(() => undefined)
+        if (tab.id !== undefined && !relayTabs.has(tab.id) && !(await TabCleanup.isTracked(tab.id)))
+          await chrome.tabs.ungroup(tab.id).catch(() => undefined)
   }
 
   // Listeners live as long as the worker, not a connection, so reconnects never add more.
@@ -717,6 +723,8 @@ export function createAgentRelay(input: { changed: (state: AgentRelayState) => v
     },
   }
 }
+
+declare const __OPENCODE_BROWSER_BUILD__: string
 
 export type AgentRelay = ReturnType<typeof createAgentRelay>
 

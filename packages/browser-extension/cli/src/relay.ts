@@ -519,6 +519,7 @@ const makeRelay = Effect.fnUntraced(function* (options: {
     recordingRelay,
     flightRecorder,
     sessions,
+    reloadExtension: () => sendToExtension({ method: "runtime.reload" }),
     cleanupTabs: (idleMinutes) =>
       sendToExtension({ method: "tabs.cleanup", ...(idleMinutes === undefined ? {} : { params: { idleMinutes } }) }),
     extensionStatus: () => {
@@ -803,6 +804,7 @@ const makeRelay = Effect.fnUntraced(function* (options: {
     )
     relayLog("extension.connected", {
       version: getString(message.params, "version"),
+      build: getString(message.params, "build"),
       protocol: protocol.version,
       profile: getString(message.params, "profileName"),
       generation: extensionGeneration,
