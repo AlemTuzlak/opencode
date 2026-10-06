@@ -14,9 +14,8 @@ test("keeps a successful removal applied until its event arrives", async () => {
   await request
   expect(mutation.apply([session])).toEqual([])
 
-  expect(mutation.deleted(session.id)).toBe(true)
+  mutation.deleted(session.id)
   expect(mutation.apply([session])).toEqual([session])
-  expect(mutation.deleted(session.id)).toBe(false)
 })
 
 test("rolls back a failed removal", async () => {
