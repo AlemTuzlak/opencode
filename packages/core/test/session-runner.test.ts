@@ -845,7 +845,16 @@ const fragmentFixture = (kind: FragmentKind, id: string, chunks: readonly string
       return {
         partialEvents,
         completeEvents: [...partialEvents, LLMEvent.toolInputEnd({ id, name: "echo" })],
-        expectedAssistant: { type: "assistant", content: [expectedContent] },
+        expectedAssistant: {
+          type: "assistant",
+          content: [
+            {
+              type: "tool",
+              id,
+              state: { status: "error", input: {}, error: { type: "tool.input-incomplete" } },
+            },
+          ],
+        },
         expectedContent,
       }
     }
@@ -3712,6 +3721,45 @@ describe("SessionRunnerLLM", () => {
     expect(systemTexts(s.requests[1])).toContain("Replacement context")
   })
 
+  scenario("executes a completed tool call before the provider finishes the response", function* (s) {
+    yield* s.admit("Echo this")
+    const tools = yield* s.blockTools()
+    const finish = yield* Deferred.make<void>()
+    yield* s.llm.push(
+      Stream.fromIterable([
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.toolInputStart({ id: "call-early", name: "echo" }),
+        LLMEvent.toolInputDelta({ id: "call-early", name: "echo", text: '{"text":"hello"}' }),
+        LLMEvent.toolInputEnd({ id: "call-early", name: "echo" }),
+        LLMEvent.toolCall({ id: "call-early", name: "echo", input: { text: "hello" } }),
+      ]).pipe(
+        Stream.concat(
+          Stream.fromEffect(Deferred.await(finish)).pipe(
+            Stream.flatMap(() =>
+              Stream.fromIterable([
+                LLMEvent.stepFinish({ index: 0, reason: { normalized: "tool-calls" } }),
+                LLMEvent.finish({ reason: { normalized: "tool-calls" } }),
+              ]),
+            ),
+          ),
+        ),
+      ),
+      TestLLM.stop(),
+    )
+    const run = yield* s.resume.pipe(Effect.forkChild)
+    yield* tools.started
+
+    expect(requireAssistant(yield* s.context)).toMatchObject({
+      content: [{ type: "tool", id: "call-early", state: { status: "running", input: { text: "hello" } } }],
+    })
+    expect(yield* recordedEventTypes(sessionID)).not.toContain("session.step.streamed.1")
+
+    yield* Deferred.succeed(finish, undefined)
+    yield* tools.release
+    yield* Fiber.join(run)
+    expect(s.executions).toEqual(["hello"])
+  })
+
   scenario("consumes the full provider stream before recording its boundary and settling local tools", function* (s) {
     yield* s.admit("Echo this")
     const request = yield* s.llm.gate
@@ -6022,6 +6070,69 @@ describe("SessionRunnerLLM", () => {
       },
     ])
   })
+
+  for (const finish of ["stop", "length"] as const) {
+    for (const ended of [false, true]) {
+      scenario(`settles unfinished tool input after ${finish} (input ended: ${ended})`, function* (s) {
+        const raw = '{"text":"unfinished-marker'
+        yield* s.llm.push(
+          TestLLM.complete(
+            { reason: { normalized: finish } },
+            LLMEvent.toolCall({ id: "call-valid", name: "echo", input: { text: "valid" } }),
+            LLMEvent.toolInputStart({ id: "call-incomplete", name: "echo" }),
+            LLMEvent.toolInputDelta({ id: "call-incomplete", name: "echo", text: raw }),
+            ...(ended ? [LLMEvent.toolInputEnd({ id: "call-incomplete", name: "echo" })] : []),
+          ),
+          TestLLM.stop(),
+        )
+
+        yield* s.runPrompt("Recover unfinished tool input")
+
+        expect(s.requests).toHaveLength(2)
+        expect(s.executions).toEqual(["valid"])
+        expect(JSON.stringify(s.requests[1])).not.toContain("unfinished-marker")
+        expect(s.requests[1]?.messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              role: "tool",
+              content: expect.arrayContaining([
+                expect.objectContaining({
+                  type: "tool-result",
+                  id: "call-incomplete",
+                  result: expect.objectContaining({ type: "error" }),
+                }),
+              ]),
+            }),
+          ]),
+        )
+        const assistant = requireAssistant(yield* s.context)
+        expect(assistant.error).toBeUndefined()
+        expect(assistant.content).toMatchObject([
+          { type: "tool", id: "call-valid", state: { status: "completed" } },
+          {
+            type: "tool",
+            id: "call-incomplete",
+            executed: false,
+            state: { status: "error", error: { type: "tool.input-incomplete" } },
+          },
+        ])
+        const events = yield* s.db
+          .select({ type: EventTable.type, data: EventTable.data })
+          .from(EventTable)
+          .where(eq(EventTable.aggregate_id, sessionID))
+          .all()
+          .pipe(Effect.orDie)
+        expect(
+          events.filter((event) => event.type === "session.tool.input.ended.1" && event.data.id === "call-incomplete"),
+        ).toHaveLength(1)
+        expect(
+          events.filter((event) => event.type === "session.tool.failed.2" && event.data.id === "call-incomplete"),
+        ).toHaveLength(1)
+        yield* replaySessionProjection(sessionID)
+        expect((yield* s.context).find((message) => message.id === assistant.id)).toEqual(assistant)
+      })
+    }
+  }
 
   scenario("continues after malformed local tool input without exposing raw arguments", function* (s) {
     const marker = "raw-malformed-marker"
