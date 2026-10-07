@@ -31,7 +31,10 @@ export type Interface = Omit<OpenCodeClient, "plugin" | "workspace"> & {
     readonly destroy: (options: { readonly workspaceID: Workspace.ID }) => ReturnType<Workspace.Interface["destroy"]>
   }
   readonly plugin: EmbeddedHost.Interface["plugins"]["register"] & OpenCodeClient["plugin"]
-  /** This instance's HTTP API for external opencode clients, to serve with an Effect `HttpServer`. */
+  /**
+   * This instance's HTTP API for external opencode clients. Serve it with an Effect `HttpServer`; a fetch
+   * handler cannot accept PTY WebSockets. Stop that server before closing this instance.
+   */
   readonly http: EmbeddedHost.Interface["http"]
 }
 

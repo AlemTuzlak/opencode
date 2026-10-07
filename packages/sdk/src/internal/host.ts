@@ -5,11 +5,12 @@ import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { Session } from "@opencode/core/session"
 import { Workspace } from "@opencode/core/workspace"
 import { WorkspaceDriver } from "@opencode/core/workspace/driver"
+import { isAllowedCorsOrigin } from "@opencode/server/cors"
 import { createEmbeddedRoutes } from "@opencode/server/routes"
 import type { ServerOptions } from "@opencode/server/options"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Context, Effect, Layer, ManagedRuntime, Scope } from "effect"
-import { HttpEffect, HttpRouter, HttpServer, HttpServerRequest } from "effect/unstable/http"
+import { HttpEffect, HttpMiddleware, HttpRouter, HttpServer, HttpServerRequest } from "effect/unstable/http"
 import { context, layer, type LogOptions } from "../logging"
 import { OwnedFetch } from "./fetch"
 import { SdkInstances } from "./instances"
@@ -22,6 +23,8 @@ export interface CreateOptions<R = never> extends Omit<ServerOptions, "hostname"
   readonly log?: LogOptions
   readonly workspaceProviders?: Readonly<Record<string, WorkspaceDriver.Interface>>
   readonly instances?: SdkInstances.Options<R>
+  /** Addresses where the embedder serves `http`, reported by `/api/info` and used for pairing links. */
+  readonly urls?: ReadonlyArray<string>
 }
 
 /** Host hooks for embedding opencode on a non-default runtime profile. */
@@ -33,7 +36,7 @@ export const create = Effect.fn("EmbeddedHost.create")(function* <R = never>(
   options: CreateOptions<R> = {},
   embed: EmbedOptions = {},
 ) {
-  const { log, workspaceProviders, instances, ...server } = options
+  const { log, workspaceProviders, instances, urls, ...server } = options
   const selector = instances ? SdkInstances.provide(instances, yield* Effect.context<R>()) : undefined
   const runtime = ManagedRuntime.make(
     createEmbeddedRoutes(
@@ -46,6 +49,7 @@ export const create = Effect.fn("EmbeddedHost.create")(function* <R = never>(
         ? [...(embed.overrides ?? []), WorkspaceDriver.node.replace(WorkspaceDriver.registryNode(workspaceProviders))]
         : embed.overrides,
       selector ? (replacements) => SdkInstances.node(selector, replacements) : undefined,
+      () => urls ?? [],
     ).pipe(Layer.provide(HttpServer.layerServices), Layer.provideMerge(layer(log))),
   )
 
@@ -72,8 +76,10 @@ export const create = Effect.fn("EmbeddedHost.create")(function* <R = never>(
 
     return {
       runtime,
-      // Serve with an Effect HttpServer to expose this instance; a fetch handler cannot accept PTY WebSockets.
-      http: http.pipe(Effect.provideContext(context(services))),
+      http: http.pipe(
+        HttpMiddleware.cors({ allowedOrigins: (origin) => isAllowedCorsOrigin(origin, server), maxAge: 86_400 }),
+        Effect.provideContext(context(services)),
+      ),
       fetch: transport.fetch,
       plugins: Context.get(services, SdkPlugins.Service),
       sessions: Context.get(services, Session.Service),

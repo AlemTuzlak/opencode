@@ -100,11 +100,12 @@ export function createEmbeddedRoutes(
   options: ServerOptions = {},
   overrides: LayerNode.Replacements = [],
   instances?: InstanceNode,
+  serviceURLs: () => ReadonlyArray<string> = () => [],
 ) {
   return makeRoutes(
     ServerAuth.Config.configLayer({ password: Option.fromNullishOr(options.password) }),
     options,
-    () => [],
+    serviceURLs,
     overrides,
     instances,
   )
