@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { inlineCodeKind, stripInlineCodeLocation } from "./markdown-inline-code-kind"
+import { inlineCodeKind } from "./markdown-inline-code-kind"
 
 describe("inlineCodeKind", () => {
   test("leaves code expressions and non-file slash tokens as normal inline code", () => {
@@ -25,11 +25,17 @@ describe("inlineCodeKind", () => {
     expect(inlineCodeKind(`Node.js`)).toBeUndefined()
     expect(inlineCodeKind(`Next.js`)).toBeUndefined()
     expect(inlineCodeKind(`this.props`)).toBeUndefined()
+    expect(inlineCodeKind(`this.el`)).toBeUndefined()
     expect(inlineCodeKind(`res.json`)).toBeUndefined()
     expect(inlineCodeKind(`s.lock`)).toBeUndefined()
     expect(inlineCodeKind(`config.mod`)).toBeUndefined()
     expect(inlineCodeKind(`el.flex`)).toBeUndefined()
     expect(inlineCodeKind(`x.pub`)).toBeUndefined()
+    expect(inlineCodeKind(`schema.properties`)).toBeUndefined()
+    expect(inlineCodeKind(`chalk.red`)).toBeUndefined()
+    expect(inlineCodeKind(`router.go`)).toBeUndefined()
+    expect(inlineCodeKind(`counter.inc`)).toBeUndefined()
+    expect(inlineCodeKind(`graph.edge`)).toBeUndefined()
     expect(inlineCodeKind(`example.com/foo.js`)).toBeUndefined()
     expect(inlineCodeKind(`localhost:3000/app.js`)).toBeUndefined()
     expect(inlineCodeKind(`/api/session/:id`)).toBeUndefined()
@@ -60,9 +66,20 @@ describe("inlineCodeKind", () => {
     expect(inlineCodeKind(`a.ts`)).toBe("path")
     expect(inlineCodeKind(`app.tsx:42`)).toBe("path")
     expect(inlineCodeKind(`app.tsx:42:10`)).toBe("path")
+    expect(inlineCodeKind(`app.tsx:42-50`)).toBe("path")
     expect(inlineCodeKind(`app.tsx#L42-L55`)).toBe("path")
+    expect(inlineCodeKind(`C:/tmp/file.ts:10`)).toBe("path")
     expect(inlineCodeKind(`vite.config.mjs`)).toBe("path")
     expect(inlineCodeKind(`eslint.config.cjs`)).toBe("path")
+    expect(inlineCodeKind(`tsconfig.base.json`)).toBe("path")
+    expect(inlineCodeKind(`app.config.json`)).toBe("path")
+    expect(inlineCodeKind(`styles.module.css`)).toBe("path")
+    expect(inlineCodeKind(`index.test.html`)).toBe("path")
+    expect(inlineCodeKind(`error.log`)).toBe("path")
+    expect(inlineCodeKind(`result.json`)).toBe("path")
+    expect(inlineCodeKind(`archive.zip`)).toBe("path")
+    expect(inlineCodeKind(`screenshot.avif`)).toBe("path")
+    expect(inlineCodeKind(`pubspec.lock`)).toBe("path")
     expect(inlineCodeKind(`app.d.ts`)).toBe("path")
     expect(inlineCodeKind(`component.svelte`)).toBe("path")
     expect(inlineCodeKind(`schema.graphql`)).toBe("path")
@@ -103,13 +120,5 @@ describe("inlineCodeKind", () => {
     expect(inlineCodeKind(`http://localhost:4444`)).toBe("url")
     expect(inlineCodeKind(`file:///tmp/opencode`)).toBeUndefined()
     expect(inlineCodeKind(`ftp://opencode.ai/docs`)).toBeUndefined()
-  })
-
-  test("strips line and range suffixes without corrupting drive roots", () => {
-    expect(stripInlineCodeLocation(`src/app.tsx:42`)).toBe(`src/app.tsx`)
-    expect(stripInlineCodeLocation(`src/app.tsx:42:8`)).toBe(`src/app.tsx`)
-    expect(stripInlineCodeLocation(`src/app.tsx:42-50`)).toBe(`src/app.tsx`)
-    expect(stripInlineCodeLocation(`src/app.tsx#L42-L50`)).toBe(`src/app.tsx`)
-    expect(stripInlineCodeLocation(`C:/tmp/file.ts:10`)).toBe(`C:/tmp/file.ts`)
   })
 })

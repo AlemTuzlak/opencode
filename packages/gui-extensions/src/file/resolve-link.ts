@@ -11,7 +11,6 @@ export interface ParsedFileLink {
 }
 
 export interface ResolveWorkspaceOptions {
-  readonly base?: string
   readonly rootName?: string
   readonly activePath?: string
   readonly openPaths?: readonly string[]
@@ -39,7 +38,7 @@ const hashLineSuffix = /^(.*?)#L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i
 
 const colonLinePattern = /^(.*?):(\d+)(?::\d+)?(?:-(\d+)(?::\d+)?)?$/
 
-const docStemNames = new Set(["readme", "license", "changelog", "copying", "authors", "notice"])
+const docStemPattern = /^(?:readme|license|changelog|copying|authors|notice)$/i
 
 /**
  * Extracts a normalized file path and optional 1-based line range from a markdown link or inline-code token.
@@ -115,9 +114,11 @@ function normalizeRelativeSegments(input: string, decode: boolean): string {
 
   if (!trimmed) return ""
 
-  const leadingSlash = trimmed.startsWith("/") ? "/" : ""
+  const driveMatch = trimmed.match(/^([a-z]:)\/(.*)$/i)
+  const prefix = driveMatch ? `${driveMatch[1]}/` : trimmed.startsWith("/") ? "/" : ""
+  const rest = driveMatch ? (driveMatch[2] ?? "") : prefix ? trimmed.slice(1) : trimmed
 
-  const out = trimmed.split("/").reduce<string[]>((acc, part) => {
+  const out = rest.split("/").reduce<string[]>((acc, part) => {
     if (!part || part === ".") return acc
 
     if (part === "..") {
@@ -127,7 +128,7 @@ function normalizeRelativeSegments(input: string, decode: boolean): string {
         return acc
       }
 
-      if (!leadingSlash) acc.push("..")
+      if (!prefix) acc.push("..")
 
       return acc
     }
@@ -137,7 +138,7 @@ function normalizeRelativeSegments(input: string, decode: boolean): string {
     return acc
   }, [])
 
-  return `${leadingSlash}${out.join("/")}`
+  return `${prefix}${out.join("/")}`
 }
 
 function decodePathSafely(value: string): string {
@@ -156,11 +157,7 @@ function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions
   const clean = (value: string | undefined) =>
     value?.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^\/+/, "").replace(/\/+$/, "")
 
-  if (options?.base) {
-    const resolved = clean(resolveArtifactPath(options.base, path))
-
-    if (resolved) primary.add(resolved)
-  } else if (options?.activePath && (path === ".." || path.startsWith("../"))) {
+  if (options?.activePath && (path === ".." || path.startsWith("../"))) {
     const activeDir = directoryOf(options.activePath.replaceAll("\\", "/"))
     const resolved = activeDir ? clean(resolveArtifactPath(activeDir, path)) : undefined
 
@@ -209,7 +206,7 @@ function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions
 
 /**
  * Ranks workspace file candidates deterministically across 4 tiers:
- * 1. Exact workspace path match (or expanded monorepo/base/active-tab variant)
+ * 1. Exact workspace path match (or expanded monorepo/active-tab variant)
  * 2. Segment-boundary suffix match (`session/timeline/interaction.ts` -> `packages/app/src/session/timeline/interaction.ts`)
  * 3. Package-anchored segment subsequence (`packages/session-ui/markdown.tsx` -> `packages/session-ui/src/components/markdown.tsx`)
  * 4. Bare basename match (`tool-renderer.tsx`), disambiguated by active/open package context.
@@ -219,7 +216,14 @@ export function scoreWorkspaceCandidates(
   candidates: readonly string[],
   options?: ResolveWorkspaceOptions,
 ): WorkspaceLinkResolution {
-  const parsed = parseFileLink(rawPath)
+  return scoreParsedWorkspaceCandidates(parseFileLink(rawPath), candidates, options)
+}
+
+export function scoreParsedWorkspaceCandidates(
+  parsed: ParsedFileLink,
+  candidates: readonly string[],
+  options?: ResolveWorkspaceOptions,
+): WorkspaceLinkResolution {
   const variants = expandWorkspaceVariants(parsed.path, options)
   const normalizedCandidates = [...new Set(candidates.map((item) => item.replaceAll("\\", "/").replace(/\/+$/, "")))]
 
@@ -229,7 +233,7 @@ export function scoreWorkspaceCandidates(
 
   const queryBase = parsed.basename.toLowerCase()
   const tsStem = stripJsImportExtension(queryBase)
-  const isDocStem = !queryBase.includes(".") && docStemNames.has(queryBase)
+  const isDocStem = !queryBase.includes(".") && docStemPattern.test(queryBase)
   const exactBasenameMatches = normalizedCandidates.filter((file) => basenameOf(file).toLowerCase() === queryBase)
 
   const matchingPool =
@@ -282,7 +286,7 @@ export function scoreWorkspaceCandidates(
     return { kind: "match", path: top.path }
   }
 
-  // Require a meaningful score lead (more matched segments, exact case, or active-package context, not just path depth).
+  // Require a meaningful score lead (more matched segments, exact case, or active-package context, not path depth).
   if (top.score - second.score >= 15) {
     return { kind: "match", path: top.path }
   }
@@ -296,7 +300,6 @@ export function scoreWorkspaceCandidates(
 export async function searchWorkspaceCandidates(input: {
   readonly files: Files
   readonly parsed: ParsedFileLink
-  readonly base?: string
   readonly activePath?: string
   readonly openPaths?: readonly string[]
   readonly signal: AbortSignal
@@ -305,7 +308,6 @@ export async function searchWorkspaceCandidates(input: {
   const rootName = getFilename(root)
 
   const options: ResolveWorkspaceOptions = {
-    base: input.base,
     rootName,
     activePath: input.activePath,
     openPaths: input.openPaths,
@@ -316,7 +318,7 @@ export async function searchWorkspaceCandidates(input: {
   if (input.signal.aborted) return { kind: "none" }
 
   if (primary.length > 0) {
-    const scored = scoreWorkspaceCandidates(input.parsed.path, primary, options)
+    const scored = scoreParsedWorkspaceCandidates(input.parsed, primary, options)
 
     if (scored.kind !== "none") return scored
   }
@@ -329,7 +331,7 @@ export async function searchWorkspaceCandidates(input: {
     if (input.signal.aborted) return { kind: "none" }
 
     if (secondary.length > 0) {
-      return scoreWorkspaceCandidates(input.parsed.path, secondary, options)
+      return scoreParsedWorkspaceCandidates(input.parsed, secondary, options)
     }
   }
 
@@ -339,17 +341,17 @@ export async function searchWorkspaceCandidates(input: {
 function ambiguousPickerQuery(parsed: ParsedFileLink, topPath: string): string {
   const topBase = basenameOf(topPath)
 
+  const raw = parsed.strippedPath.startsWith("@")
+    ? parsed.strippedPath.replace(/^@[^/]+\//, "") || parsed.strippedPath
+    : parsed.strippedPath
+
   if (topBase.toLowerCase() !== parsed.basename.toLowerCase()) {
-    return topBase
+    const dir = directoryOf(raw)
+
+    return dir ? `${dir}/${topBase}` : topBase
   }
 
-  if (parsed.strippedPath.startsWith("@")) {
-    const scoped = parsed.strippedPath.match(/^@[^/]+\/([^/]+)\/(.+)$/)
-
-    if (scoped) return `${scoped[1]}/${scoped[2]}`
-  }
-
-  return parsed.strippedPath
+  return raw
 }
 
 function scoreTier(
@@ -365,6 +367,16 @@ function scoreTier(
     return { tier: 1, baseScore: 1000 }
   }
 
+  if (
+    variants.primary.some((variant) => {
+      const segments = variant.split("/").filter(Boolean)
+
+      return segments.length === fileSegments.length && hasTrailingSegmentMatch(segments, fileSegments)
+    })
+  ) {
+    return { tier: 1, baseScore: 990 }
+  }
+
   const primarySuffix = variants.primary.find((variant) => {
     const segments = variant.split("/").filter(Boolean)
 
@@ -373,11 +385,11 @@ function scoreTier(
 
   if (primarySuffix) {
     const variantSegments = primarySuffix.split("/").filter(Boolean)
-    const extraDepth = Math.max(0, fileSegments.length - variantSegments.length)
+    const extraDepth = Math.min(10, Math.max(0, fileSegments.length - variantSegments.length) * 2)
 
     return {
       tier: 2,
-      baseScore: 800 + variantSegments.length * 25 - extraDepth * 2,
+      baseScore: 800 + variantSegments.length * 25 - extraDepth,
     }
   }
 
@@ -393,11 +405,11 @@ function scoreTier(
 
   if (climbedSuffix) {
     const tailSegments = climbedSuffix.split("/").filter(Boolean)
-    const extraDepth = fileSegments.length - tailSegments.length
+    const extraDepth = Math.min(10, (fileSegments.length - tailSegments.length) * 2)
 
     return {
       tier: 2,
-      baseScore: 800 + tailSegments.length * 25 - extraDepth * 2,
+      baseScore: 800 + tailSegments.length * 25 - extraDepth,
     }
   }
 
@@ -415,28 +427,30 @@ function scoreTier(
 
   if (gitSuffix) {
     const gitSegments = gitSuffix.split("/").filter(Boolean)
-    const extraDepth = Math.max(0, fileSegments.length - gitSegments.length)
+    const extraDepth = Math.min(10, Math.max(0, fileSegments.length - gitSegments.length) * 2)
 
     return {
       tier: 2,
-      baseScore: 740 + gitSegments.length * 20 - extraDepth * 2,
+      baseScore: 740 + gitSegments.length * 20 - extraDepth,
     }
   }
 
   if (!climbs && querySegments.length > 1 && isAnchoredSubsequence(querySegments, fileSegments)) {
     const trailing = countTrailingMatches(querySegments, fileSegments)
-    const extraDepth = Math.max(0, fileSegments.length - querySegments.length)
+    const extraDepth = Math.min(10, Math.max(0, fileSegments.length - querySegments.length) * 2)
 
     return {
       tier: 3,
-      baseScore: 600 + querySegments.length * 20 + trailing * 15 - extraDepth * 3,
+      baseScore: 600 + querySegments.length * 20 + trailing * 15 - extraDepth,
     }
   }
 
   if (!climbs && querySegments.length === 1) {
+    const depthPenalty = Math.min(10, fileSegments.length * 2)
+
     return {
       tier: 4,
-      baseScore: 400 - fileSegments.length * 2,
+      baseScore: 400 - depthPenalty,
     }
   }
 
@@ -447,9 +461,6 @@ function computeContextBonus(file: string, options?: ResolveWorkspaceOptions): n
   if (!options) return 0
   const fileDir = directoryOf(file)
   const filePkg = packageRootOf(file)
-
-  const base = options.base?.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
-  const baseBonus = base ? (fileDir === base ? 55 : file.startsWith(`${base}/`) ? 40 : 0) : 0
 
   const active = options.activePath?.replaceAll("\\", "/")
 
@@ -466,7 +477,7 @@ function computeContextBonus(file: string, options?: ResolveWorkspaceOptions): n
       (filePkg && options.openPaths.some((open) => packageRootOf(open.replaceAll("\\", "/")) === filePkg) ? 20 : 0)
     : 0
 
-  return baseBonus + activeBonus + openBonus
+  return activeBonus + openBonus
 }
 
 function matchDirectoryCandidates(variants: readonly string[], candidates: readonly string[]): WorkspaceLinkResolution {
@@ -541,7 +552,7 @@ function segmentMatch(querySeg: string, targetSeg: string, isBasename: boolean):
 
   if (stem && isTsAliasMatch(t, stem)) return true
 
-  return !q.includes(".") && docStemNames.has(q) && isDocStemMatch(t, q)
+  return !q.includes(".") && docStemPattern.test(q) && isDocStemMatch(t, q)
 }
 
 function stripJsImportExtension(basename: string): string | undefined {

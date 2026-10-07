@@ -32,6 +32,7 @@ const barePathExtensions = new Set([
   "astro",
   "au3",
   "avdl",
+  "avif",
   "avsc",
   "awk",
   "axaml",
@@ -176,13 +177,11 @@ const barePathExtensions = new Set([
   "eclass",
   "ecr",
   "ect",
-  "edge",
   "edgeql",
   "editorconfig",
   "edn",
   "ejs",
   "ejs.t",
-  "el",
   "eliom",
   "eliomi",
   "elm",
@@ -289,6 +288,7 @@ const barePathExtensions = new Set([
   "gts",
   "gv",
   "gvy",
+  "gz",
   "gyp",
   "gypi",
   "h",
@@ -339,7 +339,6 @@ const barePathExtensions = new Set([
   "ijs",
   "imba",
   "iml",
-  "inc",
   "ini",
   "ink",
   "inl",
@@ -667,7 +666,6 @@ const barePathExtensions = new Set([
   "pro",
   "proj",
   "prolog",
-  "properties",
   "proto",
   "prw",
   "ps1",
@@ -729,7 +727,6 @@ const barePathExtensions = new Set([
   "rdoc",
   "reb",
   "rebol",
-  "red",
   "reds",
   "reek",
   "reg",
@@ -898,6 +895,7 @@ const barePathExtensions = new Set([
   "tac",
   "tact",
   "talon",
+  "tar",
   "targets",
   "tcc",
   "tcl",
@@ -917,6 +915,7 @@ const barePathExtensions = new Set([
   "tfstate.backup",
   "tftpl",
   "tfvars",
+  "tgz",
   "thor",
   "thrift",
   "thy",
@@ -1120,32 +1119,37 @@ const barePathExtensions = new Set([
   "zs",
   "zsh",
   "zsh-theme",
+  "zip",
 ])
 
 // Single-letter or short source extensions that are valid when qualified with a directory slash (e.g. `src/main.c`, `include/foo.h`).
 const slashedOnlyExtensions = new Set([
   "d",
-  "f",
-  "l",
-  "m",
-  "r",
-  "s",
-  "v",
-  "y",
+  "edge",
+  "el",
   "env",
+  "f",
   "flex",
+  "inc",
+  "l",
   "lock",
-  "log",
+  "m",
   "mod",
   "mount",
+  "properties",
   "props",
   "pub",
+  "r",
+  "red",
+  "s",
   "service",
   "socket",
   "spec",
   "story",
   "target",
   "timer",
+  "v",
+  "y",
 ])
 
 const pathFileNames = new Set([
@@ -1374,6 +1378,7 @@ const pathFileNames = new Set([
   "procfile",
   "project.ede",
   "project.godot",
+  "pubspec.lock",
   "puppetfile",
   "pylintrc",
   "rakefile",
@@ -1419,7 +1424,7 @@ const exactCaseFileNames = new Set(["README", "LICENSE", "CHANGELOG", "COPYING",
 const pathFileNamePrefixes = new Set([".env", "containerfile", "dockerfile", "makefile"])
 
 // Extensions that can collide with JS/DOM property or method names on bare `receiver.ext` tokens (e.g. `res.json`, `console.log`, `obj.c`).
-const ambiguousBareExtensions = new Set(["c", "css", "h", "html", "json", "log", "sh", "sql", "txt", "xml"])
+const ambiguousBareExtensions = new Set(["c", "css", "go", "h", "html", "json", "log", "sh", "sql", "txt", "xml"])
 
 const bareCodeReceivers = new Set([
   "console",
@@ -1427,7 +1432,6 @@ const bareCodeReceivers = new Set([
   "document",
   "el",
   "err",
-  "error",
   "event",
   "form",
   "global",
@@ -1448,7 +1452,7 @@ const bareCodeReceivers = new Set([
   "request",
   "res",
   "response",
-  "result",
+  "router",
   "self",
   "state",
   "store",
@@ -1578,7 +1582,6 @@ const compoundMiddleExtensions = new Set([
   "antlers",
   "blade",
   "cmake",
-  " cython",
   "d",
   "desktop",
   "dll",
@@ -1611,7 +1614,7 @@ const lineHashSuffix = /#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i
 
 const lineColonSuffix = /:\d+(?::\d+)?(?:-\d+(?::\d+)?)?$/
 
-export function stripInlineCodeLocation(text: string): string {
+function stripInlineCodeLocation(text: string): string {
   const withoutHash = text.replace(lineHashSuffix, "")
 
   if (!lineColonSuffix.test(withoutHash)) return withoutHash
@@ -1717,9 +1720,7 @@ function isAmbiguousBareCode(basename: string) {
   if (parts.length > 2 && parts.slice(0, -1).every((part) => part.length === 1)) return true
 
   if (!ambiguousBareExtensions.has(ext)) return false
-
-  if (parts.length > 2) return true
   const stem = parts[0]!.toLowerCase()
 
-  return stem.length <= 1 || bareCodeReceivers.has(stem)
+  return (parts.length === 2 && stem.length <= 1) || bareCodeReceivers.has(stem)
 }

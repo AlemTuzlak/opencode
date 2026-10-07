@@ -467,6 +467,8 @@ const setup: Setup<typeof File> = (ctx) => {
 
       if (!session || !screen || !files || (link.session && link.session.key !== session.key)) return
 
+      const currentClick = ++clickSeq
+
       // A known workspace file (the palette, a file comment) opens at once with every file listed.
       if (link.exact || link.origin === "file") {
         const path = files.resolve(link.href)
@@ -481,7 +483,6 @@ const setup: Setup<typeof File> = (ctx) => {
         return
       }
 
-      const currentClick = ++clickSeq
       const sessionKey = session.key
 
       void (async () => {

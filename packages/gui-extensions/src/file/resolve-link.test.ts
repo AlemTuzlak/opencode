@@ -35,6 +35,7 @@ describe("parseFileLink", () => {
     ["../timeline/interaction.ts:74", "../timeline/interaction.ts", { start: 74, end: 74 }],
     ["src/C#/a.cs", "src/C#/a.cs", undefined],
     ["a%2520b.ts", "a%2520b.ts", undefined],
+    ["C:/foo/../../x.ts", "C:/x.ts", undefined],
     ["file:///C:/tmp/demo%20file.ts:12", "C:/tmp/demo file.ts", { start: 12, end: 12 }],
   ])("parses %s", (href, expectedPath, expectedSelection) => {
     const parsed = parseFileLink(href)
@@ -128,6 +129,14 @@ describe("scoreWorkspaceCandidates", () => {
       kind: "match",
       path: "packages/core/src/filesystem/search.ts",
     })
+    expect(scoreWorkspaceCandidates("src/foo.js", ["src/foo.ts", "packages/x/src/foo.ts"])).toEqual({
+      kind: "match",
+      path: "src/foo.ts",
+    })
+    expect(scoreWorkspaceCandidates("README", ["README.md", "docs/README.md"])).toEqual({
+      kind: "match",
+      path: "README.md",
+    })
     expect(scoreWorkspaceCandidates("README", workspaceFiles)).toEqual({
       kind: "match",
       path: "docs/README.md",
@@ -198,6 +207,14 @@ describe("scoreWorkspaceCandidates", () => {
       query: "index.ts",
     })
     expect(scoreWorkspaceCandidates("util.js", ["packages/a/util.ts", "packages/b/util.ts"])).toEqual({
+      kind: "ambiguous",
+      query: "util.ts",
+    })
+    expect(scoreWorkspaceCandidates("src/foo.js", ["packages/a/src/foo.ts", "packages/b/src/foo.ts"])).toEqual({
+      kind: "ambiguous",
+      query: "src/foo.ts",
+    })
+    expect(scoreWorkspaceCandidates("util.ts", ["p/util.ts", "p/q/r/s/t/u/v/w/x/util.ts"])).toEqual({
       kind: "ambiguous",
       query: "util.ts",
     })
