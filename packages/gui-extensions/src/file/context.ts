@@ -40,6 +40,8 @@ export interface FileShared {
     get(session: string, path: string): LineRange | null | undefined
     set(session: string, files: Record<string, LineRange | null>): void
   }
+  /** Increments each time a link opens a file at a line range, so a shown tab scrolls back to it. */
+  reveal(): { readonly session: string; readonly path: string; readonly seq: number } | undefined
   /** The tab is the session's selected side tab. */
   active(session: MountedSession, id: string): boolean
   open(session: MountedSession, path: string, options?: OpenOptions): void

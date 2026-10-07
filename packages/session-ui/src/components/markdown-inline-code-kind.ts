@@ -56,6 +56,7 @@ const barePathExtensions = new Set([
   "bru",
   "bsl",
   "bzl",
+  "c",
   "c++",
   "c3",
   "cabal",
@@ -210,7 +211,6 @@ const barePathExtensions = new Set([
   "feature",
   "fir",
   "fish",
-  "flex",
   "flix",
   "flux",
   "fnl",
@@ -247,6 +247,7 @@ const barePathExtensions = new Set([
   "gemspec",
   "geojson",
   "geom",
+  "gif",
   "gitconfig",
   "gitignore",
   "gjs",
@@ -290,6 +291,7 @@ const barePathExtensions = new Set([
   "gvy",
   "gyp",
   "gypi",
+  "h",
   "h++",
   "h.in",
   "hack",
@@ -437,8 +439,8 @@ const barePathExtensions = new Set([
   "livemd",
   "lkml",
   "ll",
-  "lock",
   "lockb",
+  "log",
   "logtalk",
   "lookml",
   "lpr",
@@ -508,7 +510,6 @@ const barePathExtensions = new Set([
   "mm",
   "mmd",
   "mo",
-  "mod",
   "mojo",
   "monkey",
   "moon",
@@ -667,7 +668,6 @@ const barePathExtensions = new Set([
   "proj",
   "prolog",
   "properties",
-  "props",
   "proto",
   "prw",
   "ps1",
@@ -677,7 +677,6 @@ const barePathExtensions = new Set([
   "psd1",
   "psgi",
   "psm1",
-  "pub",
   "pubxml",
   "pug",
   "puml",
@@ -1136,14 +1135,19 @@ const slashedOnlyExtensions = new Set([
   "v",
   "y",
   "env",
+  "flex",
+  "lock",
   "log",
-  "spec",
-  "story",
+  "mod",
+  "mount",
+  "props",
+  "pub",
   "service",
   "socket",
-  "timer",
-  "mount",
+  "spec",
+  "story",
   "target",
+  "timer",
 ])
 
 const pathFileNames = new Set([
@@ -1295,15 +1299,18 @@ const pathFileNames = new Set([
   "cargo.lock",
   "cargo.toml",
   "cargo.toml.orig",
+  "changelog",
   "citation.cff",
   "claude.md",
   "cmakelists.txt",
   "codeowners",
   "commit_editmsg",
+  "composer.lock",
   "config.worktree",
   "configure.ac",
   "containerfile",
   "contents.lr",
+  "copying",
   "cpanfile",
   "crontab",
   "dangerfile",
@@ -1315,8 +1322,10 @@ const pathFileNames = new Set([
   "fakefile",
   "fastfile",
   "firestore.rules",
+  "flake.lock",
   "fp-lib-table",
   "gemfile",
+  "gemfile.lock",
   "gitignore-global",
   "gitignore_global",
   "gnumakefile",
@@ -1337,6 +1346,7 @@ const pathFileNames = new Set([
   "kbuild",
   "latexmkrc",
   "ld.script",
+  "license",
   "m3makefile",
   "makefile",
   "makefile.am",
@@ -1344,6 +1354,7 @@ const pathFileNames = new Set([
   "manifest.mf",
   "mavenfile",
   "meson.build",
+  "mix.lock",
   "mkfile",
   "mocha.opts",
   "module.bazel",
@@ -1362,12 +1373,15 @@ const pathFileNames = new Set([
   "pipfile",
   "pkgbuild",
   "podfile",
+  "podfile.lock",
+  "poetry.lock",
   "procfile",
   "project.ede",
   "project.godot",
   "puppetfile",
   "pylintrc",
   "rakefile",
+  "readme",
   "readme.1st",
   "rebar.config",
   "rexfile",
@@ -1392,6 +1406,7 @@ const pathFileNames = new Set([
   "tiltfile",
   "tmux.conf",
   "tsconfig.json",
+  "uv.lock",
   "vagrantfile",
   "vimrc",
   "vlcrc",
@@ -1401,6 +1416,7 @@ const pathFileNames = new Set([
   "workspace.bazel",
   "workspace.bzlmod",
   "wscript",
+  "yarn.lock",
 ])
 
 const pathFileNamePrefixes = new Set([
@@ -1409,6 +1425,63 @@ const pathFileNamePrefixes = new Set([
   "dockerfile",
   "makefile",
 ])
+
+const bareCodeReceivers = new Set([
+  "array",
+  "console",
+  "context",
+  "ctx",
+  "document",
+  "effect",
+  "el",
+  "err",
+  "error",
+  "event",
+  "form",
+  "global",
+  "globalthis",
+  "history",
+  "input",
+  "item",
+  "json",
+  "layer",
+  "localstorage",
+  "location",
+  "map",
+  "math",
+  "navigator",
+  "node",
+  "obj",
+  "object",
+  "option",
+  "options",
+  "opts",
+  "params",
+  "process",
+  "promise",
+  "props",
+  "reflect",
+  "req",
+  "request",
+  "res",
+  "response",
+  "result",
+  "self",
+  "session",
+  "sessionstorage",
+  "set",
+  "state",
+  "store",
+  "stream",
+  "symbol",
+  "sync",
+  "this",
+  "url",
+  "window",
+])
+
+const domainSegment =
+  /^(?:localhost(?::\d+)?|[a-z0-9-]+\.(?:com|org|net|io|dev|ai|app|edu|gov|co|me|gg|tv|xyz|fyi|local|localhost|internal|test|example|invalid)(?::\d+)?)$/i
 
 const lineHashSuffix = /#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i
 
@@ -1447,10 +1520,17 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
   const segments = clean.split("/").filter(Boolean)
 
   if (segments.length === 0) return
+
+  if (!anchored && !clean.startsWith("/") && segments.length > 1 && domainSegment.test(segments[0]!)) return
+
   const basename = segments[segments.length - 1]!
   const slashed = segments.length > 1 || clean.startsWith("/")
 
-  if (hasPathFileName(basename) || hasPathExtension(basename, slashed)) {
+  if (hasPathFileName(basename)) return "path"
+
+  if (hasPathExtension(basename, slashed)) {
+    if (!slashed && isBareCodeIdentifier(basename)) return
+
     return "path"
   }
 
@@ -1480,4 +1560,14 @@ function hasPathFileName(basename: string) {
   if (index <= 0) return false
 
   return pathFileNamePrefixes.has(value.slice(0, index))
+}
+
+function isBareCodeIdentifier(basename: string) {
+  if (basename.startsWith(".")) return false
+  const index = basename.indexOf(".")
+
+  if (index <= 0) return false
+  const stem = basename.slice(0, index).toLowerCase()
+
+  return stem.length <= 1 || bareCodeReceivers.has(stem)
 }

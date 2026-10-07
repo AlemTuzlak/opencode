@@ -14,6 +14,7 @@ const workspaceFiles = [
   "packages/gui-extensions/src/file/renderer.tsx",
   "packages/gui-extensions/src/file/path.ts",
   "packages/core/src/filesystem/search.ts",
+  "docs/README.md",
 ]
 
 describe("parseFileLink", () => {
@@ -24,7 +25,11 @@ describe("parseFileLink", () => {
     ["src/components/markdown.tsx:398-410", "src/components/markdown.tsx", { start: 398, end: 410 }],
     ["src/components/markdown.tsx#L398", "src/components/markdown.tsx", { start: 398, end: 398 }],
     ["src/components/markdown.tsx#L398-L410", "src/components/markdown.tsx", { start: 398, end: 410 }],
-    ["file:///C:/tmp/demo%20file.ts:12", "C:/tmp/demo file.ts", { start: 12, end: 12 }],
+    ["a/b.ts?x=1#L3", "a/b.ts", { start: 3, end: 3 }],
+    ["foo.ts:0", "foo.ts", undefined],
+    ["./a/../b.ts", "b.ts", undefined],
+    ["../timeline/interaction.ts:74", "../timeline/interaction.ts", { start: 74, end: 74 }],
+    ["file:///C:/tmp/demo%20file.ts:12", "C:/tmp/demo%20file.ts", { start: 12, end: 12 }],
   ])("parses %s", (href, expectedPath, expectedSelection) => {
     const parsed = parseFileLink(href)
     expect(parsed.path).toBe(expectedPath)
@@ -33,7 +38,7 @@ describe("parseFileLink", () => {
 })
 
 describe("scoreWorkspaceCandidates", () => {
-  test("resolves exact paths, git diff prefixes, root folder prefixes, and scoped packages (Tier 1)", () => {
+  test("resolves exact paths, git diff prefixes, root folder prefixes, and scoped packages (Tier 1 & Tier 2)", () => {
     expect(scoreWorkspaceCandidates("packages/app/src/app.tsx", workspaceFiles)).toEqual({
       kind: "match",
       path: "packages/app/src/app.tsx",
@@ -54,6 +59,39 @@ describe("scoreWorkspaceCandidates", () => {
     })
   })
 
+  test("ranks literal a/src/index.ts suffix match above git-diff stripped src/index.ts", () => {
+    expect(
+      scoreWorkspaceCandidates("a/src/index.ts", ["packages/a/src/index.ts", "src/index.ts"]),
+    ).toEqual({
+      kind: "match",
+      path: "packages/a/src/index.ts",
+    })
+  })
+
+  test("does not match unrelated external or node_modules prefixes via reverse suffix", () => {
+    expect(scoreWorkspaceCandidates("node_modules/pkg/docs/README.md", ["docs/README.md"])).toEqual({
+      kind: "none",
+    })
+    expect(scoreWorkspaceCandidates("../sibling/src/index.ts", ["src/index.ts"])).toEqual({
+      kind: "none",
+    })
+  })
+
+  test("resolves ../ relative paths against activePath or suffix-matches deeper workspace files", () => {
+    expect(
+      scoreWorkspaceCandidates("../timeline/interaction.ts:74", workspaceFiles, {
+        activePath: "packages/app/src/session/screen.tsx",
+      }),
+    ).toEqual({
+      kind: "match",
+      path: "packages/app/src/session/timeline/interaction.ts",
+    })
+    expect(scoreWorkspaceCandidates("../timeline/interaction.ts:74", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/app/src/session/timeline/interaction.ts",
+    })
+  })
+
   test("resolves partial suffix paths and TypeScript .js import aliases (Tier 2)", () => {
     expect(scoreWorkspaceCandidates("session/timeline/interaction.ts:74", workspaceFiles)).toEqual({
       kind: "match",
@@ -66,6 +104,25 @@ describe("scoreWorkspaceCandidates", () => {
     expect(scoreWorkspaceCandidates("src/filesystem/search.js", workspaceFiles)).toEqual({
       kind: "match",
       path: "packages/core/src/filesystem/search.ts",
+    })
+  })
+
+  test("marks equal-suffix matches at different depths as ambiguous unless context disambiguates them", () => {
+    expect(
+      scoreWorkspaceCandidates("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"]),
+    ).toEqual({
+      kind: "ambiguous",
+      path: "packages/a/src/index.ts",
+      query: "src/index.ts",
+      matches: ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"],
+    })
+    expect(
+      scoreWorkspaceCandidates("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"], {
+        activePath: "packages/foo/bar/src/main.ts",
+      }),
+    ).toEqual({
+      kind: "match",
+      path: "packages/foo/bar/src/index.ts",
     })
   })
 
@@ -108,7 +165,12 @@ describe("scoreWorkspaceCandidates", () => {
     })
   })
 
-  test("returns directory resolution when the link targets a folder with multiple files", () => {
+  test("returns directory resolution even when only one file is in the candidate slice", () => {
+    expect(scoreWorkspaceCandidates("packages/core/src/filesystem", workspaceFiles)).toEqual({
+      kind: "directory",
+      query: "packages/core/src/filesystem/",
+      matches: ["packages/core/src/filesystem/search.ts"],
+    })
     expect(scoreWorkspaceCandidates("packages/session-ui/src/components", workspaceFiles)).toEqual({
       kind: "directory",
       query: "packages/session-ui/src/components/",

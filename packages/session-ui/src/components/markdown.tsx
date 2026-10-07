@@ -37,12 +37,7 @@ import {
 import { inlineCodeKind } from "./markdown-inline-code-kind"
 import { renderMermaidSvg } from "./markdown-mermaid"
 import { createMarkdownRenderer } from "./markdown-solid"
-import {
-  useMarkdown,
-  type OpenMarkdownLocalFile,
-  type ReadMarkdownImage,
-  type ResolveMarkdownLocalFile,
-} from "../context/markdown"
+import { useMarkdown, type OpenMarkdownLocalFile, type ReadMarkdownImage } from "../context/markdown"
 import { createMarkdownImages } from "./markdown-image"
 import { createImagePreview } from "./image-preview"
 import { markSessionLinks, setupSessionLinks } from "./markdown-session-links"
@@ -105,7 +100,7 @@ async function code(text: string, language: string | undefined, key: string, com
     )
       console.error("Markdown highlighting worker failed", error)
 
-    return { language: language ?? "text", generation: 0, stable: [], unstable: [[text, ""] satisfies MarkdownToken] }
+    return { language: language ?? "text", generation: 0, stable: [], unstable: [[text, ""] as MarkdownToken] }
   }
 }
 
@@ -142,19 +137,19 @@ function createCopyButton(labels: CopyLabels) {
   const host = document.createElement("div")
   host.setAttribute("data-slot", "markdown-copy-button")
 
-  let setLabels: Setter<CopyLabels> | undefined
-  let setCopied: Setter<boolean> | undefined
+  const state: Partial<CopyButtonState> = {}
 
   const dispose = render(() => {
-    const [labelState, updateLabels] = createSignal(labels, { equals: false })
-    const [copied, updateCopied] = createSignal(false)
-    setLabels = updateLabels
-    setCopied = updateCopied
+    const [labelState, setLabels] = createSignal(labels, { equals: false })
+    const [copied, setCopied] = createSignal(false)
+    state.setLabels = setLabels
+    state.setCopied = setCopied
 
     return <MarkdownCopyButton labels={labelState()} copied={copied()} />
   }, host)
 
-  if (setLabels && setCopied) copyButtonState.set(host, { setLabels, setCopied, dispose })
+  state.dispose = dispose
+  copyButtonState.set(host, state as CopyButtonState)
 
   return host
 }
@@ -386,44 +381,6 @@ function markInlineCode(root: HTMLDivElement) {
     const kind = inlineCodeKind(code.textContent ?? "")
 
     if (kind) code.dataset.inlineCodeKind = kind
-  }
-}
-
-function verifyInlineCodePaths(
-  root: HTMLDivElement,
-  resolve: ResolveMarkdownLocalFile | undefined,
-  signal: AbortSignal,
-) {
-  if (!resolve) return
-  const codeNodes = Array.from(root.querySelectorAll<HTMLElement>(':not(pre) > code[data-inline-code-kind="path"]'))
-
-  for (const code of codeNodes) {
-    if (code.closest("a")) continue
-    const raw = code.textContent?.trim() ?? ""
-
-    if (!raw || code.dataset.verifiedPath === raw) continue
-    code.dataset.verifiedPath = raw
-
-    void resolve(raw).then(
-      (resolved) => {
-        if (signal.aborted || !code.isConnected || (code.textContent?.trim() ?? "") !== raw) return
-
-        if (resolved === null) {
-          delete code.dataset.inlineCodeKind
-          delete code.dataset.resolvedPath
-          code.removeAttribute("title")
-
-          return
-        }
-
-        if (resolved) {
-          code.dataset.inlineCodeKind = "path"
-          code.dataset.resolvedPath = resolved
-          code.title = resolved
-        }
-      },
-      () => undefined,
-    )
   }
 }
 
@@ -804,8 +761,6 @@ export function Markdown(
     if (!faviconCleanup) faviconCleanup = setupExternalLinkFavicons(container)
     container.toggleAttribute("data-local-links", !!markdown?.openLocalFile)
 
-    if (!(local.streaming ?? false)) verifyInlineCodePaths(container, markdown?.resolveLocalFile, lifetime.signal)
-
     if (result?.ready && result.text === local.text) container.dataset.markdownReady = ""
   })
 
@@ -875,7 +830,7 @@ function pendingBlocks(
       complete: !!block.complete,
       stable: [],
       generation: 0,
-      unstable: [[block.src, ""] satisfies MarkdownToken],
+      unstable: [[block.src, ""] as MarkdownToken],
     }
   })
 }

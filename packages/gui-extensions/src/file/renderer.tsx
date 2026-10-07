@@ -62,7 +62,13 @@ const setup: Setup<typeof File> = (ctx) => {
   const tree = ctx.stores.tree
   const [handoff, setHandoff] = storage.memory<Handoff>("handoff", { initial: { sessions: {} } })
   const preference = desktop ? ctx.stores.app : undefined
-  const [request, setRequest] = createStore<{ app?: OpenApp }>({})
+
+  const [request, setRequest] = createStore<{
+    app?: OpenApp
+    reveal?: { readonly session: string; readonly path: string; readonly seq: number }
+  }>({})
+
+  let revealSeq = 0
 
   // Tab objects per session screen, which stays while it routes another session, reused so neither strip updates nor a
   // session switch rebuild a trigger. `close` prunes them.
@@ -102,13 +108,14 @@ const setup: Setup<typeof File> = (ctx) => {
   }
 
   const applySelection = (session: MountedSession, files: Files, path: string, selection: LineRange | undefined) => {
-    if (!selection) return
+    if (!selection || artifactKind(path) !== "text") return
 
     files.selection.set(path, selection)
     layout.scroll.set(session, key(files, path), {
       x: 0,
       y: Math.max(0, (selection.start - 4) * 24),
     })
+    setRequest("reveal", { session: session.key, path, seq: ++revealSeq })
   }
 
   const openPicker = (session: MountedSession, query?: string, options?: OpenOptions) => {
@@ -118,6 +125,8 @@ const setup: Setup<typeof File> = (ctx) => {
       shared.filter.query = query
       shared.filter.set?.(query)
     }
+
+    if (options?.background) return
 
     queueMicrotask(() => {
       if (shared.filter.query !== undefined && shared.filter.set) {
@@ -167,6 +176,7 @@ const setup: Setup<typeof File> = (ctx) => {
           keys.slice(0, Math.max(0, keys.length - HANDOFF_SESSIONS)).forEach((item) => delete draft.sessions[item])
         }),
     },
+    reveal: () => request.reveal,
     active,
     open,
   }
@@ -449,24 +459,6 @@ const setup: Setup<typeof File> = (ctx) => {
     return files.resolve(resolveArtifactPath(dir, value) ?? value)
   }
 
-  const resolvedLinks = new Map<string, Promise<string | null | undefined>>()
-  const searchIndexed = new Map<string, Promise<boolean>>()
-
-  const hasSearchIndex = (files: Files) => {
-    const root = files.root
-    const existing = searchIndexed.get(root)
-
-    if (existing) return existing
-
-    const probe = files
-      .search("e", { limit: 1 })
-      .then((first) => (first.length > 0 ? true : files.search("a", { limit: 1 }).then((second) => second.length > 0)))
-
-    searchIndexed.set(root, probe)
-
-    return probe
-  }
-
   const searchWorkspace = async (
     files: Files,
     parsed: ParsedFileLink,
@@ -511,40 +503,6 @@ const setup: Setup<typeof File> = (ctx) => {
   // a browser tab for HTML when the desktop can load the file directly.
   ctx.add(LinkHandler, {
     match: () => true,
-    resolve(link) {
-      const session = sessions.current()
-      const screen = ctx.screen.current()
-      const files = screen?.file
-
-      if (!session || !screen || !files || (link.session && link.session.key !== session.key)) return undefined
-
-      const parsed = parseFileLink(link.href)
-
-      if (!parsed.path) return null
-
-      const direct = resolve(files, parsed.path, link.base)
-
-      if (!direct) return null
-
-      if (files.absolute(direct) || files.get(direct)?.loaded) return direct
-
-      const cacheKey = `${files.root}\n${link.base ?? ""}\n${parsed.path}`
-      const cached = resolvedLinks.get(cacheKey)
-
-      if (cached) return cached
-
-      const job = searchWorkspace(files, parsed, link.base, screen, session).then(async (outcome) => {
-        if (outcome.kind === "match") return outcome.path
-
-        if (outcome.kind === "ambiguous" || outcome.kind === "directory") return outcome.query
-
-        return (await hasSearchIndex(files)) ? null : undefined
-      })
-
-      resolvedLinks.set(cacheKey, job)
-
-      return job
-    },
     open(link) {
       const session = sessions.current()
       const screen = ctx.screen.current()
@@ -552,16 +510,13 @@ const setup: Setup<typeof File> = (ctx) => {
 
       if (!session || !screen || !files || (link.session && link.session.key !== session.key)) return
 
-      const parsed = parseFileLink(link.href)
-
       // A known workspace file (the palette, a file comment) opens at once with every file listed.
       if (link.exact || link.origin === "file") {
-        const path = files.resolve(parsed.path)
+        const path = files.resolve(link.href)
 
         if (!path) return
 
         batch(() => {
-          applySelection(session, files, path, parsed.selection)
           open(session, path, { background: link.background })
           shared.tree.setTab("all")
         })
@@ -569,6 +524,7 @@ const setup: Setup<typeof File> = (ctx) => {
         return
       }
 
+      const parsed = parseFileLink(link.href)
       const direct = resolve(files, parsed.path, link.base)
 
       if (!direct) return
@@ -583,9 +539,9 @@ const setup: Setup<typeof File> = (ctx) => {
           return
         }
 
-        // Confirm the file exists before a tab appears for it, suppressing 404 toasts on guessed tokens.
+        // Inline paths are guessed from text, so confirm the file exists before a tab appears for it.
         // Always reread: V2 publishes no workspace file change events, so a cached copy can be stale.
-        void files.sync(targetPath, { force: true, silent: true }).then(() => {
+        void files.sync(targetPath, { force: true }).then(() => {
           if (ctx.signal.aborted || !files.get(targetPath)?.loaded) return
 
           batch(() => {
@@ -598,7 +554,9 @@ const setup: Setup<typeof File> = (ctx) => {
         })
       }
 
-      if (files.absolute(direct)) {
+      const explicitAbsolute = /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/")
+
+      if ((explicitAbsolute || link.base !== undefined) && files.absolute(direct)) {
         openResolvedFile(direct)
 
         return

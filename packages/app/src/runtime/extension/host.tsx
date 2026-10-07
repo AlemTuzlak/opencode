@@ -312,16 +312,6 @@ function createHost(input: HostInput) {
 
       return true
     },
-    resolve(link) {
-      const handler = untrack(() => list(LinkHandler))
-        .filter((item) => item.resolve && item.match(link))
-        .reduce<LinkHandler | undefined>(
-          (best, item) => (!best || (item.priority ?? 0) > (best.priority ?? 0) ? item : best),
-          undefined,
-        )
-
-      return Promise.resolve(handler?.resolve?.(link))
-    },
   }
 
   const dialog = useDialog()

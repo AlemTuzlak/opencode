@@ -7,8 +7,12 @@ import type { Files } from "../sdk"
  * become absolute too, so a `../../shared/report.pdf` still opens.
  */
 export function resolveLink(files: Files, href: string, base?: string) {
-  // Agents cite locations as path:line or path:line:col; the file is what opens.
-  const value = href.replaceAll("\\", "/").replace(/:\d+(?::\d+)?$/, "")
+  // Agents cite locations as path:line, path:line:col, path:start-end, or path#Lstart-Lend; the file is what opens.
+  const withoutHash = href.replaceAll("\\", "/").replace(/#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i, "")
+
+  const value = withoutHash.replace(/:\d+(?::\d+)?(?:-\d+(?::\d+)?)?$/, (match, offset) =>
+    offset === 1 && /^[a-z]:/i.test(withoutHash) ? match : "",
+  )
 
   if (/^[a-z]:\//i.test(value) || value.startsWith("/")) return files.resolve(value)
   const relative = resolvePath(base ?? "", value)

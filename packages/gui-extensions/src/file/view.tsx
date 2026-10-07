@@ -408,34 +408,37 @@ export function SessionFileView(props: { session: MountedSession; screen: Sessio
     },
   )
 
-  const previous = { loaded: false, ready: false, active: false, selection: "" }
+  const previous = { loaded: false, ready: false, active: false, reveal: 0 }
 
   // Restores the stored scroll when the file loads, its view state loads, the tab shows a loaded file again,
-  // or a link selects a new line range on a shown file.
+  // or a link reveals a line range on this file.
   createKeyed(
     () => {
-      const range = selectedLines()
+      const target = shared.reveal()
+      const p = path()
 
       return {
         loaded: !!current()?.loaded,
         ready: file.ready(),
         shown: active(),
-        selection: range ? `${range.start}:${range.end}` : "",
+        reveal: target && p && target.session === props.session.key && target.path === p ? target.seq : 0,
       }
     },
     (next) => {
-      const selectionChanged = next.selection !== "" && next.selection !== previous.selection
+      const revealed = next.reveal > 0 && next.reveal !== previous.reveal
 
       const restore =
         (next.loaded && !previous.loaded) ||
         (next.ready && !previous.ready) ||
         (next.shown && next.loaded && !previous.active) ||
-        (next.shown && next.loaded && selectionChanged && !note.selected)
+        (next.shown && next.loaded && revealed)
 
       previous.loaded = next.loaded
       previous.ready = next.ready
       previous.active = next.shown
-      previous.selection = next.selection
+      previous.reveal = next.reveal
+
+      if (revealed) setNote("selected", null)
 
       if (restore) scrollSync.queueRestore()
     },
@@ -445,7 +448,7 @@ export function SessionFileView(props: { session: MountedSession; screen: Sessio
         previous.loaded === next.loaded &&
         previous.ready === next.ready &&
         previous.shown === next.shown &&
-        previous.selection === next.selection,
+        previous.reveal === next.reveal,
     },
   )
 

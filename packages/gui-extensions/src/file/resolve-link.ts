@@ -29,7 +29,13 @@ interface ScoredCandidate {
   readonly contextBonus: number
 }
 
-const hashLinePattern = /^(.*?)#L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i
+interface ExpandedVariants {
+  readonly primary: readonly string[]
+  readonly gitDiff: readonly string[]
+  readonly climbedTail: readonly string[]
+}
+
+const hashLinePattern = /^#L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i
 
 const colonLinePattern = /^(.*?):(\d+)(?::\d+)?(?:-(\d+)(?::\d+)?)?$/
 
@@ -40,8 +46,9 @@ const colonLinePattern = /^(.*?):(\d+)(?::\d+)?(?:-(\d+)(?::\d+)?)?$/
 export function parseFileLink(href: string): ParsedFileLink {
   const raw = href.trim().replaceAll("\\", "/")
   const extracted = extractLineSelection(raw)
-  const clean = cleanLinkPath(extracted.path)
-  const strippedPath = /^[ab]\/.+/.test(clean) ? clean.slice(2) : clean
+  const clean = normalizeRelativeSegments(extracted.path)
+  const withoutClimb = clean.replace(/^(?:\.\.\/)+/, "")
+  const strippedPath = !clean.startsWith("../") && /^[ab]\/.+/.test(withoutClimb) ? withoutClimb.slice(2) : withoutClimb
   const segments = strippedPath.split("/").filter(Boolean)
   const basename = segments.at(-1) ?? ""
 
@@ -55,101 +62,144 @@ export function parseFileLink(href: string): ParsedFileLink {
 }
 
 function extractLineSelection(input: string) {
-  const hashMatch = input.match(hashLinePattern)
+  const hashIndex = input.indexOf("#")
+  const beforeHash = hashIndex === -1 ? input : input.slice(0, hashIndex)
+  const hash = hashIndex === -1 ? "" : input.slice(hashIndex)
+  const withoutQuery = beforeHash.split("?", 1)[0] ?? ""
+  const hashMatch = hash.match(hashLinePattern)
 
   if (hashMatch) {
-    const first = Number(hashMatch[2])
-    const second = hashMatch[3] ? Number(hashMatch[3]) : first
+    const first = Number(hashMatch[1])
+    const second = hashMatch[2] ? Number(hashMatch[2]) : first
 
-    if (first >= 1 && second >= 1) {
-      return {
-        path: hashMatch[1] ?? "",
-        selection: {
-          start: Math.min(first, second),
-          end: Math.max(first, second),
-        },
-      }
+    return {
+      path: withoutQuery,
+      selection:
+        first >= 1 && second >= 1
+          ? {
+              start: Math.min(first, second),
+              end: Math.max(first, second),
+            }
+          : undefined,
     }
   }
 
-  const withoutHash = input.split(/[?#]/, 1)[0] ?? ""
-  const colonMatch = withoutHash.match(colonLinePattern)
+  const colonMatch = withoutQuery.match(colonLinePattern)
 
   if (colonMatch && !/^[a-z]:$/i.test(colonMatch[1] ?? "")) {
     const first = Number(colonMatch[2])
     const second = colonMatch[3] ? Number(colonMatch[3]) : first
 
-    if (first >= 1 && second >= 1) {
-      return {
-        path: colonMatch[1] ?? "",
-        selection: {
-          start: Math.min(first, second),
-          end: Math.max(first, second),
-        },
-      }
+    return {
+      path: colonMatch[1] ?? "",
+      selection:
+        first >= 1 && second >= 1
+          ? {
+              start: Math.min(first, second),
+              end: Math.max(first, second),
+            }
+          : undefined,
     }
   }
 
-  return { path: withoutHash, selection: undefined }
+  return { path: withoutQuery, selection: undefined }
 }
 
-function cleanLinkPath(input: string): string {
+function normalizeRelativeSegments(input: string): string {
   const withoutProtocol = input.replace(/^file:\/\/(?:localhost)?/i, "").replace(/^\/([a-z]:\/)/i, "$1")
-  const decoded = decodePathSafely(withoutProtocol)
+  const trimmed = withoutProtocol.replace(/^\.\//, "").replace(/\/+$/, "")
 
-  return decoded.replace(/^\.\//, "").replace(/\/+$/, "")
-}
+  if (!trimmed) return ""
 
-function decodePathSafely(value: string): string {
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return value
+  const leadingSlash = trimmed.startsWith("/") ? "/" : ""
+  const out: string[] = []
+
+  for (const part of trimmed.split("/")) {
+    if (!part || part === ".") continue
+
+    if (part === "..") {
+      if (out.length > 0 && out[out.length - 1] !== "..") {
+        out.pop()
+        continue
+      }
+
+      if (!leadingSlash) out.push("..")
+      continue
+    }
+
+    out.push(part)
   }
+
+  return `${leadingSlash}${out.join("/")}`
 }
 
 /**
  * Produces normalized workspace-relative path variants for a candidate link, handling relative `base` folders,
- * git-diff `a/` and `b/` prefixes, workspace root folder prefixes, and `@scope/pkg/...` monorepo paths.
+ * active-file relative `../` climbs, git-diff `a/` and `b/` prefixes, workspace root folder prefixes, and
+ * `@scope/pkg/...` monorepo paths.
  */
-export function expandWorkspaceVariants(path: string, options?: { base?: string; rootName?: string }): string[] {
-  const seen = new Set<string>()
+export function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions): ExpandedVariants {
+  const primary = new Set<string>()
+  const gitDiff = new Set<string>()
+  const climbedTail = new Set<string>()
 
-  const add = (value: string | undefined) => {
-    const trimmed = value?.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^\/+/, "").replace(/\/+$/, "")
-
-    if (trimmed) seen.add(trimmed)
-  }
+  const clean = (value: string | undefined) =>
+    value?.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^\/+/, "").replace(/\/+$/, "")
 
   if (options?.base) {
-    add(resolveArtifactPath(options.base, path))
+    const resolved = clean(resolveArtifactPath(options.base, path))
+
+    if (resolved) primary.add(resolved)
+  } else if (options?.activePath && (path === ".." || path.startsWith("../"))) {
+    const activeDir = directoryOf(options.activePath.replaceAll("\\", "/"))
+    const resolved = activeDir ? clean(resolveArtifactPath(activeDir, path)) : undefined
+
+    if (resolved) primary.add(resolved)
   }
 
-  add(path)
+  if (path === ".." || path.startsWith("../")) {
+    const tail = clean(path.replace(/^(?:\.\.\/)+/, ""))
 
-  if (/^[ab]\/.+/.test(path)) {
-    add(path.slice(2))
+    if (tail) climbedTail.add(tail)
+  } else {
+    const direct = clean(path)
+
+    if (direct) {
+      primary.add(direct)
+
+      const rootName = options?.rootName?.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
+
+      if (rootName && direct.toLowerCase().startsWith(`${rootName.toLowerCase()}/`)) {
+        const withoutRoot = clean(direct.slice(rootName.length + 1))
+
+        if (withoutRoot) primary.add(withoutRoot)
+      }
+
+      const scoped = direct.match(/^@[^/]+\/([^/]+)\/(.+)$/)
+
+      if (scoped) {
+        primary.add(`packages/${scoped[1]}/${scoped[2]}`)
+        primary.add(`${scoped[1]}/${scoped[2]}`)
+      }
+
+      if (/^[ab]\/.+/.test(direct)) {
+        const withoutGitPrefix = clean(direct.slice(2))
+
+        if (withoutGitPrefix) gitDiff.add(withoutGitPrefix)
+      }
+    }
   }
 
-  const rootName = options?.rootName?.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
-
-  if (rootName && path.toLowerCase().startsWith(`${rootName.toLowerCase()}/`)) {
-    add(path.slice(rootName.length + 1))
+  return {
+    primary: [...primary],
+    gitDiff: [...gitDiff],
+    climbedTail: [...climbedTail],
   }
-
-  const scoped = path.match(/^@[^/]+\/([^/]+)\/(.+)$/)
-
-  if (scoped) {
-    add(`packages/${scoped[1]}/${scoped[2]}`)
-    add(`${scoped[1]}/${scoped[2]}`)
-  }
-
-  return [...seen]
 }
 
 /**
  * Ranks workspace file candidates deterministically across 4 tiers:
- * 1. Exact workspace path match (or expanded monorepo/git-diff variant)
+ * 1. Exact workspace path match (or expanded monorepo/base/active-tab variant)
  * 2. Segment-boundary suffix match (`session/timeline/interaction.ts` -> `packages/app/src/session/timeline/interaction.ts`)
  * 3. Ordered directory segment subsequence (`packages/session-ui/markdown.tsx` -> `packages/session-ui/src/components/markdown.tsx`)
  * 4. Bare basename match (`tool-renderer.tsx`), disambiguated by active/open package context.
@@ -160,15 +210,14 @@ export function scoreWorkspaceCandidates(
   options?: ResolveWorkspaceOptions,
 ): WorkspaceLinkResolution {
   const parsed = parseFileLink(rawPath)
-
-  if (!parsed.basename) return { kind: "none" }
-
-  const variants = expandWorkspaceVariants(parsed.path, {
-    base: options?.base,
-    rootName: options?.rootName,
-  })
+  const variants = expandWorkspaceVariants(parsed.path, options)
 
   const normalizedCandidates = [...new Set(candidates.map((item) => item.replaceAll("\\", "/").replace(/\/+$/, "")))]
+
+  if (!parsed.basename) {
+    return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
+  }
+
   const queryBase = parsed.basename.toLowerCase()
   const tsStem = stripJsImportExtension(queryBase)
 
@@ -183,12 +232,14 @@ export function scoreWorkspaceCandidates(
         : []
 
   if (matchingPool.length === 0) {
-    return matchDirectoryCandidates(variants, normalizedCandidates)
+    return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
   }
+
+  const climbs = parsed.path === ".." || parsed.path.startsWith("../")
 
   const scored = matchingPool
     .flatMap((file): ScoredCandidate[] => {
-      const tier = scoreTier(file, variants, parsed.segments)
+      const tier = scoreTier(file, variants, parsed.segments, climbs)
 
       if (!tier) return []
 
@@ -210,14 +261,18 @@ export function scoreWorkspaceCandidates(
 
   if (!top) return { kind: "none" }
 
-  if (scored.length === 1 || top.tier === 1) {
+  if (scored.length === 1) {
     return { kind: "match", path: top.path }
   }
 
   const second = scored[1]!
 
-  // Clear winner from suffix match, subsequence match, or active-package context.
-  if (top.score > second.score && (top.tier <= 3 || top.contextBonus > second.contextBonus || top.score - second.score >= 12)) {
+  if (top.tier === 1 && second.tier > 1) {
+    return { kind: "match", path: top.path }
+  }
+
+  // Require a meaningful score lead (more matched segments or active-package context, not just path depth).
+  if (top.score - second.score >= 15) {
     return { kind: "match", path: top.path }
   }
 
@@ -231,19 +286,20 @@ export function scoreWorkspaceCandidates(
 
 function scoreTier(
   file: string,
-  variants: readonly string[],
+  variants: ExpandedVariants,
   querySegments: readonly string[],
+  climbs: boolean,
 ): { tier: 1 | 2 | 3 | 4; baseScore: number } | undefined {
   const fileLower = file.toLowerCase()
   const fileSegments = file.split("/").filter(Boolean)
 
-  for (const variant of variants) {
+  for (const variant of variants.primary) {
     if (fileLower === variant.toLowerCase()) {
       return { tier: 1, baseScore: 1000 }
     }
   }
 
-  for (const variant of variants) {
+  for (const variant of variants.primary) {
     const variantLower = variant.toLowerCase()
     const variantSegments = variant.split("/").filter(Boolean)
 
@@ -255,16 +311,44 @@ function scoreTier(
         baseScore: 800 + variantSegments.length * 25 - extraDepth * 2,
       }
     }
+  }
 
-    if (fileSegments.length > 1 && variantLower.endsWith(`/${fileLower}`)) {
+  for (const tail of variants.climbedTail) {
+    const tailLower = tail.toLowerCase()
+    const tailSegments = tail.split("/").filter(Boolean)
+
+    if (tailSegments.length > 1 && fileSegments.length > tailSegments.length && fileLower.endsWith(`/${tailLower}`)) {
+      const extraDepth = fileSegments.length - tailSegments.length
+
       return {
         tier: 2,
-        baseScore: 790 + fileSegments.length * 20,
+        baseScore: 800 + tailSegments.length * 25 - extraDepth * 2,
       }
     }
   }
 
-  if (querySegments.length > 1 && isSegmentSubsequence(querySegments, fileSegments)) {
+  for (const gitVariant of variants.gitDiff) {
+    const gitLower = gitVariant.toLowerCase()
+    const gitSegments = gitVariant.split("/").filter(Boolean)
+
+    if (fileLower === gitLower) {
+      return {
+        tier: 2,
+        baseScore: 780,
+      }
+    }
+
+    if (gitSegments.length > 1 && fileLower.endsWith(`/${gitLower}`)) {
+      const extraDepth = Math.max(0, fileSegments.length - gitSegments.length)
+
+      return {
+        tier: 2,
+        baseScore: 740 + gitSegments.length * 20 - extraDepth * 2,
+      }
+    }
+  }
+
+  if (!climbs && querySegments.length > 1 && isSegmentSubsequence(querySegments, fileSegments)) {
     const trailing = countTrailingMatches(querySegments, fileSegments)
     const extraDepth = Math.max(0, fileSegments.length - querySegments.length)
 
@@ -274,7 +358,7 @@ function scoreTier(
     }
   }
 
-  if (querySegments.length === 1) {
+  if (!climbs && querySegments.length === 1) {
     return {
       tier: 4,
       baseScore: 400 - fileSegments.length * 2,
@@ -320,11 +404,7 @@ function matchDirectoryCandidates(variants: readonly string[], candidates: reado
     const prefix = `${variant.toLowerCase()}/`
     const matches = candidates.filter((file) => file.toLowerCase().startsWith(prefix))
 
-    if (matches.length === 1) {
-      return { kind: "match", path: matches[0]! }
-    }
-
-    if (matches.length > 1) {
+    if (matches.length > 0) {
       return { kind: "directory", query: `${variant}/`, matches }
     }
   }
