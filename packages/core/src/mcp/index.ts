@@ -547,7 +547,12 @@ export const layer = (options?: Options) =>
           yield* bus.publish(McpEvent.StatusChanged, { server: name })
           return
         }
-        fork(startServer(name, entry).pipe(locks.withLock(name)))
+        // A later reconcile can replace or remove this entry before the start acquires the lock.
+        fork(
+          Effect.suspend(() => (entries.get(name) === entry ? startServer(name, entry) : entry.startup.open)).pipe(
+            locks.withLock(name),
+          ),
+        )
       })
 
       let applied: Map<ServerName, Mcp.ServerConfig> | undefined

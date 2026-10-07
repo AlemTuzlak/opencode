@@ -1,5 +1,6 @@
 import path from "node:path"
 import fs from "node:fs/promises"
+import os from "node:os"
 import { describe, expect, test } from "bun:test"
 import { Client, InMemoryTransport, StreamableHTTPClientTransport } from "@modelcontextprotocol/client"
 import {
@@ -1878,6 +1879,35 @@ testEffect(Layer.empty).live("does not wait for MCP servers added after the firs
     expect((yield* service.servers()).find((server) => server.name === "hanging")?.status).toEqual({
       status: "pending",
     })
+  }).pipe(
+    Effect.provide(resourceMcpLayer(new ConfigMCP.Local({ type: "local", command: ["unused"], disabled: true }))),
+  ),
+)
+
+testEffect(Layer.empty).live("does not start an MCP server removed before its background start", () =>
+  Effect.gen(function* () {
+    const service = yield* Mcp.Service
+    const marker = path.join(yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "mcp-stale-"))), "pids")
+    for (let i = 0; i < 20; i++) {
+      const added = yield* service.transform((editor) =>
+        editor.set(
+          "stale",
+          new ConfigMCP.Local({
+            type: "local",
+            command: [
+              process.execPath,
+              "-e",
+              `require("fs").appendFileSync(${JSON.stringify(marker)}, process.pid + "\\n"); setInterval(() => {}, 1000)`,
+            ],
+          }),
+        ),
+      )
+      yield* added.dispose
+    }
+    yield* Effect.sleep("500 millis")
+    const spawned = yield* Effect.promise(() => fs.readFile(marker, "utf8").catch(() => ""))
+    expect(spawned).toBe("")
+    expect((yield* service.servers()).some((server) => server.name === "stale")).toBe(false)
   }).pipe(
     Effect.provide(resourceMcpLayer(new ConfigMCP.Local({ type: "local", command: ["unused"], disabled: true }))),
   ),
