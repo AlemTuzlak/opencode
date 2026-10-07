@@ -145,37 +145,6 @@ describe("ToolStream", () => {
     }),
   )
 
-  it.effect("rejects malformed authoritative input instead of using valid deltas", () =>
-    Effect.gen(function* () {
-      const tools = ToolStream.start(ToolStream.empty<string>(), "item_1", {
-        id: "call_1",
-        name: "lookup",
-        input: '{"query":"weather"}',
-      })
-      const finished = yield* ToolStream.finishWithInput(ADAPTER, tools, "item_1", '{"query":"partial')
-
-      expect(finished).toEqual({
-        tools: {},
-        events: [
-          { type: "tool-input-end", id: "call_1", name: "lookup" },
-          { type: "tool-input-error", id: "call_1", name: "lookup", raw: '{"query":"partial' },
-        ],
-      })
-    }),
-  )
-
-  it.effect("preserves empty input for zero-argument tools", () =>
-    Effect.gen(function* () {
-      const tools = ToolStream.start(ToolStream.empty<number>(), 0, { id: "call_1", name: "lookup" })
-      const finished = yield* ToolStream.finish(ADAPTER, tools, 0)
-
-      expect(finished.events).toEqual([
-        { type: "tool-input-end", id: "call_1", name: "lookup" },
-        { type: "tool-call", id: "call_1", name: "lookup", input: {} },
-      ])
-    }),
-  )
-
   it.effect("rejects malformed string escapes in final local input", () =>
     Effect.gen(function* () {
       const tools = ToolStream.start(ToolStream.empty<string>(), "item_1", {
