@@ -249,17 +249,16 @@ export const inputProperties = <R>(tool: Tool<R>): Array<InputProperty> => {
     const document = isEffectSchema(tool.input)
       ? (Schema.toJsonSchemaDocument(tool.input, { onExcessProperty: "error" }) as {
           readonly schema: JsonSchema
-          readonly definitions?: Readonly<Record<string, JsonSchema>>
+          readonly definitions: Readonly<Record<string, JsonSchema>>
         })
       : {
           schema: tool.input,
           definitions: { ...(tool.input.definitions ?? {}), ...(tool.input.$defs ?? {}) },
         }
-    const definitions = document.definitions ?? {}
     let schema = document.schema
     if (schema.$ref !== undefined) {
       const name = definitionName(schema.$ref)
-      const resolved = name === undefined ? undefined : definitions[name]
+      const resolved = name === undefined ? undefined : document.definitions[name]
       if (resolved === undefined) return []
       schema = resolved
     }
