@@ -230,6 +230,41 @@ describe("Composer submission", () => {
     expect(state.context.items()).toEqual([])
   })
 
+  test("a rapid follow-up is pending when earlier admission starts execution during preparation", async () => {
+    const state = createMemoryComposerState({ prompt: "first" }).capture()
+    const preparing = Promise.withResolvers<void>()
+    const admitted = Promise.withResolvers<void>()
+    const statuses: ("idle" | "running")[] = []
+    const requests: Parameters<ComposerSession["data"]["session"]["prompt"]>[0][] = []
+
+    const target = session({
+      calls: [],
+      statuses,
+      switchModel: () => preparing.promise,
+      prompt: async (request) => {
+        requests.push(request)
+
+        if (requests.length === 2) admitted.resolve()
+      },
+    })
+
+    const adapter = active(state, target)
+    adapter.working = () => statuses.at(-1) === "running"
+    const submission = submitInput(adapter)
+
+    await submission.submit(new Event("submit"))
+    state.set([{ type: "text", content: "second", start: 0, end: 6 }])
+    await submission.submit(new Event("submit"))
+    expect(requests).toHaveLength(0)
+    preparing.resolve()
+    await admitted.promise
+
+    expect(requests.map((request) => ({ text: request.text, immediate: request.immediate }))).toEqual([
+      { text: "first", immediate: true },
+      { text: "second", immediate: false },
+    ])
+  })
+
   test("applies the captured agent and model before a custom command without passing over its overrides", async () => {
     const state = createMemoryComposerState({ prompt: "/review changes" }).capture()
     const calls: string[] = []
