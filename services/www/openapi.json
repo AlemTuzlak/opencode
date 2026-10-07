@@ -14121,7 +14121,7 @@
                   "properties": {
                     "action": {
                       "type": "string",
-                      "enum": ["provider.use", "permission"]
+                      "enum": ["provider.use", "tool.use", "integration.use"]
                     },
                     "resource": {
                       "type": "string"
