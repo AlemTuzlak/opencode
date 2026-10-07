@@ -83,7 +83,7 @@ export function toSessionError(cause: unknown): SessionError.Error {
   )
     return { type: "provider.no-route", message: cause.message }
   if (cause instanceof Integration.AuthorizationError) return { type: "provider.auth", message: cause.message }
-  if (StorageRetry.isTransientError(cause))
+  if (StorageRetry.isTransient(cause))
     return {
       type: "storage",
       message: `Couldn’t save the session: ${StorageRetry.message(cause) ?? "storage unavailable"}`,

@@ -9,29 +9,18 @@ const TRANSIENT_CODES = ["SQLITE_FULL", "SQLITE_IOERR", "SQLITE_BUSY", "SQLITE_L
 const TRANSIENT_PRIMARY_CODES = new Set([5, 6, 10, 13])
 
 /** Short enough to answer a waiting request, long enough to ride out a brief full disk. */
-export const write = Schedule.max([
-  Schedule.min([Schedule.exponential("100 millis"), Schedule.spaced("2 seconds")]),
-  Schedule.during("30 seconds"),
-])
+export const write = Schedule.min([Schedule.exponential("100 millis"), Schedule.spaced("2 seconds")]).pipe(
+  Schedule.upTo({ duration: "30 seconds" }),
+)
 
 /** For records that must eventually land, such as a terminal outcome nothing else can report. */
-export const settlement = Schedule.max([
-  Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("10 seconds")]),
-  Schedule.during("15 minutes"),
-])
+export const settlement = Schedule.min([Schedule.exponential("1 second"), Schedule.spaced("10 seconds")]).pipe(
+  Schedule.upTo({ duration: "15 minutes" }),
+)
 
-/** Whether a failure comes from storage that may accept the same write later. */
-export function isTransient(cause: Cause.Cause<unknown>) {
-  return (
-    !Cause.hasInterrupts(cause) &&
-    cause.reasons.length > 0 &&
-    cause.reasons.every((reason) => isTransientError(reasonValue(reason)))
-  )
-}
-
-/** `isTransient` for one thrown, failed, or defect value, following its causes. */
-export function isTransientError(value: unknown): boolean {
-  return transient(value, 0)
+/** Whether a failure or Cause comes from storage that may accept the same write later. */
+export function isTransient(cause: unknown): boolean {
+  return transient(cause, 0) !== undefined
 }
 
 /** Reruns an atomic storage effect while its failure is transient, including SQL defects. */
@@ -41,28 +30,30 @@ export const retry =
     effect.pipe(
       Effect.sandbox,
       Effect.retry({ schedule, while: isTransient }),
-      Effect.catch((cause) => Effect.failCause(cause)),
+      Effect.catch(Effect.failCause),
     )
 
 /** The SQLite message behind a storage failure, such as "database or disk is full". */
 export function message(cause: unknown): string | undefined {
-  return sqliteMessage(cause, 0)
+  const error = transient(cause, 0)
+  return error instanceof Error && error.message ? error.message : undefined
 }
 
-function transient(value: unknown, depth: number): boolean {
-  if (depth > 8 || typeof value !== "object" || value === null) return false
-  if (Cause.isCause(value)) return isTransient(value)
-  const code = sqliteCode(value)
-  if (code !== undefined) return code
-  return "cause" in value && transient(value.cause, depth + 1)
-}
-
-function sqliteMessage(value: unknown, depth: number): string | undefined {
+function transient(value: unknown, depth: number): object | undefined {
   if (depth > 8 || typeof value !== "object" || value === null) return undefined
-  if (Cause.isCause(value))
-    return value.reasons.map((reason) => sqliteMessage(reasonValue(reason), depth + 1)).find(Boolean)
-  if (sqliteCode(value) !== undefined && value instanceof Error) return value.message
-  return "cause" in value ? sqliteMessage(value.cause, depth + 1) : undefined
+  if (Cause.isCause(value)) {
+    if (Cause.hasInterrupts(value) || value.reasons.length === 0) return undefined
+    let match: object | undefined
+    for (const reason of value.reasons) {
+      const found = transient(reasonValue(reason), depth + 1)
+      if (!found) return undefined
+      match ??= found
+    }
+    return match
+  }
+  const code = sqliteCode(value)
+  if (code !== undefined) return code ? value : undefined
+  return "cause" in value ? transient(value.cause, depth + 1) : undefined
 }
 
 function reasonValue(reason: Cause.Reason<unknown>) {

@@ -68,9 +68,8 @@ export const layer = Layer.effect(
     // The retries wait interruptibly, so shutdown is not held up; the claim then survives for restart.
     const reportLifecycle = <A>(sessionID: SessionSchema.ID, effect: Effect.Effect<A>) =>
       effect.pipe(
-        Effect.catchCauseIf(
-          (cause) => StorageRetry.isTransient(cause),
-          () => Effect.interruptible(effect.pipe(StorageRetry.retry(StorageRetry.settlement))),
+        Effect.catchCauseIf(StorageRetry.isTransient, () =>
+          Effect.interruptible(effect.pipe(StorageRetry.retry(StorageRetry.settlement))),
         ),
         Effect.tapCause((cause) =>
           Cause.hasInterruptsOnly(cause)
