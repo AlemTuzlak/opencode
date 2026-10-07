@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseFileLink, scoreWorkspaceCandidates } from "./resolve-link"
+import { parseFileLink, scoreWorkspaceCandidates, searchWorkspaceCandidates } from "./resolve-link"
 
 const workspaceFiles = [
   "packages/app/src/app.tsx",
@@ -34,6 +34,8 @@ describe("parseFileLink", () => {
     ["./a/../b.ts", "b.ts", undefined],
     ["../timeline/interaction.ts:74", "../timeline/interaction.ts", { start: 74, end: 74 }],
     ["src/C#/a.cs", "src/C#/a.cs", undefined],
+    ["foo#bar.ts", "foo#bar.ts", undefined],
+    ["docs/guide.md#usage", "docs/guide.md", undefined],
     ["a%2520b.ts", "a%2520b.ts", undefined],
     ["C:/foo/../../x.ts", "C:/x.ts", undefined],
     ["file:///C:/tmp/demo%20file.ts:12", "C:/tmp/demo file.ts", { start: 12, end: 12 }],
@@ -251,5 +253,58 @@ describe("scoreWorkspaceCandidates", () => {
     expect(scoreWorkspaceCandidates("nonexistent-widget.tsx", workspaceFiles)).toEqual({
       kind: "none",
     })
+  })
+
+  test("downgrades a single non-exact match in a truncated search slice to ambiguous", () => {
+    expect(
+      scoreWorkspaceCandidates("tool-renderer.tsx", ["packages/session-ui/src/tools/tool-renderer.tsx"], {
+        truncated: true,
+      }),
+    ).toEqual({
+      kind: "ambiguous",
+      query: "tool-renderer.tsx",
+    })
+  })
+})
+
+describe("searchWorkspaceCandidates", () => {
+  test("falls back across git-diff prefixes and .js import stems, and handles aborted signals", async () => {
+    const queries: string[] = []
+
+    const files = {
+      root: "/repo/quiet-cactus",
+      search: async (query: string, options?: { signal?: AbortSignal }) => {
+        if (options?.signal?.aborted) throw new Error("Aborted")
+        queries.push(query)
+
+        if (query === "search") return ["packages/core/src/filesystem/search.ts"]
+
+        return []
+      },
+    }
+
+    const controller = new AbortController()
+
+    const resolved = await searchWorkspaceCandidates({
+      files,
+      parsed: parseFileLink("src/filesystem/search.js"),
+      signal: controller.signal,
+    })
+
+    expect(resolved).toEqual({
+      kind: "match",
+      path: "packages/core/src/filesystem/search.ts",
+    })
+    expect(queries).toEqual(["src/filesystem/search.js", "search"])
+
+    controller.abort()
+
+    const aborted = await searchWorkspaceCandidates({
+      files,
+      parsed: parseFileLink("src/filesystem/search.js"),
+      signal: controller.signal,
+    })
+
+    expect(aborted).toEqual({ kind: "none" })
   })
 })

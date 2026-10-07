@@ -139,7 +139,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       )
     }
 
-    const setLoadError = (file: string, message: string, notFound = false, silent = false) => {
+    const setLoadError = (file: string, message: string, notFound = false) => {
       if (notFound) removeFileContentBytes(file)
       setStore(
         "file",
@@ -154,8 +154,6 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
           draft.content = undefined
         }),
       )
-
-      if (silent) return
       showToast({
         variant: "error",
         title: language.t("toast.file.loadFailed.title"),
@@ -163,7 +161,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       })
     }
 
-    const load = (input: string, options?: { force?: boolean; silent?: boolean }) => {
+    const load = (input: string, options?: { force?: boolean }) => {
       const file = path.normalize(input)
 
       if (!file) return Promise.resolve()
@@ -203,7 +201,6 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
             file,
             formatServerError(e, language.t, language.t("error.chain.unknown")),
             isFileNotFoundError(e),
-            options?.silent,
           )
         })
         .finally(() => {
@@ -226,7 +223,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
           },
           { signal: options?.signal },
         )
-        .then((x) => (Array.isArray(x.data) ? x.data.map((entry) => path.normalize(entry.path)) : []))
+        .then((x) => x.data.map((entry) => path.normalize(entry.path)))
         .catch((error) => {
           if (options?.signal?.aborted) throw error
 

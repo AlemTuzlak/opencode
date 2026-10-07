@@ -14,6 +14,7 @@ interface ResolveWorkspaceOptions {
   readonly rootName?: string
   readonly activePath?: string
   readonly openPaths?: readonly string[]
+  readonly truncated?: boolean
 }
 
 export type WorkspaceLinkResolution =
@@ -26,6 +27,7 @@ interface ScoredCandidate {
   readonly path: string
   readonly tier: 1 | 2 | 3 | 4
   readonly score: number
+  readonly contextBonus: number
 }
 
 interface ExpandedVariants {
@@ -83,8 +85,8 @@ function extractLineSelection(input: string) {
     }
   }
 
-  // Strip a trailing fragment only when it follows the final slash (preserving directory names such as `src/C#/a.cs`).
-  const withoutFragment = input.replace(/#[^/]*$/, "")
+  // Strip a trailing fragment only when it follows a file extension in the final segment (preserving `src/C#/a.cs` and `foo#bar.ts`).
+  const withoutFragment = input.replace(/(\.[a-z0-9]+)#[^/.]*$/i, "$1")
   const withoutQuery = withoutFragment.split("?", 1)[0] ?? ""
   const colonMatch = withoutQuery.match(colonLinePattern)
 
@@ -215,7 +217,14 @@ export function scoreWorkspaceCandidates(
   candidates: readonly string[],
   options?: ResolveWorkspaceOptions,
 ): WorkspaceLinkResolution {
-  const parsed = parseFileLink(rawPath)
+  return scoreParsed(parseFileLink(rawPath), candidates, options)
+}
+
+function scoreParsed(
+  parsed: ParsedFileLink,
+  candidates: readonly string[],
+  options?: ResolveWorkspaceOptions,
+): WorkspaceLinkResolution {
   const variants = expandWorkspaceVariants(parsed.path, options)
   const normalizedCandidates = [...new Set(candidates.map((item) => item.replaceAll("\\", "/").replace(/\/+$/, "")))]
 
@@ -259,6 +268,7 @@ export function scoreWorkspaceCandidates(
           path: file,
           tier: tier.tier,
           score: tier.baseScore + contextBonus + exactExtBonus + caseBonus,
+          contextBonus,
         },
       ]
     })
@@ -274,7 +284,18 @@ export function scoreWorkspaceCandidates(
 
   const second = scored[1]
 
-  if (!second || top.tier < second.tier) {
+  if (!second) {
+    if (options?.truncated && top.tier > 1 && top.contextBonus === 0) {
+      return {
+        kind: "ambiguous",
+        query: ambiguousPickerQuery(parsed, top.path),
+      }
+    }
+
+    return { kind: "match", path: top.path }
+  }
+
+  if (top.tier < second.tier) {
     return { kind: "match", path: top.path }
   }
 
@@ -294,7 +315,7 @@ export function scoreWorkspaceCandidates(
 }
 
 export async function searchWorkspaceCandidates(input: {
-  readonly files: Files
+  readonly files: Pick<Files, "root" | "search">
   readonly parsed: ParsedFileLink
   readonly activePath?: string
   readonly openPaths?: readonly string[]
@@ -309,24 +330,33 @@ export async function searchWorkspaceCandidates(input: {
     openPaths: input.openPaths,
   }
 
-  const primary = await input.files.search(input.parsed.strippedPath, { limit: 60, signal: input.signal })
+  const search = (query: string, limit: number) =>
+    input.files.search(query, { limit, signal: input.signal }).catch(() => [])
+
+  const primary = await search(input.parsed.strippedPath, 60)
 
   if (input.signal.aborted) return { kind: "none" }
 
   if (primary.length > 0) {
-    const scored = scoreWorkspaceCandidates(input.parsed.path, primary, options)
+    const scored = scoreParsed(input.parsed, primary, {
+      ...options,
+      truncated: primary.length >= 60,
+    })
 
     if (scored.kind !== "none") return scored
   }
 
   if (/^[ab]\/.+/.test(input.parsed.strippedPath)) {
     const withoutGitPrefix = input.parsed.strippedPath.slice(2)
-    const gitCandidates = await input.files.search(withoutGitPrefix, { limit: 60, signal: input.signal })
+    const gitCandidates = await search(withoutGitPrefix, 60)
 
     if (input.signal.aborted) return { kind: "none" }
 
     if (gitCandidates.length > 0) {
-      const scored = scoreWorkspaceCandidates(input.parsed.path, gitCandidates, options)
+      const scored = scoreParsed(input.parsed, gitCandidates, {
+        ...options,
+        truncated: gitCandidates.length >= 60,
+      })
 
       if (scored.kind !== "none") return scored
     }
@@ -335,12 +365,15 @@ export async function searchWorkspaceCandidates(input: {
   const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
 
   if (stem && stem !== input.parsed.strippedPath) {
-    const secondary = await input.files.search(stem, { limit: 100, signal: input.signal })
+    const secondary = await search(stem, 100)
 
     if (input.signal.aborted) return { kind: "none" }
 
     if (secondary.length > 0) {
-      return scoreWorkspaceCandidates(input.parsed.path, secondary, options)
+      return scoreParsed(input.parsed, secondary, {
+        ...options,
+        truncated: secondary.length >= 100,
+      })
     }
   }
 

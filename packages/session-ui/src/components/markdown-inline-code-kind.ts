@@ -17,7 +17,6 @@ const barePathExtensions = new Set([
   "apacheconf",
   "apib",
   "applescript",
-  "as",
   "asax",
   "asciidoc",
   "ascx",
@@ -94,7 +93,6 @@ const barePathExtensions = new Set([
   "cls",
   "cmake",
   "cmake.in",
-  "cmd",
   "cnf",
   "cob",
   "cobol",
@@ -218,7 +216,6 @@ const barePathExtensions = new Set([
   "fpp",
   "frag",
   "frm",
-  "fs",
   "fsh",
   "fshader",
   "fsi",
@@ -445,7 +442,6 @@ const barePathExtensions = new Set([
   "lookml",
   "lpr",
   "lsl",
-  "lsp",
   "ltx",
   "lua",
   "luau",
@@ -1125,14 +1121,18 @@ const barePathExtensions = new Set([
 
 // Single-letter or short source extensions that are valid when qualified with a directory slash (e.g. `src/main.c`, `include/foo.h`).
 const slashedOnlyExtensions = new Set([
+  "as",
+  "cmd",
   "d",
   "edge",
   "env",
   "f",
   "flex",
+  "fs",
   "inc",
   "l",
   "lock",
+  "lsp",
   "mod",
   "mount",
   "props",
@@ -1443,15 +1443,10 @@ const ambiguousReceiverPairs = new Set([
   "ctx.r",
   "el.c",
   "el.h",
-  "history.go",
   "item.c",
   "item.h",
   "log.log",
   "logger.log",
-  "math.c",
-  "math.h",
-  "math.m",
-  "math.r",
   "obj.c",
   "obj.el",
   "obj.h",
@@ -1460,87 +1455,89 @@ const ambiguousReceiverPairs = new Set([
   "obj.r",
   "req.json",
   "res.json",
-  "router.go",
   "schema.properties",
   "self.el",
+  "self.log",
   "this.c",
   "this.el",
   "this.h",
+  "this.log",
   "this.m",
   "this.properties",
   "this.r",
-  "window.go",
 ])
 
 const frameworkNames = new Set([
-  "adonis.js",
-  "alpine.js",
-  "astro.js",
-  "auth.js",
-  "babylon.js",
-  "backbone.js",
-  "blitz.js",
-  "bun.js",
-  "cesium.js",
-  "chart.js",
-  "cytoscape.js",
-  "d3.js",
-  "day.js",
-  "deck.js",
-  "deno.js",
-  "ember.js",
-  "express.js",
-  "fastify.js",
-  "feathers.js",
-  "fuse.js",
-  "hapi.js",
-  "hljs.js",
-  "howler.js",
-  "inferno.js",
-  "katex.js",
-  "koa.js",
-  "leaflet.js",
-  "lit.js",
-  "mapbox.js",
-  "marked.js",
-  "marko.js",
-  "mermaid.js",
-  "meteor.js",
-  "mithril.js",
-  "moment.js",
-  "nest.js",
-  "next.js",
-  "node.js",
-  "nuxt.js",
-  "nw.js",
-  "p5.js",
-  "pdf.js",
-  "pg.js",
-  "pixi.js",
-  "plyr.js",
-  "popper.js",
-  "preact.js",
-  "prism.js",
-  "prisma.js",
-  "qwik.js",
-  "react.js",
-  "redwood.js",
-  "riot.js",
-  "sails.js",
-  "shiki.js",
-  "solid.js",
-  "sortable.js",
-  "stencil.js",
-  "swiper.js",
-  "three.js",
-  "tippy.js",
-  "tone.js",
-  "total.js",
-  "turf.js",
-  "video.js",
-  "vue.js",
-  "zone.js",
+  "Adonis.js",
+  "Alpine.js",
+  "Astro.js",
+  "Auth.js",
+  "Babylon.js",
+  "Backbone.js",
+  "Blitz.js",
+  "Bun.js",
+  "Cesium.js",
+  "Chart.js",
+  "Cytoscape.js",
+  "D3.js",
+  "Day.js",
+  "Deck.js",
+  "Deno.js",
+  "Ember.js",
+  "Express.js",
+  "Fastify.js",
+  "Feathers.js",
+  "Fuse.js",
+  "Hapi.js",
+  "Hljs.js",
+  "Howler.js",
+  "Inferno.js",
+  "KaTeX.js",
+  "Koa.js",
+  "Leaflet.js",
+  "Lit.js",
+  "Mapbox.js",
+  "Marked.js",
+  "Marko.js",
+  "Mermaid.js",
+  "Meteor.js",
+  "Mithril.js",
+  "Moment.js",
+  "Nest.js",
+  "Next.js",
+  "Node.js",
+  "Nuxt.js",
+  "NW.js",
+  "P5.js",
+  "PDF.js",
+  "Pg.js",
+  "Pixi.js",
+  "Plyr.js",
+  "Popper.js",
+  "Preact.js",
+  "Prism.js",
+  "Prisma.js",
+  "Qwik.js",
+  "React.js",
+  "Redwood.js",
+  "Riot.js",
+  "Sails.js",
+  "Shiki.js",
+  "Solid.js",
+  "Sortable.js",
+  "Stencil.js",
+  "Swiper.js",
+  "Three.js",
+  "Tippy.js",
+  "Tone.js",
+  "Total.js",
+  "Turf.js",
+  "Video.js",
+  "Vue.js",
+  "Zone.js",
 ])
+
+const twoSegmentDirectoryPrefixes = new Set([".github", ".opencode", ".vscode", "apps", "crates", "packages"])
 
 const workspaceDirectoryPrefixes = new Set([
   ".github",
@@ -1630,7 +1627,7 @@ const compoundMiddleExtensions = new Set([
 ])
 
 const domainSegment =
-  /^(?:localhost(?::\d+)?|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|ai|app|edu|gov|co|me|gg|tv|xyz|fyi|land|cloud|tech|tools|page|site|online|local|localhost|internal|test|example|invalid)(?::\d+)?)$/i
+  /^(?:localhost(?::\d+)?|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|ai|edu|gov|co|me|gg|tv|xyz|fyi|land|cloud|tech|tools|page|site|online|local|localhost|internal|test|example|invalid)(?::\d+)?)$/
 
 const lineHashSuffix = /#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i
 
@@ -1661,6 +1658,7 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   if (!stripped || stripped === "/" || stripped.startsWith("//") || stripped.startsWith("-")) return
 
+  const trailingSlash = stripped.endsWith("/")
   const clean = stripped.replace(/\/+$/, "")
 
   if (!clean || clean === "." || clean === "..") return
@@ -1685,7 +1683,7 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
   const basename = segments[segments.length - 1]!
   const slashed = segments.length > 1 || clean.startsWith("/")
 
-  if (!slashed && frameworkNames.has(basename.toLowerCase())) return
+  if (!slashed && frameworkNames.has(basename)) return
 
   if (hasPathFileName(basename)) return "path"
 
@@ -1697,7 +1695,13 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   if (anchored && segments.length > 1) return "path"
 
-  if (!clean.startsWith("/") && segments.length > 1 && workspaceDirectoryPrefixes.has(segments[0]!.toLowerCase())) {
+  const first = segments[0]!.toLowerCase()
+
+  if (
+    !clean.startsWith("/") &&
+    workspaceDirectoryPrefixes.has(first) &&
+    (segments.length >= 3 || trailingSlash || twoSegmentDirectoryPrefixes.has(first))
+  ) {
     return "path"
   }
 }

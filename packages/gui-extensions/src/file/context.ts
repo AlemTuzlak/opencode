@@ -22,12 +22,12 @@ export interface FileShared {
     /** The directory whose root listing the tree last refreshed. */
     directory?: string
   }
-  /** The file browser's filter input, focused by the "Open file" menu item even when the browser chunk mounts later. */
+  /** The file browser's filter input and per-session filter text. */
   readonly filter: {
     element?: HTMLInputElement
     pending?: boolean
-    take?: (session: string) => string | undefined
-    apply?: (session: string, value: string) => void
+    get(session: string): string
+    set(session: string, value: string): void
   }
   /** Open-in-app availability checks, one per app for the window's lifetime. */
   readonly installed: Map<string, Promise<boolean>>

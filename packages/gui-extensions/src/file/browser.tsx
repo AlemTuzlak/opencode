@@ -41,28 +41,10 @@ export function SessionFileBrowserTab(props: {
   const shared = useShared()
   const file = props.screen.file
   const resultsID = `session-file-browser-results-${createUniqueId()}`
-  const [store, setStore] = createStore<{ filter: string; explicitHighlight?: string }>({ filter: "" })
-  const filter = () => store.filter
-  const setFilter = (value: string) => setStore("filter", value)
+  const [store, setStore] = createStore<{ explicitHighlight?: string }>({})
+  const filter = () => shared.filter.get(props.session.key)
+  const setFilter = (value: string) => shared.filter.set(props.session.key, value)
   const setExplicitHighlight = (value: string) => setStore("explicitHighlight", value)
-
-  createKeyed(
-    () => props.session.key,
-    (sessionKey) => {
-      const initial = shared.filter.take?.(sessionKey)
-
-      if (initial !== undefined) setFilter(initial)
-
-      const apply = (targetSession: string, value: string) => {
-        if (targetSession === sessionKey) setFilter(value)
-      }
-
-      shared.filter.apply = apply
-      onCleanup(() => {
-        if (shared.filter.apply === apply) shared.filter.apply = undefined
-      })
-    },
-  )
   const sidebarOpened = () => props.placeholder || props.state.opened()
   const query = createMemo(() => filter().trim())
 
