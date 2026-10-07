@@ -32,7 +32,7 @@ export function parseFileLink(href: string): ParsedFileLink {
   const isFileUrl = /^file:\/\//i.test(raw)
   const extracted = extractLineSelection(raw, isFileUrl)
   const clean = normalizeRelativeSegments(extracted.path, isFileUrl)
-  const strippedPath = clean.replace(/^(?:~\/|(?:\.\.(?:\/|$))+)/, "")
+  const strippedPath = clean.replace(/^(?:\.\.(?:\/|$))+/, "")
   const segments = strippedPath.split("/").filter(Boolean)
   const basename = segments.at(-1) ?? ""
 
@@ -190,7 +190,8 @@ function scoreParsed(
   }
 
   const queryBase = parsed.basename.toLowerCase()
-  const tsStem = stripJsImportExtension(queryBase)
+  // `.js` names `.ts` sources only in import paths; a bare `Node.js` is a product name, not `node.ts`.
+  const tsStem = parsed.segments.length > 1 ? stripJsImportExtension(queryBase) : undefined
   const isDocStem = !queryBase.includes(".") && docStemPattern.test(queryBase)
 
   const matchingPool = normalizedCandidates.filter((file) => {
@@ -298,9 +299,8 @@ export async function searchWorkspaceCandidates(input: {
   }
 
   const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
-  const hasJsExt = stem !== input.parsed.basename
 
-  if (stem && stem !== primaryQuery && (primaryQuery.includes("/") || hasJsExt)) {
+  if (stem && stem !== primaryQuery && primaryQuery.includes("/")) {
     const secondary = await search(stem, 100)
 
     if (input.signal.aborted) return { kind: "none" }
@@ -592,39 +592,32 @@ function directoryOf(path: string): string {
   return index === -1 ? "" : path.slice(0, index)
 }
 
+/**
+ * Whether a path named in a message opens a file, without reading any file. Absolute paths list their directory;
+ * other paths ask the workspace search index, then list the literal path's directory for files the index skips
+ * (ignored files such as `.env`). Ambiguous names count: a click opens the picker on them.
+ */
 export async function checkFileLinkExists(input: {
-  readonly files: Pick<Files, "root" | "search" | "get" | "sync" | "resolve">
+  readonly files: Pick<Files, "root" | "search" | "resolve" | "exists">
   readonly href: string
   readonly signal: AbortSignal
 }): Promise<boolean> {
   const parsed = parseFileLink(input.href)
+
+  // `~` is the server's home folder, which the app cannot expand.
+  if (!parsed.basename || parsed.path.startsWith("~")) return false
+
+  const absolute = /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/")
   const root = input.files.root.replaceAll("\\", "/").replace(/\/+$/, "")
+  const direct = input.files.resolve(absolute ? parsed.path : (resolveArtifactPath(root, parsed.path) ?? parsed.path))
 
-  const direct =
-    /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/")
-      ? input.files.resolve(parsed.path)
-      : input.files.resolve(resolveArtifactPath(root, parsed.path) ?? parsed.path)
+  if (absolute) return input.files.exists(direct)
 
-  if (!direct) return false
+  const outcome = await searchWorkspaceCandidates({ files: input.files, parsed, signal: input.signal })
 
-  if (input.files.get(direct)?.loaded) return true
+  if (input.signal.aborted) return false
 
-  const explicitAbsolute =
-    /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/") || /^file:/i.test(input.href.trim())
+  if (outcome.kind === "match" || outcome.kind === "ambiguous") return true
 
-  if (!explicitAbsolute) {
-    const outcome = await searchWorkspaceCandidates({
-      files: input.files,
-      parsed,
-      signal: input.signal,
-    })
-
-    if (input.signal.aborted) return false
-
-    if (outcome.kind !== "none") return true
-  }
-
-  await input.files.sync(direct, { silent: true })
-
-  return !input.signal.aborted && Boolean(input.files.get(direct)?.loaded)
+  return input.files.exists(direct)
 }

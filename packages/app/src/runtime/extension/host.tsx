@@ -297,9 +297,9 @@ function createHost(input: HostInput) {
 
   const list = <T,>(registry: Registry<T>) => items(registry).map((item) => item.value)
 
-  const pickLinkHandler = (link: Parameters<Links["open"]>[0]) =>
-    untrack(() => list(LinkHandler))
-      .filter((item) => item.match(link))
+  const pickLinkHandler = (link: Parameters<Links["open"]>[0], accept: (item: LinkHandler) => boolean) =>
+    list(LinkHandler)
+      .filter((item) => accept(item) && item.match(link))
       .reduce<LinkHandler | undefined>(
         (best, item) => (!best || (item.priority ?? 0) > (best.priority ?? 0) ? item : best),
         undefined,
@@ -307,7 +307,7 @@ function createHost(input: HostInput) {
 
   const links: Links = {
     open(link) {
-      const handler = pickLinkHandler(link)
+      const handler = untrack(() => pickLinkHandler(link, () => true))
 
       if (!handler) return false
 
@@ -315,13 +315,13 @@ function createHost(input: HostInput) {
 
       return true
     },
-    resolve(link) {
-      const handler = pickLinkHandler(link)
+    // Markdown asks from inside its render effect; untracked so a session or screen switch never reruns it.
+    exists: (link) =>
+      untrack(() => {
+        const handler = pickLinkHandler(link, (item) => !!item.exists)
 
-      if (!handler) return false
-
-      return handler.resolve ? handler.resolve(link) : true
-    },
+        return handler?.exists?.(link) ?? false
+      }),
   }
 
   const dialog = useDialog()

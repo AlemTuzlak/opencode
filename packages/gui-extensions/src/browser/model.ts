@@ -386,6 +386,8 @@ export function createModel(ctx: SetupContext<typeof definition>) {
 
   const openURL = (session: Session, url: string) => command(session, { type: "tabs.open", url })
 
+  const known = new Map<string, { exists: boolean; expires: number }>()
+
   // Only the routed session has a file model to resolve workspace paths with: the session screen's.
   const files = (session: Session) => {
     const screen = ctx.screen.current()
@@ -522,6 +524,29 @@ export function createModel(ctx: SetupContext<typeof definition>) {
         command(session, { type: "tabs.focus", tabID: item.id })
     },
     match: (link: Link) => !!target(link),
+    // The pane opens the literal path, so only that path counts. Answers are cached so a streaming re-render links
+    // the same HTML path in the same frame.
+    exists(link: Link) {
+      const found = target(link)
+      const current = found && files(found.view)
+
+      if (!found || !current) return false
+
+      const key = `${current.root}\n${found.path}`
+      const hit = known.get(key)
+
+      if (hit && Date.now() < hit.expires) return hit.exists
+
+      return current.exists(found.path).then((value) => {
+        known.delete(key)
+        known.set(key, { exists: value, expires: Date.now() + (value ? 60_000 : 5_000) })
+        Array.from(known.keys())
+          .slice(0, Math.max(0, known.size - 250))
+          .forEach((item) => known.delete(item))
+
+        return value
+      })
+    },
     openLink(link: Link) {
       const found = target(link)
 

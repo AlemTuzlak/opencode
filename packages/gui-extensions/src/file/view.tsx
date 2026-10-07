@@ -414,15 +414,16 @@ export function SessionFileView(props: { session: MountedSession; screen: Sessio
     () => {
       const p = path()
 
-      return p ? `${props.session.key}\n${p}` : undefined
+      return p ? { session: props.session.key, path: p } : undefined
     },
-    (targetKey) =>
+    (target) =>
       onCleanup(
-        shared.reveal.register(targetKey, () => {
+        shared.reveal.register(target.session, target.path, () => {
           setNote("selected", null)
           scrollSync.queueRestore()
         }),
       ),
+    { equals: (previous, next) => previous?.session === next?.session && previous?.path === next?.path },
   )
 
   // Restores the stored scroll when the file loads, its view state loads, or the tab shows a loaded file again.

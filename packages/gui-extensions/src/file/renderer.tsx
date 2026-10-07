@@ -70,8 +70,10 @@ const setup: Setup<typeof File> = (ctx) => {
   const [filters, setFilters] = createStore<Record<string, { text: string; browsing: boolean } | undefined>>({})
 
   const revealListeners = new Map<string, Set<() => void>>()
-  const linkCache = new Map<string, { exists: boolean; expiresAt: number }>()
-  const linkInflight = new Map<string, Promise<boolean>>()
+  const known = new Map<string, { exists: boolean; expires: number }>()
+  const checking = new Map<string, Promise<boolean>>()
+  const waiting: (() => void)[] = []
+  let running = 0
   let clickController: AbortController | undefined
 
   // Tab objects per session screen, which stays while it routes another session, reused so neither strip updates nor a
@@ -124,8 +126,10 @@ const setup: Setup<typeof File> = (ctx) => {
 
     if (!screen) return
 
-    updateFilter(session.key, { browsing: false })
+    // Not batched: the mobile tab strip must register the new tab before it leaves the browser, or Kobalte falls back
+    // to the first tab and reselects it.
     layout.open(key(screen.file, path), session, options)
+    updateFilter(session.key, { browsing: false })
     void screen.file.sync(path)
   }
 
@@ -202,7 +206,8 @@ const setup: Setup<typeof File> = (ctx) => {
         }),
     },
     reveal: {
-      register(targetKey, run) {
+      register(session, path, run) {
+        const targetKey = `${session}\n${path}`
         const set = revealListeners.get(targetKey) ?? new Set()
         set.add(run)
         revealListeners.set(targetKey, set)
@@ -503,53 +508,61 @@ const setup: Setup<typeof File> = (ctx) => {
   // a browser tab for HTML when the desktop can load the file directly.
   ctx.add(LinkHandler, {
     match: () => true,
-    resolve(link) {
+    // Messages style a path as a link only when this confirms it. Answers are cached so a streaming re-render links the
+    // same path in the same frame; at most 4 checks run at once.
+    exists(link) {
       const session = sessions.current()
       const screen = ctx.screen.current()
       const files = screen?.file
 
       if (!session || !screen || !files || (link.session && link.session.key !== session.key)) return false
 
-      const cacheKey = `${files.root}\n${link.href}`
-      const now = Date.now()
-      const cached = linkCache.get(cacheKey)
+      const cacheKey = `${files.root}\n${parsePathLineSuffix(link.href.trim().replaceAll("\\", "/")).path}`
+      const hit = known.get(cacheKey)
 
-      if (cached && now < cached.expiresAt) return cached.exists
+      if (hit && Date.now() < hit.expires) {
+        known.delete(cacheKey)
+        known.set(cacheKey, hit)
 
-      const existing = linkInflight.get(cacheKey)
+        return hit.exists
+      }
 
-      if (existing) return existing
+      const pending = checking.get(cacheKey)
 
-      const promise = import("./resolve-link")
-        .then(({ checkFileLinkExists }) => {
-          if (ctx.signal.aborted || ctx.screen.current() !== screen) return false
+      if (pending) return pending
 
-          return checkFileLinkExists({ files, href: link.href, signal: ctx.signal })
-        })
-        .then((exists) => {
-          if (!ctx.signal.aborted) {
-            linkCache.delete(cacheKey)
-            linkCache.set(cacheKey, {
-              exists,
-              expiresAt: exists ? Number.POSITIVE_INFINITY : Date.now() + 5_000,
+      const check = () =>
+        import("./resolve-link").then(({ checkFileLinkExists }) =>
+          ctx.signal.aborted ? false : checkFileLinkExists({ files, href: link.href, signal: ctx.signal }),
+        )
+
+      const promise = new Promise<boolean>((resolve) => {
+        const run = () => {
+          running += 1
+          check()
+            .catch(() => false)
+            .then(resolve)
+            .finally(() => {
+              running -= 1
+              waiting.shift()?.()
             })
+        }
 
-            while (linkCache.size > 250) {
-              const oldest = linkCache.keys().next().value
+        if (running < 4) return run()
 
-              if (oldest === undefined) break
-              linkCache.delete(oldest)
-            }
-          }
+        waiting.push(run)
+      }).then((value) => {
+        checking.delete(cacheKey)
+        known.delete(cacheKey)
+        known.set(cacheKey, { exists: value, expires: Date.now() + (value ? 60_000 : 5_000) })
+        Array.from(known.keys())
+          .slice(0, Math.max(0, known.size - 250))
+          .forEach((item) => known.delete(item))
 
-          return exists
-        })
-        .catch(() => false)
-        .finally(() => {
-          linkInflight.delete(cacheKey)
-        })
+        return value
+      })
 
-      linkInflight.set(cacheKey, promise)
+      checking.set(cacheKey, promise)
 
       return promise
     },
@@ -627,13 +640,14 @@ const setup: Setup<typeof File> = (ctx) => {
           }
 
           batch(() => {
-            updateFilter(latest.key, { browsing: false })
             applySelection(latest, files, targetPath, selection)
             layout.open(key(files, targetPath), latest, { background: link.background })
 
             // A tapped link switches the narrow-screen view; the side region still opens for when the window is wide.
             if (layout.narrow() && !layout.side.opened(latest)) layout.side.toggle(latest)
           })
+          // After the batch, as in `open`: the mobile tab strip registers the tab before it leaves the browser.
+          updateFilter(latest.key, { browsing: false })
 
           return true
         })

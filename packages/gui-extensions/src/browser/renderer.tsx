@@ -123,6 +123,7 @@ const setup: Setup<typeof definition> = (ctx) => {
   ctx.add(LinkHandler, {
     priority: 10,
     match: (link) => !!model()?.match(link),
+    exists: (link) => model()?.exists(link) ?? false,
     open: (link) => model()?.openLink(link),
   })
   // A composer chip for a comment on a picked element.

@@ -41,7 +41,7 @@ import {
   useMarkdown,
   type OpenMarkdownLocalFile,
   type ReadMarkdownImage,
-  type ResolveMarkdownLocalFile,
+  type MarkdownLocalFileExists,
 } from "../context/markdown"
 import { createMarkdownImages } from "./markdown-image"
 import { createImagePreview } from "./image-preview"
@@ -155,13 +155,9 @@ function createCopyButton(labels: CopyLabels) {
     return <MarkdownCopyButton labels={labelState()} copied={copied()} />
   }, host)
 
-  if (state.setLabels && state.setCopied) {
-    copyButtonState.set(host, {
-      setLabels: state.setLabels,
-      setCopied: state.setCopied,
-      dispose,
-    })
-  }
+  state.dispose = dispose
+  // SAFETY: `render` runs its function synchronously, so both setters are assigned before this line.
+  copyButtonState.set(host, state as CopyButtonState)
 
   return host
 }
@@ -384,7 +380,7 @@ function setupExternalLinkFavicons(root: HTMLDivElement) {
   return () => root.removeEventListener("load", loaded, true)
 }
 
-function markInlineCode(source: HTMLDivElement, target: HTMLDivElement, resolveLocalFile?: ResolveMarkdownLocalFile) {
+function markInlineCode(source: HTMLDivElement, target: HTMLDivElement, localFileExists?: MarkdownLocalFileExists) {
   const codeNodes = Array.from(source.querySelectorAll(":not(pre) > code"))
   const pending = new Set<string>()
 
@@ -396,12 +392,12 @@ function markInlineCode(source: HTMLDivElement, target: HTMLDivElement, resolveL
 
     if (!kind) continue
 
-    if (kind === "url" || !resolveLocalFile) {
+    if (kind === "url" || !localFileExists) {
       code.dataset.inlineCodeKind = kind
       continue
     }
 
-    const result = resolveLocalFile(text)
+    const result = localFileExists(text)
 
     if (!(result instanceof Promise)) {
       if (result) code.dataset.inlineCodeKind = "path"
@@ -766,7 +762,7 @@ export function Markdown(
     activeCodeKeys.clear()
     nextCodeKeys.forEach((key) => activeCodeKeys.add(key))
     content.forEach((block, index) =>
-      updateBlock(container, index, block, labels, !!markdown?.openSession, markdown?.resolveLocalFile),
+      updateBlock(container, index, block, labels, !!markdown?.openSession, markdown?.localFileExists),
     )
 
     while (container.children.length > content.length) {
@@ -886,7 +882,7 @@ function updateBlock(
   block: RenderedBlock,
   labels: CopyLabels,
   sessionLinks: boolean,
-  resolveLocalFile?: ResolveMarkdownLocalFile,
+  localFileExists?: MarkdownLocalFileExists,
 ) {
   const current = container.children[index]
 
@@ -914,7 +910,7 @@ function updateBlock(
 
   if (source === next) disposeCopyButtons(next)
   source.innerHTML = block.html
-  markInlineCode(source, next, resolveLocalFile)
+  markInlineCode(source, next, localFileExists)
   markCodeLinks(source)
 
   if (sessionLinks) markSessionLinks(source)

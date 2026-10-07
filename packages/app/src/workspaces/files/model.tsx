@@ -49,6 +49,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     const path = createPathHelpers(scope)
 
     const inflight = new Map<string, Promise<void>>()
+    const listings = new Map<string, { names: Promise<Set<string>>; expires: number }>()
 
     const [store, setStore] = createStore<{
       file: Record<string, FileState>
@@ -97,6 +98,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
     createComputed(
       on(scope, () => {
         inflight.clear()
+        listings.clear()
         resetFileContentLru()
         batch(() => {
           setStore("file", reconcile({}))
@@ -155,7 +157,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
         }),
       )
 
-      if (silent && notFound) return
+      if (silent) return
       showToast({
         variant: "error",
         title: language.t("toast.file.loadFailed.title"),
@@ -213,6 +215,37 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       inflight.set(key, promise)
 
       return promise
+    }
+
+    // Lists the parent directory instead of reading the file, so checking a path that a message names costs no content
+    // transfer. Folder listings are shared for a few seconds.
+    const exists = (input: string) => {
+      const file = path.normalize(input)
+
+      if (!file) return Promise.resolve(false)
+
+      if (store.file[file]?.loaded) return Promise.resolve(true)
+
+      const directory = scope()
+      const parent = file.includes("/") ? getDirectory(file) : ""
+      const key = `${directory}\n${parent}`
+      const now = Date.now()
+      const cached = listings.get(key)
+
+      if (cached && now < cached.expires) return cached.names.then((names) => names.has(getFilename(file)))
+
+      const names = serverSDK.api.file.list({ path: parent || undefined, location: { directory } }).then(
+        (x) => new Set(x.data.flatMap((entry) => (entry.type === "file" ? [getFilename(entry.path)] : []))),
+        () => new Set<string>(),
+      )
+
+      listings.delete(key)
+      listings.set(key, { names, expires: now + 5_000 })
+      Array.from(listings.keys())
+        .slice(0, Math.max(0, listings.size - 100))
+        .forEach((item) => listings.delete(item))
+
+      return names.then((items) => items.has(getFilename(file)))
     }
 
     const search = (query: string, dirs: "true" | "false", options?: { limit?: number; signal?: AbortSignal }) =>
@@ -305,6 +338,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       get,
       notFound: (input: string) => store.file[path.normalize(input)]?.notFound ?? false,
       load,
+      exists,
       scrollTop,
       scrollLeft,
       setScrollTop,

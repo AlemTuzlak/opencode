@@ -204,6 +204,14 @@ export interface Files {
     },
   ): Promise<void>
   /**
+   * Whether a file exists, checked by listing its directory without reading the file. Listings are cached briefly, so
+   * a file created a moment ago can read as missing for a few seconds.
+   *
+   * @param path - A workspace-relative or absolute path.
+   * @returns False when the file is missing or its directory cannot be listed.
+   */
+  exists(path: string): Promise<boolean>
+  /**
    * Searches the workspace by fuzzy path.
    *
    * @param query - The search text.
@@ -1026,12 +1034,14 @@ export interface Links {
    */
   open(link: Link): boolean
   /**
-   * Checks whether a candidate inline-code path resolves to an existing target on the matching LinkHandler.
+   * Whether a link's target exists, so text that names it can be styled as a link. Asks the highest-priority matching
+   * LinkHandler that defines `exists`. Untracked: calling it inside an effect does not subscribe that effect.
    *
-   * @param link - The candidate link to check.
-   * @returns True when the target exists, or false when no handler matches or the target does not exist.
+   * @param link - The candidate link.
+   * @returns False when no matching handler defines `exists`, or the target does not exist. A boolean on a cache hit,
+   * else a promise.
    */
-  resolve(link: Link): boolean | Promise<boolean>
+  exists(link: Link): boolean | Promise<boolean>
 }
 
 /** One dialog `Dialogs.open` opened. */

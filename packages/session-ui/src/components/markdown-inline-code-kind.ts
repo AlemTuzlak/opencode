@@ -18,7 +18,7 @@ const exactCaseFileNames = new Set([
   "NOTICE",
   "Podfile",
   "Procfile",
-  " Rakefile",
+  "Rakefile",
   "README",
   "Snakefile",
   "Tiltfile",
@@ -40,7 +40,6 @@ const lowercaseFileNames = new Set([
   ".gitignore",
   ".gitmodules",
   ".htaccess",
-  ".Justfile",
   ".luacheckrc",
   ".node-version",
   ".npmignore",
@@ -107,7 +106,7 @@ const lowercaseFileNames = new Set([
   "sconscript",
   "sconstruct",
   "snakefile",
-  " steepfile",
+  "steepfile",
   "thorfile",
   "tiltfile",
   "tsconfig.json",
@@ -124,7 +123,7 @@ const barePropertyExtensions = new Set([
   "at",
   "by",
   "code",
-  " current",
+  "current",
   "data",
   "db",
   "do",
@@ -181,7 +180,8 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
     return
   }
 
-  if (stripped === "." || stripped === "..") return
+  // `.`, `..`, and `~` (the server's home folder, which the app cannot expand) name no file it can open.
+  if (stripped === "." || stripped === ".." || stripped.startsWith("~")) return
 
   if (/^\/[a-z][a-z0-9-]*$/i.test(stripped)) return
 
@@ -197,8 +197,7 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
   // Parentheses and brackets are only valid inside slashed route segments such as `app/(auth)/[id]/page.tsx`.
   if (!slashed && /[()[\]]/.test(stripped)) return
 
-  const anchored =
-    /^\.\.?\//.test(stripped) || /^[a-z]:\//i.test(stripped) || stripped.startsWith("~/") || stripped.startsWith("//")
+  const anchored = /^\.\.?\//.test(stripped) || /^[a-z]:\//i.test(stripped) || stripped.startsWith("//")
 
   if (
     !anchored &&

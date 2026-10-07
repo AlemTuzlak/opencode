@@ -521,11 +521,14 @@ export interface LinkHandler {
    */
   open(link: Link): void
   /**
-   * Checks whether a candidate inline-code path resolves to an existing target before it is styled as a link.
+   * Whether the link's target exists. `Links.exists` asks the highest-priority matching handler that defines it; omit
+   * it to leave the answer to a lower-priority handler. Must never read file contents or show an error: it runs for
+   * every candidate path a message renders. Resolve false on failure.
    *
    * @param link - A link `match` accepted.
+   * @returns A boolean when the answer is cached, else a promise.
    */
-  resolve?(link: Link): boolean | Promise<boolean>
+  exists?(link: Link): boolean | Promise<boolean>
 }
 
 /** A titlebar pill, or the dev channel badge as a toggle. */

@@ -194,10 +194,8 @@ describe("searchWorkspaceCandidates", () => {
       kind: "match",
       path: "packages/x/src/foo.ts",
     })
-    expect(await resolve("foo.js", ["src/foo.ts"])).toEqual({
-      kind: "match",
-      path: "src/foo.ts",
-    })
+    expect(await resolve("foo.js", ["src/foo.ts"])).toEqual({ kind: "none" })
+    expect(await resolve("Node.js", ["packages/core/src/node.ts"])).toEqual({ kind: "none" })
     expect(await resolve("README", ["README.md", "docs/README.md"])).toEqual({
       kind: "match",
       path: "README.md",
@@ -273,9 +271,9 @@ describe("searchWorkspaceCandidates", () => {
       kind: "ambiguous",
       query: "index.ts",
     })
-    expect(await resolve("util.js", ["packages/a/util.ts", "packages/b/util.ts"])).toEqual({
+    expect(await resolve("lib/util.js", ["packages/a/lib/util.ts", "packages/b/lib/util.ts"])).toEqual({
       kind: "ambiguous",
-      query: "util.ts",
+      query: "lib/util.ts",
     })
     expect(await resolve("util.ts", ["p/util.ts", "p/q/r/s/t/u/v/w/x/util.ts"])).toEqual({
       kind: "ambiguous",
@@ -338,14 +336,14 @@ describe("searchWorkspaceCandidates", () => {
 })
 
 describe("checkFileLinkExists", () => {
-  test("returns true for workspace matches or direct files and false for non-existent tokens", async () => {
-    const loaded = new Set(["C:/tmp/out.html"])
+  test("confirms indexed, ignored, and absolute files without reading them, and rejects unknown names", async () => {
+    // `.env` is ignored, so the search index skips it; only a directory listing finds it.
+    const onDisk = new Set(["C:/tmp/out.html", ".env"])
 
     const files = {
       root: "/repo/workspace",
       search: async (query: string) => workspaceFiles.filter((item) => fuzzyMatches(query, item)),
-      get: (path: string) => (loaded.has(path) ? { path, name: path, loaded: true } : undefined),
-      sync: async () => undefined,
+      exists: async (path: string) => onDisk.has(path),
       resolve: (path: string) => path.replace(/^\/repo\/workspace\//, ""),
     }
 
@@ -353,7 +351,10 @@ describe("checkFileLinkExists", () => {
 
     expect(await checkFileLinkExists({ files, href: "session/timeline/interaction.ts:74", signal })).toBe(true)
     expect(await checkFileLinkExists({ files, href: "index.ts", signal })).toBe(true)
+    expect(await checkFileLinkExists({ files, href: ".env", signal })).toBe(true)
     expect(await checkFileLinkExists({ files, href: "C:/tmp/out.html", signal })).toBe(true)
+    expect(await checkFileLinkExists({ files, href: "C:/tmp/missing.html", signal })).toBe(false)
+    expect(await checkFileLinkExists({ files, href: "~/README.md", signal })).toBe(false)
     expect(await checkFileLinkExists({ files, href: "nonexistent-widget.tsx", signal })).toBe(false)
   })
 })

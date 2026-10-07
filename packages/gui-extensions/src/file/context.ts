@@ -44,7 +44,7 @@ export interface FileShared {
   }
   /** Reveals a selected line range on a mounted file view when a link action targets it. */
   readonly reveal: {
-    register(key: string, run: () => void): () => void
+    register(session: string, path: string, run: () => void): () => void
     run(session: string, path: string): void
   }
   /** The tab is the session's selected side tab. */
