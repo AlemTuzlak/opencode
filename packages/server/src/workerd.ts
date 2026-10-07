@@ -83,7 +83,7 @@ export function serverOptions(options: Options): ServerOptions {
 export function replacements(options: Options): LayerNode.Replacements {
   return [
     Database.node.replace(
-      Database.configuredClient(sqliteLayer({ storage: options.storage, prefix: options.database?.prefix })),
+      Database.configuredClient(sqliteLayer({ storage: options.storage }), { prefix: options.database?.prefix }),
     ),
     CrossSpawnSpawner.node.replace(EnvironmentUnavailable.layer),
     Snapshot.node.replace(Snapshot.noopLayer),

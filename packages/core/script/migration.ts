@@ -134,7 +134,7 @@ import type { DatabaseMigration } from "../migration.js"
 
 const migration: DatabaseMigration.Migration = {
   id: ${JSON.stringify(name)},
-  up(tx) {
+  up(tx, prefix) {
     return Effect.gen(function* () {
 ${renderStatements(sql)}
     })
@@ -150,7 +150,7 @@ function renderSchema(sql: string) {
 import type { DatabaseMigration } from "./migration.js"
 
 const schema: Omit<DatabaseMigration.Migration, "id"> = {
-  up(tx) {
+  up(tx, prefix) {
     return Effect.gen(function* () {
 ${renderStatements(sql)}
     })
@@ -172,8 +172,19 @@ function renderStatements(sql: string) {
 
 function renderRun(statement: string) {
   const lines = statement.replaceAll("\t", "  ").split("\n")
-  if (lines.length === 1) return `      yield* tx.run(\`${escapeTemplate(lines[0])}\`)`
-  return `      yield* tx.run(\`\n${lines.map((line) => `        ${escapeTemplate(line)}`).join("\n")}\n      \`)`
+  if (lines.length === 1) return `      yield* tx.run(\`${renderLine(lines[0])}\`)`
+  return `      yield* tx.run(\`\n${lines.map((line) => `        ${renderLine(line)}`).join("\n")}\n      \`)`
+}
+
+// Drizzle Kit quotes every name. Table and index names follow these keywords,
+// and tables qualify columns in index expressions, so those become
+// `${prefix}name`; unqualified columns never do.
+function renderLine(line: string) {
+  return escapeTemplate(
+    line
+      .replace(/\b(TABLE|INDEX|REFERENCES|INTO|FROM|RENAME TO|ON) `/g, "$1 `\0")
+      .replace(/([`"])(\w+)\1\./g, "$1\0$2$1."),
+  ).replaceAll("\0", "${prefix}")
 }
 
 function escapeTemplate(line: string) {

@@ -59,7 +59,7 @@ const make = (options: Config) =>
         }
       })
 
-    const connection = Sqlite.makeConnection(run, runValues, options.prefix, {
+    const connection = Sqlite.makeConnection(run, runValues, {
       loadExtension: (path: string) =>
         Effect.try({
           try: () => native.loadExtension(path),
