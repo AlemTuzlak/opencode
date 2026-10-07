@@ -73,18 +73,8 @@ const Root = Spec.make(typeof OPENCODE_CLI_NAME === "string" ? OPENCODE_CLI_NAME
       },
     }),
     Spec.make("uninstall", {
-      description: "Uninstall OpenCode and remove all related files",
+      description: "Uninstall OpenCode, keeping session data, configuration, and state",
       params: {
-        keepConfig: Flag.Boolean("keep-config").pipe(
-          Flag.withAlias("c"),
-          Flag.withDescription("Keep configuration files"),
-          Flag.withDefault(false),
-        ),
-        keepData: Flag.Boolean("keep-data").pipe(
-          Flag.withAlias("d"),
-          Flag.withDescription("Keep session data and snapshots"),
-          Flag.withDefault(false),
-        ),
         dryRun: Flag.Boolean("dry-run").pipe(
           Flag.withDescription("Show what would be removed without removing"),
           Flag.withDefault(false),
