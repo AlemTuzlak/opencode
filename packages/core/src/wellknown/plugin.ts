@@ -10,7 +10,9 @@ export const Plugin = define({
   effect: Effect.fn(function* (ctx) {
     const bus = yield* Bus.Service
     const wellknown = yield* WellKnown.Service
-    yield* wellknown.entries().pipe(Effect.orDie)
+    yield* wellknown
+      .entries()
+      .pipe(Effect.catch(() => Effect.logWarning("failed to discover wellknown login methods; awaiting refresh")))
     yield* ctx.integration.transform((editor) => {
       wellknown.snapshot().forEach((entry) => {
         if (!entry.manifest.auth) return
