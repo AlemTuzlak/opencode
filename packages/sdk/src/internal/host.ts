@@ -14,7 +14,11 @@ import { context, layer, type LogOptions } from "../logging"
 import { OwnedFetch } from "./fetch"
 import { SdkInstances } from "./instances"
 
-export interface CreateOptions<R = never> extends Omit<ServerOptions, "hostname" | "port" | "password"> {
+/**
+ * `password` requires Basic auth on `http`, as `opencode serve` does; in-process SDK calls are authorized
+ * automatically.
+ */
+export interface CreateOptions<R = never> extends Omit<ServerOptions, "hostname" | "port"> {
   readonly log?: LogOptions
   readonly workspaceProviders?: Readonly<Record<string, WorkspaceDriver.Interface>>
   readonly instances?: SdkInstances.Options<R>
@@ -50,13 +54,26 @@ export const create = Effect.fn("EmbeddedHost.create")(function* <R = never>(
     // The sweep is a no-op when nothing is suspended. ManagedRuntime owns the
     // fiber so recovery never delays startup but still stops with the host.
     runtime.runFork(Context.get(services, SessionRestart.Service).resumeSuspendedSessions)
+    const http = Context.get(services, HttpRouter.HttpRouter).asHttpEffect()
     const handler = HttpEffect.toWebHandlerWith<never, HttpServerRequest.HttpServerRequest | Scope.Scope>(
       context(services),
-    )(Context.get(services, HttpRouter.HttpRouter).asHttpEffect())
-    const transport = OwnedFetch.make(handler, runtime.dispose)
+    )(http)
+    const authorization = server.password && `Basic ${btoa(`opencode:${server.password}`)}`
+    const transport = OwnedFetch.make(
+      authorization
+        ? (request) => {
+            const authorized = new Request(request)
+            authorized.headers.set("authorization", authorization)
+            return handler(authorized)
+          }
+        : handler,
+      runtime.dispose,
+    )
 
     return {
       runtime,
+      // Serve with an Effect HttpServer to expose this instance; a fetch handler cannot accept PTY WebSockets.
+      http: http.pipe(Effect.provideContext(context(services))),
       fetch: transport.fetch,
       plugins: Context.get(services, SdkPlugins.Service),
       sessions: Context.get(services, Session.Service),

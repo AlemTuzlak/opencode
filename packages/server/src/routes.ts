@@ -101,7 +101,13 @@ export function createEmbeddedRoutes(
   overrides: LayerNode.Replacements = [],
   instances?: InstanceNode,
 ) {
-  return makeRoutes(ServerAuth.Config.configLayer({ password: Option.none() }), options, () => [], overrides, instances)
+  return makeRoutes(
+    ServerAuth.Config.configLayer({ password: Option.fromNullishOr(options.password) }),
+    options,
+    () => [],
+    overrides,
+    instances,
+  )
 }
 
 function makeRoutes<AuthError, AuthServices>(

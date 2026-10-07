@@ -31,6 +31,8 @@ export type Interface = Omit<OpenCodeClient, "plugin" | "workspace"> & {
     readonly destroy: (options: { readonly workspaceID: Workspace.ID }) => ReturnType<Workspace.Interface["destroy"]>
   }
   readonly plugin: EmbeddedHost.Interface["plugins"]["register"] & OpenCodeClient["plugin"]
+  /** This instance's HTTP API for external opencode clients, to serve with an Effect `HttpServer`. */
+  readonly http: EmbeddedHost.Interface["http"]
 }
 
 export const create: <R = never>(
@@ -64,6 +66,7 @@ export const create: <R = never>(
       destroy: ({ workspaceID }: { readonly workspaceID: Workspace.ID }) => host.workspace.destroy(workspaceID),
     },
     plugin: Object.assign(host.plugins.register, client.plugin),
+    http: host.http,
   }
 })
 
