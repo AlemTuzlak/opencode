@@ -1,5 +1,5 @@
 import { NodeFileSystem } from "@effect/platform-node-shared"
-import { Deferred, Effect, Exit, Layer, Ref, Scope, Semaphore } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Ref, Scope, Semaphore } from "effect"
 import { Socket } from "effect/socket"
 import { fileSystem, type Interface, Service } from "../cassette/store.js"
 import type { SocketRecorderOptions } from "../options.js"
@@ -23,7 +23,6 @@ interface ActiveRecording {
   readonly eventLock: Semaphore.Semaphore
   readonly accepting: Ref.Ref<boolean>
   opened: boolean
-  closed: boolean
   clientClosed: boolean
   valid: boolean
 }
@@ -136,6 +135,12 @@ const assertEvent = (actual: WebSocketEvent, expected: WebSocketEvent | undefine
     if (expected && comparable(actual, asJson) === comparable(expected, asJson)) return
     throw new Error(`WebSocket event ${index + 1}: expected ${safeText(expected)}, received ${safeText(actual)}`)
   })
+const isNormalClose = (error: unknown) =>
+  Socket.isSocketError(error) && error.reason._tag === "SocketCloseError" && error.reason.code === 1000
+const isNormalExit = (exit: Exit.Exit<unknown, unknown>) =>
+  Exit.isSuccess(exit) ||
+  (exit.cause.reasons.length > 0 &&
+    exit.cause.reasons.every((reason) => Cause.isFailReason(reason) && isNormalClose(reason.error)))
 const makeRecordingSocket = (
   upstream: Socket.Socket,
   cassette: Interface,
@@ -153,7 +158,6 @@ const makeRecordingSocket = (
           eventLock: yield* Semaphore.make(1),
           accepting: yield* Ref.make(true),
           opened: false,
-          closed: false,
           clientClosed: false,
           valid: true,
         }
@@ -165,8 +169,8 @@ const makeRecordingSocket = (
               Effect.gen(function* () {
                 yield* Ref.set(state.accepting, false)
                 yield* Ref.set(active, undefined)
-                // Every close fails the pull, so a consumer may end its scope with that failure.
-                if (!state.opened || !state.valid || !(state.closed || Exit.isSuccess(exit))) return
+                // Every close fails the pull, so a consumer may end its scope with that normal-close failure.
+                if (!state.opened || !state.valid || !isNormalExit(exit)) return
                 yield* cassette
                   .append(
                     name,
@@ -196,11 +200,7 @@ const makeRecordingSocket = (
             ),
             Effect.tapError((error) =>
               Effect.sync(() => {
-                if (error.reason._tag === "SocketCloseError") {
-                  state.closed = true
-                  return
-                }
-                state.valid = false
+                if (!isNormalClose(error)) state.valid = false
               }),
             ),
           ),

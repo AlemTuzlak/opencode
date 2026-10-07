@@ -346,6 +346,65 @@ describe("WebSocket", () => {
     })
   })
 
+  test("does not record an abnormal close or a consumer failure after a normal close", async () => {
+    using directory = tempDirectory("http-recorder-websocket-")
+    const makeUpstream = (code: number) =>
+      Socket.make({
+        reader: Effect.sync(() => {
+          let sent = false
+          return {
+            pull: Effect.suspend(() => {
+              if (sent) return Effect.fail(new Socket.SocketError({ reason: new Socket.SocketCloseError({ code }) }))
+              sent = true
+              return Effect.succeed(["partial"])
+            }),
+            upgrade: Socket.SocketUpgradeError.unsupported,
+          }
+        }),
+        writer: Effect.succeed({ write: () => Effect.void, writeAll: () => Effect.void }),
+      })
+
+    const abnormal = await Effect.runPromise(
+      Effect.gen(function* () {
+        const socket = yield* Socket.Socket
+        yield* runRaw<never, never>(socket, () => {})
+      }).pipe(
+        Effect.scoped,
+        Effect.exit,
+        Effect.provide(
+          layerSocketWithMode("websocket/abnormal-close", { directory: directory.path, mode: "record" }).pipe(
+            Layer.provide(Layer.succeed(Socket.Socket, makeUpstream(1011))),
+          ),
+        ),
+      ),
+    )
+    expect(Exit.isSuccess(abnormal)).toBe(true)
+    expect(existsSync(`${directory.path}/websocket/abnormal-close.json`)).toBe(false)
+
+    const consumerDefect = await Effect.runPromise(
+      Effect.gen(function* () {
+        const socket = yield* Socket.Socket
+        const reader = yield* socket.reader
+        while (true)
+          yield* reader.pull.pipe(
+            Effect.catchReason("SocketError", "SocketCloseError", () =>
+              Effect.die(new Error("consumer failed after close")),
+            ),
+          )
+      }).pipe(
+        Effect.scoped,
+        Effect.exit,
+        Effect.provide(
+          layerSocketWithMode("websocket/post-close-defect", { directory: directory.path, mode: "record" }).pipe(
+            Layer.provide(Layer.succeed(Socket.Socket, makeUpstream(1000))),
+          ),
+        ),
+      ),
+    )
+    expect(Exit.isFailure(consumerDefect)).toBe(true)
+    expect(existsSync(`${directory.path}/websocket/post-close-defect.json`)).toBe(false)
+  })
+
   test("WebSocket replay preserves causal frame ordering", async () => {
     using directory = tempDirectory("http-recorder-websocket-")
     await seedCassetteDirectory(directory.path, "websocket/replay", [

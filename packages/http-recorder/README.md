@@ -147,7 +147,7 @@ Client text frames containing JSON compare canonically, so object-key order does
 
 A constructor cassette records the URL, requested protocols, frames, and terminal close for each connection. Replay validates the URL and protocols before opening the simulated socket. Closing before every recorded frame is consumed fails the test.
 
-Use `layerSocket` when a protocol layer already consumes one application-provided `Socket.Socket`, including non-WebSocket transports. Because that lower-level abstraction has no URL or protocols, its cassettes use the cassette name and connection order as identity. A connection is recorded when its reader scope ends after the socket closes, or ends successfully; a reader that fails or is interrupted before the close records nothing.
+Use `layerSocket` when a protocol layer already consumes one application-provided `Socket.Socket`, including non-WebSocket transports. Because that lower-level abstraction has no URL or protocols, its cassettes use the cassette name and connection order as identity. A connection is recorded when its reader scope ends with a normal close (`1000`) or succeeds without a socket failure; abnormal closes, failures, and interruptions record nothing.
 
 Text frames use the same JSON-field and body redaction as HTTP bodies. Binary frames are stored losslessly as base64. Client and server frame kinds must match during replay.
 
