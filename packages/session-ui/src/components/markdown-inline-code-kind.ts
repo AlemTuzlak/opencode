@@ -1,3 +1,5 @@
+import { parsePathLineSuffix } from "@opencode/util/path"
+
 // Curated file extensions for inline-code path detection.
 // Excludes single-letter tokens and common identifier/property suffixes (.id, .target, .tool, .url, .in, .is, .it, .on, .to, .do, .for, .self, etc.)
 // so member expressions like `props.id`, `event.target`, and `obj.x` stay plain inline code.
@@ -481,6 +483,7 @@ const barePathExtensions = new Set([
   "md2",
   "md4",
   "md5",
+  "mdc",
   "mdoc",
   "mdown",
   "mdpolicy",
@@ -735,6 +738,7 @@ const barePathExtensions = new Set([
   "rd",
   "rdf",
   "rdoc",
+  "re",
   "reb",
   "rebol",
   "reds",
@@ -745,6 +749,7 @@ const barePathExtensions = new Set([
   "rego",
   "rei",
   "religo",
+  "res",
   "resi",
   "rest.txt",
   "resx",
@@ -1534,24 +1539,6 @@ const compoundMiddleExtensions = new Set([
 const domainSegment =
   /^(?:localhost(?::\d+)?|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|ai|app|sh|rs|edu|gov|co|me|gg|tv|xyz|fyi|land|cloud|tech|tools|page|site|online|local|localhost|internal|test|example|invalid)(?::\d+)?)$/
 
-const lineHashSuffix = /#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i
-
-const trailingExtensionFragment = /(\.[a-z0-9]+)#[^/.]*$/i
-
-const lineColonSuffix = /:\d+(?::\d+)?(?:-\d+(?::\d+)?)?:?$/
-
-function stripInlineCodeLocation(text: string): string {
-  const withoutHash = text.replace(lineHashSuffix, "").replace(trailingExtensionFragment, "$1")
-
-  if (!lineColonSuffix.test(withoutHash)) return withoutHash
-  const candidate = withoutHash.replace(lineColonSuffix, "")
-
-  // Preserve bare Windows drive roots such as `C:`.
-  if (/^[a-z]:$/i.test(candidate)) return withoutHash
-
-  return candidate
-}
-
 export function inlineCodeKind(text: string): "path" | "url" | undefined {
   if (/^https?:\/\//i.test(text)) return "url"
 
@@ -1561,7 +1548,7 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   if (/[()\[\]{}*+=<>|&^"';`]/.test(text)) return
 
-  const stripped = stripInlineCodeLocation(text).replaceAll("\\", "/")
+  const stripped = parsePathLineSuffix(text).path.replaceAll("\\", "/")
 
   if (
     !stripped ||

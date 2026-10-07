@@ -1,4 +1,4 @@
-import { getFilename } from "@opencode/util/path"
+import { getFilename, parsePathLineSuffix } from "@opencode/util/path"
 import type { Files, LineRange } from "../sdk"
 import { resolveArtifactPath } from "./artifact"
 
@@ -15,12 +15,6 @@ interface ResolveWorkspaceOptions {
   readonly activePath?: string
   readonly openPaths?: readonly string[]
 }
-
-const MAX_LINE_NUMBER = 1_000_000
-
-const hashLineSuffix = /^(.*?)#L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i
-
-const colonLinePattern = /^(.*?):(\d+)(?::\d+)?(?:-(\d+)(?::\d+)?)?:?$/
 
 const docStemPattern = /^(?:readme|license|changelog|copying|authors|notice)$/i
 
@@ -46,54 +40,21 @@ export function parseFileLink(href: string): ParsedFileLink {
   }
 }
 
-function validLineRange(first: number, second: number): LineRange | undefined {
-  if (
-    !Number.isSafeInteger(first) ||
-    !Number.isSafeInteger(second) ||
-    first < 1 ||
-    second < 1 ||
-    first > MAX_LINE_NUMBER ||
-    second > MAX_LINE_NUMBER
-  ) {
-    return undefined
-  }
-
-  return {
-    start: Math.min(first, second),
-    end: Math.max(first, second),
-  }
-}
-
 function extractLineSelection(input: string, isFileUrl: boolean) {
-  const hashMatch = input.match(hashLineSuffix)
+  const parsed = parsePathLineSuffix(input)
 
-  if (hashMatch) {
-    const first = Number(hashMatch[2])
-    const second = hashMatch[3] ? Number(hashMatch[3]) : first
-    const base = hashMatch[1] ?? ""
-    const withoutQuery = isFileUrl ? (base.split("?", 1)[0] ?? "") : base
+  if (parsed.selection || parsed.path !== input) {
+    const path = isFileUrl ? (parsed.path.split("?", 1)[0] ?? "") : parsed.path
 
-    return {
-      path: withoutQuery,
-      selection: validLineRange(first, second),
-    }
+    return { path, selection: parsed.selection }
   }
 
-  const withoutFragment = isFileUrl ? input.replace(/(\.[a-z0-9]+)#[^/.]*$/i, "$1") : input
-  const withoutQuery = isFileUrl ? (withoutFragment.split("?", 1)[0] ?? "") : withoutFragment
-  const colonMatch = withoutQuery.match(colonLinePattern)
+  if (!isFileUrl) return { path: input, selection: undefined }
 
-  if (colonMatch && !/^[a-z]:?$/i.test(colonMatch[1] ?? "")) {
-    const first = Number(colonMatch[2])
-    const second = colonMatch[3] ? Number(colonMatch[3]) : first
+  const withoutFragment = input.replace(/(\.[a-z0-9]+)#[^/.]*$/i, "$1")
+  const withoutQuery = withoutFragment.split("?", 1)[0] ?? ""
 
-    return {
-      path: colonMatch[1] ?? "",
-      selection: validLineRange(first, second),
-    }
-  }
-
-  return { path: withoutQuery, selection: undefined }
+  return parsePathLineSuffix(withoutQuery)
 }
 
 function normalizeRelativeSegments(input: string, decode: boolean): string {
@@ -170,13 +131,10 @@ function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions
 
     const rootName = options?.rootName?.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
 
-    if (rootName) {
-      const segments = literal.split("/").filter(Boolean)
-      const rootIndex = segments.findIndex((segment) => segment.toLowerCase() === rootName.toLowerCase())
+    if (rootName && literal.toLowerCase().startsWith(`${rootName.toLowerCase()}/`)) {
+      const withoutRoot = clean(literal.slice(rootName.length + 1))
 
-      if (rootIndex >= 0 && rootIndex < segments.length - 1) {
-        primary.add(segments.slice(rootIndex + 1).join("/"))
-      }
+      if (withoutRoot) primary.add(withoutRoot)
     }
 
     const scoped = literal.match(/^@[^/]+\/([^/]+)\/(.+)$/)
@@ -318,7 +276,7 @@ export async function searchWorkspaceCandidates(input: {
 
   const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
 
-  if (stem && stem !== primaryQuery) {
+  if (stem && stem !== primaryQuery && primaryQuery.includes("/")) {
     const secondary = await search(stem, 100)
 
     if (input.signal.aborted) return undefined
@@ -455,7 +413,6 @@ function computeContextBonus(file: string, options?: ResolveWorkspaceOptions): n
   if (!options) return 0
   const fileDir = directoryOf(file)
   const filePkg = packageRootOf(file)
-
   const active = options.activePath?.replaceAll("\\", "/")
 
   const activeBonus = active
@@ -466,12 +423,16 @@ function computeContextBonus(file: string, options?: ResolveWorkspaceOptions): n
         : 0
     : 0
 
-  const openBonus = options.openPaths?.length
-    ? (options.openPaths.includes(file) ? 15 : 0) +
-      (filePkg && options.openPaths.some((open) => packageRootOf(open.replaceAll("\\", "/")) === filePkg) ? 20 : 0)
-    : 0
+  const openTabBonus = options.openPaths?.includes(file) ? 15 : 0
 
-  return activeBonus + openBonus
+  const openPkgBonus =
+    activeBonus === 0 &&
+    filePkg &&
+    options.openPaths?.some((open) => packageRootOf(open.replaceAll("\\", "/")) === filePkg)
+      ? 20
+      : 0
+
+  return activeBonus + openTabBonus + openPkgBonus
 }
 
 /**

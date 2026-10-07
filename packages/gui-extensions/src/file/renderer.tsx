@@ -12,7 +12,7 @@ import {
 } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Icon } from "@opencode/ui/icon"
-import { encodeFilePath, getFilename } from "@opencode/util/path"
+import { encodeFilePath, getFilename, parsePathLineSuffix } from "@opencode/util/path"
 import {
   createKeyed,
   bindExtension,
@@ -567,12 +567,7 @@ const setup: Setup<typeof File> = (ctx) => {
 
         openResolvedFile(matched ?? direct, parsed.selection)
       })().catch(() => {
-        const stripped = link.href
-          .replaceAll("\\", "/")
-          .replace(/#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i, "")
-          .replace(/:\d+(?::\d+)?(?:-\d+(?::\d+)?)?:?$/, "")
-
-        const fallback = resolve(files, stripped, link.base)
+        const fallback = resolve(files, parsePathLineSuffix(link.href.replaceAll("\\", "/")).path, link.base)
 
         if (fallback) openResolvedFile(fallback)
       })

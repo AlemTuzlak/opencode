@@ -77,7 +77,6 @@ describe("searchWorkspaceCandidates", () => {
     expect(await resolve("quiet-cactus/packages/app/src/app.tsx", workspaceFiles, { rootName: "quiet-cactus" })).toBe(
       "packages/app/src/app.tsx",
     )
-    expect(await resolve("packages/app/src/app.tsx", ["src/app.tsx"], { rootName: "app" })).toBe("src/app.tsx")
     expect(await resolve("x/src/foo.ts", ["packages/x/src/foo.ts", "packages/y/x/src/foo.ts"])).toBe(
       "packages/x/src/foo.ts",
     )
