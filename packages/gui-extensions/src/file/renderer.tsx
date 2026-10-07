@@ -49,6 +49,10 @@ const TABPANEL = "session-side-panel-file-browser-tabpanel"
 
 const HANDOFF_SESSIONS = 40
 
+const FILTER_SESSIONS = 40
+
+const DEFAULT_LINE_HEIGHT = 24
+
 type Handoff = { sessions: Record<string, Record<string, LineRange | null>> }
 
 type StyleLoad = { loaded?: Promise<void> }
@@ -61,12 +65,9 @@ const setup: Setup<typeof File> = (ctx) => {
   const tree = ctx.stores.tree
   const [handoff, setHandoff] = storage.memory<Handoff>("handoff", { initial: { sessions: {} } })
   const preference = desktop ? ctx.stores.app : undefined
-
-  const [request, setRequest] = createStore<{
-    app?: OpenApp
-    filters: Record<string, string | undefined>
-  }>({ filters: {} })
-
+  const [request, setRequest] = createStore<{ app?: OpenApp }>({})
+  const [filters, setFilters] = createStore<Record<string, string | undefined>>({})
+  const scrollListeners = new Map<string, Set<() => void>>()
   let clickController: AbortController | undefined
 
   onCleanup(() => clickController?.abort())
@@ -117,13 +118,18 @@ const setup: Setup<typeof File> = (ctx) => {
     files.selection.set(path, selection)
     layout.scroll.set(session, tabKey, {
       x: existing?.x ?? 0,
-      y: Math.max(0, (selection.start - 4) * 24),
+      y: Math.max(0, (selection.start - 4) * DEFAULT_LINE_HEIGHT),
     })
+    shared.restoreScroll.run(session.key, path)
   }
 
   const openPicker = (session: MountedSession, query: string, options?: OpenOptions) => {
-    shared.filter.set(session.key, query)
-    layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
+    batch(() => {
+      shared.filter.set(session.key, query)
+      layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
+
+      if (!options?.background && layout.narrow() && !layout.side.opened(session)) layout.side.toggle(session)
+    })
 
     if (options?.background) return
 
@@ -147,16 +153,15 @@ const setup: Setup<typeof File> = (ctx) => {
         }),
     },
     filter: {
-      get: (session) => request.filters[session] ?? "",
+      get: (session) => filters[session] ?? "",
       set: (session, value) =>
-        setRequest(
-          "filters",
+        setFilters(
           produce((draft) => {
             delete draft[session]
             draft[session] = value
             const keys = Object.keys(draft)
 
-            keys.slice(0, Math.max(0, keys.length - HANDOFF_SESSIONS)).forEach((item) => delete draft[item])
+            keys.slice(0, Math.max(0, keys.length - FILTER_SESSIONS)).forEach((item) => delete draft[item])
           }),
         ),
     },
@@ -182,6 +187,23 @@ const setup: Setup<typeof File> = (ctx) => {
 
           keys.slice(0, Math.max(0, keys.length - HANDOFF_SESSIONS)).forEach((item) => delete draft.sessions[item])
         }),
+    },
+    restoreScroll: {
+      register(session, path, run) {
+        const id = `${session}\n${path}`
+        const set = scrollListeners.get(id) ?? new Set()
+        set.add(run)
+        scrollListeners.set(id, set)
+
+        return () => {
+          set.delete(run)
+
+          if (set.size === 0) scrollListeners.delete(id)
+        }
+      },
+      run(session, path) {
+        scrollListeners.get(`${session}\n${path}`)?.forEach((fn) => fn())
+      },
     },
     active,
     open,
@@ -343,14 +365,7 @@ const setup: Setup<typeof File> = (ctx) => {
 
       if (!session) return
 
-      layout.open(`file:${OPEN}`, session, { tab: "preview" })
-      queueMicrotask(() => {
-        const element = shared.filter.element
-
-        if (element?.isConnected) return element.focus()
-
-        shared.filter.pending = true
-      })
+      openPicker(session, "")
     },
   })
 
@@ -594,7 +609,9 @@ const setup: Setup<typeof File> = (ctx) => {
         }
 
         await openResolvedFile(outcome.kind === "match" ? outcome.path : direct)
-      })().catch(() => undefined)
+      })().catch(() => {
+        if (!signal.aborted) void files.sync(files.resolve(link.href), { force: true })
+      })
     },
   })
 

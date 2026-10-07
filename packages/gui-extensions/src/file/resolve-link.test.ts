@@ -36,6 +36,9 @@ describe("parseFileLink", () => {
     ["src/C#/a.cs", "src/C#/a.cs", undefined],
     ["foo#bar.ts", "foo#bar.ts", undefined],
     ["docs/guide.md#usage", "docs/guide.md", undefined],
+    ["foo.ts:12:", "foo.ts", { start: 12, end: 12 }],
+    ["foo.ts:99999999999999999999", "foo.ts", undefined],
+    ["\\\\server\\share\\x.ts", "//server/share/x.ts", undefined],
     ["a%2520b.ts", "a%2520b.ts", undefined],
     ["C:/foo/../../x.ts", "C:/x.ts", undefined],
     ["file:///C:/tmp/demo%20file.ts:12", "C:/tmp/demo file.ts", { start: 12, end: 12 }],
@@ -61,6 +64,14 @@ describe("scoreWorkspaceCandidates", () => {
     ).toEqual({
       kind: "match",
       path: "packages/app/src/app.tsx",
+    })
+    expect(scoreWorkspaceCandidates("packages/app/src/app.tsx", ["src/app.tsx"], { rootName: "app" })).toEqual({
+      kind: "match",
+      path: "src/app.tsx",
+    })
+    expect(scoreWorkspaceCandidates("x/src/foo.ts", ["packages/x/src/foo.ts", "packages/y/x/src/foo.ts"])).toEqual({
+      kind: "match",
+      path: "packages/x/src/foo.ts",
     })
     expect(
       scoreWorkspaceCandidates("quiet-cactus/src/x.ts", ["src/x.ts", "quiet-cactus/src/x.ts"], {

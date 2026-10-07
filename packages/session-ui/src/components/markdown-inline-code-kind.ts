@@ -51,6 +51,7 @@ const barePathExtensions = new Set([
   "bison",
   "blade",
   "blade.php",
+  "bmp",
   "bqn",
   "brs",
   "bru",
@@ -93,6 +94,7 @@ const barePathExtensions = new Set([
   "cls",
   "cmake",
   "cmake.in",
+  "cmd",
   "cnf",
   "cob",
   "cobol",
@@ -141,6 +143,7 @@ const barePathExtensions = new Set([
   "dae",
   "dart",
   "dats",
+  "db",
   "db2",
   "dcl",
   "ddl",
@@ -149,13 +152,13 @@ const barePathExtensions = new Set([
   "dfm",
   "dfy",
   "dhall",
-  "diff",
   "dircolors",
   "dita",
   "ditamap",
   "ditaval",
   "dll.config",
   "dockerfile",
+  "docx",
   "dotsettings",
   "dpatch",
   "dpr",
@@ -206,7 +209,6 @@ const barePathExtensions = new Set([
   "fbs",
   "fcgi",
   "fea",
-  "feature",
   "fir",
   "fish",
   "flix",
@@ -216,6 +218,7 @@ const barePathExtensions = new Set([
   "fpp",
   "frag",
   "frm",
+  "fs",
   "fsh",
   "fshader",
   "fsi",
@@ -299,6 +302,7 @@ const barePathExtensions = new Set([
   "hbs",
   "hcl",
   "heex",
+  "heic",
   "hh",
   "hhi",
   "hip",
@@ -317,7 +321,6 @@ const barePathExtensions = new Set([
   "html.eex",
   "html.hl",
   "html.tmpl",
-  "http",
   "hurl",
   "hx",
   "hxml",
@@ -453,6 +456,7 @@ const barePathExtensions = new Set([
   "m3u",
   "m3u8",
   "m4",
+  "m4a",
   "mak",
   "make",
   "makefile",
@@ -510,7 +514,7 @@ const barePathExtensions = new Set([
   "mojo",
   "monkey",
   "moon",
-  "move",
+  "mov",
   "mp3",
   "mp4",
   "mpl",
@@ -568,6 +572,7 @@ const barePathExtensions = new Set([
   "obj",
   "objdump",
   "odin",
+  "ogg",
   "ooc",
   "opa",
   "opal",
@@ -665,6 +670,7 @@ const barePathExtensions = new Set([
   "proj",
   "prolog",
   "properties",
+  "props",
   "proto",
   "prw",
   "ps1",
@@ -797,6 +803,7 @@ const barePathExtensions = new Set([
   "scxml",
   "sdc",
   "sed",
+  "service",
   "sexp",
   "sfd",
   "sfproj",
@@ -843,6 +850,7 @@ const barePathExtensions = new Set([
   "soy",
   "sparql",
   "spc",
+  "spec",
   "sps",
   "sqf",
   "sql",
@@ -917,6 +925,7 @@ const barePathExtensions = new Set([
   "thor",
   "thrift",
   "thy",
+  "tiff",
   "tl",
   "tla",
   "tlv",
@@ -1052,6 +1061,7 @@ const barePathExtensions = new Set([
   "xib",
   "xlf",
   "xliff",
+  "xlsx",
   "xmi",
   "xml",
   "xml.dist",
@@ -1122,27 +1132,26 @@ const barePathExtensions = new Set([
 // Single-letter or short source extensions that are valid when qualified with a directory slash (e.g. `src/main.c`, `include/foo.h`).
 const slashedOnlyExtensions = new Set([
   "as",
-  "cmd",
   "d",
+  "diff",
   "edge",
   "env",
   "f",
+  "feature",
   "flex",
-  "fs",
+  "http",
   "inc",
   "l",
   "lock",
   "lsp",
   "mod",
   "mount",
-  "props",
+  "move",
   "pub",
   "red",
   "s",
-  "service",
   "snap",
   "socket",
-  "spec",
   "story",
   "sum",
   "target",
@@ -1436,35 +1445,44 @@ const pathFileNamePrefixes = new Set([".env", "containerfile", "dockerfile", "ma
 const ambiguousBareExtensions = new Set(["c", "el", "h", "m", "r"])
 
 const ambiguousReceiverPairs = new Set([
+  "config.properties",
   "console.log",
   "ctx.c",
   "ctx.h",
   "ctx.m",
   "ctx.r",
+  "deps.fs",
   "el.c",
   "el.h",
   "item.c",
   "item.h",
+  "item.spec",
   "log.log",
   "logger.log",
   "obj.c",
   "obj.el",
   "obj.h",
+  "obj.log",
   "obj.m",
   "obj.properties",
   "obj.r",
+  "options.fs",
   "req.json",
   "res.json",
   "schema.properties",
   "self.el",
   "self.log",
+  "session.diff",
+  "snapshot.diff",
   "this.c",
   "this.el",
   "this.h",
   "this.log",
   "this.m",
   "this.properties",
+  "this.props",
   "this.r",
+  "vim.cmd",
 ])
 
 const frameworkNames = new Set([
@@ -1631,7 +1649,7 @@ const domainSegment =
 
 const lineHashSuffix = /#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i
 
-const lineColonSuffix = /:\d+(?::\d+)?(?:-\d+(?::\d+)?)?$/
+const lineColonSuffix = /:\d+(?::\d+)?(?:-\d+(?::\d+)?)?:?$/
 
 function stripInlineCodeLocation(text: string): string {
   const withoutHash = text.replace(lineHashSuffix, "")
@@ -1674,7 +1692,6 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   const anchored =
     /^\.\.?\//.test(clean) ||
-    /^~\//.test(clean) ||
     /^[a-z]:\//i.test(clean) ||
     (clean.startsWith("/") && posixRootPrefixes.has(segments[0]!.toLowerCase()))
 
@@ -1699,8 +1716,9 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   if (
     !clean.startsWith("/") &&
+    segments.length > 1 &&
     workspaceDirectoryPrefixes.has(first) &&
-    (segments.length >= 3 || trailingSlash || twoSegmentDirectoryPrefixes.has(first))
+    (trailingSlash || twoSegmentDirectoryPrefixes.has(first))
   ) {
     return "path"
   }

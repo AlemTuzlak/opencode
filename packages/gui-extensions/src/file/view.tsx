@@ -309,13 +309,11 @@ export function SessionFileView(props: { session: MountedSession; screen: Sessio
   const commentedLines = createMemo(() => fileComments().map((comment) => comment.selection))
 
   const [note, setNote] = createStore<NoteState>({ openedComment: null, commenting: null, selected: null })
-  let localSelection = ""
 
   const syncSelected = (range: LineRange | null) => {
     const p = path()
 
     if (!p) return
-    localSelection = range ? `${range.start}:${range.end}` : ""
     file.selection.set(p, range ? cloneSelectedLineRange(range) : null)
   }
 
@@ -410,48 +408,42 @@ export function SessionFileView(props: { session: MountedSession; screen: Sessio
     },
   )
 
-  const previous = { loaded: false, ready: false, active: false, selection: "" }
+  const previous = { loaded: false, ready: false, active: false }
 
-  // Restores the stored scroll when the file loads, its view state loads, the tab shows a loaded file again,
-  // or an external caller updates the file's selected line range while it is shown.
   createKeyed(
     () => {
-      const sel = selectedLines()
+      const p = path()
 
-      return {
-        loaded: !!current()?.loaded,
-        ready: file.ready(),
-        shown: active(),
-        selection: sel ? `${sel.start}:${sel.end}` : "",
-      }
+      return p ? { session: props.session.key, path: p } : undefined
     },
-    (next) => {
-      const externalSelection =
-        previous.loaded &&
-        next.selection !== "" &&
-        next.selection !== previous.selection &&
-        next.selection !== localSelection
+    (currentPath) =>
+      onCleanup(
+        shared.restoreScroll.register(currentPath.session, currentPath.path, () => {
+          setNote("selected", null)
+          scrollSync.queueRestore()
+        }),
+      ),
+  )
 
+  // Restores the stored scroll when the file loads, its view state loads, or the tab shows a loaded file again.
+  createKeyed(
+    () => ({ loaded: !!current()?.loaded, ready: file.ready(), shown: active() }),
+    (next) => {
       const restore =
         (next.loaded && !previous.loaded) ||
         (next.ready && !previous.ready) ||
-        (next.shown && next.loaded && !previous.active) ||
-        (next.shown && next.loaded && externalSelection)
+        (next.shown && next.loaded && !previous.active)
 
       previous.loaded = next.loaded
       previous.ready = next.ready
       previous.active = next.shown
-      previous.selection = next.selection
 
       if (restore) scrollSync.queueRestore()
     },
     {
       // The file's content changing while it stays loaded is the same key.
       equals: (previous, next) =>
-        previous.loaded === next.loaded &&
-        previous.ready === next.ready &&
-        previous.shown === next.shown &&
-        previous.selection === next.selection,
+        previous.loaded === next.loaded && previous.ready === next.ready && previous.shown === next.shown,
     },
   )
 

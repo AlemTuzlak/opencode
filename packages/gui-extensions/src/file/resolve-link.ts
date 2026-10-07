@@ -23,23 +23,11 @@ export type WorkspaceLinkResolution =
   | { readonly kind: "directory"; readonly query: string }
   | { readonly kind: "none" }
 
-interface ScoredCandidate {
-  readonly path: string
-  readonly tier: 1 | 2 | 3 | 4
-  readonly score: number
-  readonly contextBonus: number
-}
-
-interface ExpandedVariants {
-  readonly literal?: string
-  readonly primary: readonly string[]
-  readonly gitDiff: readonly string[]
-  readonly climbedTail: readonly string[]
-}
+const MAX_LINE_NUMBER = 1_000_000
 
 const hashLineSuffix = /^(.*?)#L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i
 
-const colonLinePattern = /^(.*?):(\d+)(?::\d+)?(?:-(\d+)(?::\d+)?)?$/
+const colonLinePattern = /^(.*?):(\d+)(?::\d+)?(?:-(\d+)(?::\d+)?)?:?$/
 
 const docStemPattern = /^(?:readme|license|changelog|copying|authors|notice)$/i
 
@@ -65,6 +53,24 @@ export function parseFileLink(href: string): ParsedFileLink {
   }
 }
 
+function validLineRange(first: number, second: number): LineRange | undefined {
+  if (
+    !Number.isSafeInteger(first) ||
+    !Number.isSafeInteger(second) ||
+    first < 1 ||
+    second < 1 ||
+    first > MAX_LINE_NUMBER ||
+    second > MAX_LINE_NUMBER
+  ) {
+    return undefined
+  }
+
+  return {
+    start: Math.min(first, second),
+    end: Math.max(first, second),
+  }
+}
+
 function extractLineSelection(input: string) {
   const hashMatch = input.match(hashLineSuffix)
 
@@ -75,13 +81,7 @@ function extractLineSelection(input: string) {
 
     return {
       path: withoutQuery,
-      selection:
-        first >= 1 && second >= 1
-          ? {
-              start: Math.min(first, second),
-              end: Math.max(first, second),
-            }
-          : undefined,
+      selection: validLineRange(first, second),
     }
   }
 
@@ -96,13 +96,7 @@ function extractLineSelection(input: string) {
 
     return {
       path: colonMatch[1] ?? "",
-      selection:
-        first >= 1 && second >= 1
-          ? {
-              start: Math.min(first, second),
-              end: Math.max(first, second),
-            }
-          : undefined,
+      selection: validLineRange(first, second),
     }
   }
 
@@ -116,9 +110,10 @@ function normalizeRelativeSegments(input: string, decode: boolean): string {
 
   if (!trimmed) return ""
 
+  const unc = !decode && trimmed.startsWith("//")
   const driveMatch = trimmed.match(/^([a-z]:)\/(.*)$/i)
-  const prefix = driveMatch ? `${driveMatch[1]}/` : trimmed.startsWith("/") ? "/" : ""
-  const rest = driveMatch ? (driveMatch[2] ?? "") : prefix ? trimmed.slice(1) : trimmed
+  const prefix = unc ? "//" : driveMatch ? `${driveMatch[1]}/` : trimmed.startsWith("/") ? "/" : ""
+  const rest = unc ? trimmed.slice(2) : driveMatch ? (driveMatch[2] ?? "") : prefix ? trimmed.slice(1) : trimmed
 
   const out = rest.split("/").reduce<string[]>((acc, part) => {
     if (!part || part === ".") return acc
@@ -151,7 +146,7 @@ function decodePathSafely(value: string): string {
   }
 }
 
-function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions): ExpandedVariants {
+function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions) {
   const primary = new Set<string>()
   const gitDiff = new Set<string>()
   const climbedTail = new Set<string>()
@@ -177,10 +172,13 @@ function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions
 
     const rootName = options?.rootName?.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
 
-    if (rootName && literal.toLowerCase().startsWith(`${rootName.toLowerCase()}/`)) {
-      const withoutRoot = clean(literal.slice(rootName.length + 1))
+    if (rootName) {
+      const segments = literal.split("/").filter(Boolean)
+      const rootIndex = segments.findIndex((segment) => segment.toLowerCase() === rootName.toLowerCase())
 
-      if (withoutRoot) primary.add(withoutRoot)
+      if (rootIndex >= 0 && rootIndex < segments.length - 1) {
+        primary.add(segments.slice(rootIndex + 1).join("/"))
+      }
     }
 
     const scoped = literal.match(/^@[^/]+\/([^/]+)\/(.+)$/)
@@ -253,7 +251,7 @@ function scoreParsed(
   const climbs = parsed.path === ".." || parsed.path.startsWith("../")
 
   const scored = matchingPool
-    .flatMap((file): ScoredCandidate[] => {
+    .flatMap((file) => {
       const tier = scoreTier(file, variants, parsed.segments, climbs)
 
       if (!tier) return []
@@ -282,20 +280,16 @@ function scoreParsed(
     return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
   }
 
-  const second = scored[1]
-
-  if (!second) {
-    if (options?.truncated && top.tier > 1 && top.contextBonus === 0) {
-      return {
-        kind: "ambiguous",
-        query: ambiguousPickerQuery(parsed, top.path),
-      }
+  if (options?.truncated && top.tier > 1 && top.contextBonus === 0) {
+    return {
+      kind: "ambiguous",
+      query: ambiguousPickerQuery(parsed, top.path),
     }
-
-    return { kind: "match", path: top.path }
   }
 
-  if (top.tier < second.tier) {
+  const second = scored[1]
+
+  if (!second || top.tier < second.tier) {
     return { kind: "match", path: top.path }
   }
 
@@ -400,7 +394,7 @@ function ambiguousPickerQuery(parsed: ParsedFileLink, topPath: string): string {
 
 function scoreTier(
   file: string,
-  variants: ExpandedVariants,
+  variants: ReturnType<typeof expandWorkspaceVariants>,
   querySegments: readonly string[],
   climbs: boolean,
 ): { tier: 1 | 2 | 3 | 4; baseScore: number } | undefined {
@@ -435,9 +429,15 @@ function scoreTier(
     const variantSegments = primarySuffix.split("/").filter(Boolean)
     const extraDepth = Math.min(10, Math.max(0, fileSegments.length - variantSegments.length) * 2)
 
+    const pkgAnchored =
+      fileSegments.length === variantSegments.length + 1 &&
+      (fileSegments[0] === "packages" || fileSegments[0] === "apps" || fileSegments[0] === "crates")
+        ? 20
+        : 0
+
     return {
       tier: 2,
-      baseScore: 800 + variantSegments.length * 25 - extraDepth,
+      baseScore: 800 + variantSegments.length * 25 + pkgAnchored - extraDepth,
     }
   }
 
@@ -532,16 +532,13 @@ function computeContextBonus(file: string, options?: ResolveWorkspaceOptions): n
 }
 
 function matchDirectoryCandidates(variants: readonly string[], candidates: readonly string[]): WorkspaceLinkResolution {
-  for (const variant of variants) {
+  const matched = variants.find((variant) => {
     const prefix = `${variant.toLowerCase()}/`
-    const matches = candidates.filter((file) => file.toLowerCase().startsWith(prefix))
 
-    if (matches.length > 0) {
-      return { kind: "directory", query: `${variant}/` }
-    }
-  }
+    return candidates.some((file) => file.toLowerCase().startsWith(prefix))
+  })
 
-  return { kind: "none" }
+  return matched ? { kind: "directory", query: `${matched}/` } : { kind: "none" }
 }
 
 /**

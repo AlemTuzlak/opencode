@@ -223,12 +223,14 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
           },
           { signal: options?.signal },
         )
-        .then((x) => x.data.map((entry) => path.normalize(entry.path)))
-        .catch((error) => {
-          if (options?.signal?.aborted) throw error
+        .then(
+          (x) => x.data.map((entry) => path.normalize(entry.path)),
+          (error) => {
+            if (options?.signal?.aborted) throw error
 
-          return []
-        })
+            return []
+          },
+        )
 
     createEffect(() => {
       const stop = sdk().event.on("filesystem.changed", (event) => {
