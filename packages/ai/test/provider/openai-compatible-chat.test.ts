@@ -607,10 +607,10 @@ describe("OpenAI-compatible Chat route", () => {
   )
 
   describe("content part arrays", () => {
-    const mistral = LLMRequest.update(request, {
+    const custom = LLMRequest.update(request, {
       model: OpenAICompatibleChat.route
         .with({ provider: "custom", endpoint: { baseURL: "https://api.custom.test/v1" } })
-        .model({ id: "mistral-large-latest" }),
+        .model({ id: "example-model" }),
     })
     // Shape recorded from a Mistral-family model served through an
     // OpenAI-compatible gateway.
@@ -618,25 +618,21 @@ describe("OpenAI-compatible Chat route", () => {
       id: "chunk_fixture",
       object: "chat.completion.chunk",
       created: 1791353545,
-      model: "mistral-large-latest",
+      model: "example-model",
       choices: [{ index: 0, finish_reason: finishReason, logprobs: null, delta: { content } }],
     })
     const thinking = (text: string) => ({ type: "thinking", thinking: [{ type: "text", text }] })
+    const generate = (...chunks: ReadonlyArray<unknown>) =>
+      LLMClient.generate(custom).pipe(Effect.provide(fixedResponse(sseEvents(...chunks))))
 
     it.effect("streams thinking parts as reasoning and text parts as text", () =>
       Effect.gen(function* () {
-        const response = yield* LLMClient.generate(mistral).pipe(
-          Effect.provide(
-            fixedResponse(
-              sseEvents(
-                partChunk([thinking("Let")]),
-                partChunk([thinking(" me think.")]),
-                partChunk([{ type: "text", text: "Hello" }]),
-                partChunk([{ type: "text", text: "!" }]),
-                partChunk(null, "stop"),
-              ),
-            ),
-          ),
+        const response = yield* generate(
+          partChunk([thinking("Let")]),
+          partChunk([thinking(" me think.")]),
+          partChunk([{ type: "text", text: "Hello" }]),
+          partChunk([{ type: "text", text: "!" }]),
+          partChunk(null, "stop"),
         )
 
         expect(response.reasoning).toBe("Let me think.")
@@ -651,7 +647,7 @@ describe("OpenAI-compatible Chat route", () => {
           { type: "text-delta", id: "text-0", text: "!" },
         ])
 
-        const replay = yield* compileRequest(LLM.request({ model: mistral.model, messages: [response.message] }))
+        const replay = yield* compileRequest(LLM.request({ model: custom.model, messages: [response.message] }))
         expect(replay.body.messages).toEqual([
           { role: "assistant", content: "Hello!", reasoning_content: "Let me think." },
         ])
@@ -660,20 +656,14 @@ describe("OpenAI-compatible Chat route", () => {
 
     it.effect("keeps part order within one chunk", () =>
       Effect.gen(function* () {
-        const response = yield* LLMClient.generate(mistral).pipe(
-          Effect.provide(
-            fixedResponse(
-              sseEvents(
-                partChunk([
-                  thinking("Plan"),
-                  { type: "thinking", thinking: "ned." },
-                  { type: "text", text: "Done" },
-                  { type: "text", text: "." },
-                ]),
-                partChunk([], "stop"),
-              ),
-            ),
-          ),
+        const response = yield* generate(
+          partChunk([
+            thinking("Plan"),
+            { type: "thinking", thinking: "ned." },
+            { type: "text", text: "Done" },
+            { type: "text", text: "." },
+          ]),
+          partChunk([], "stop"),
         )
 
         expect(response.reasoning).toBe("Planned.")
@@ -691,29 +681,23 @@ describe("OpenAI-compatible Chat route", () => {
 
     it.effect("skips unknown part types and empty parts", () =>
       Effect.gen(function* () {
-        const response = yield* LLMClient.generate(mistral).pipe(
-          Effect.provide(
-            fixedResponse(
-              sseEvents(
-                partChunk([{ type: "reference", reference_ids: [1, 2] }]),
-                partChunk([
-                  {
-                    type: "thinking",
-                    thinking: [
-                      { type: "reference", reference_ids: [3] },
-                      { type: "text", text: "Hm" },
-                    ],
-                  },
-                ]),
-                partChunk([
-                  { type: "text", text: "" },
-                  { type: "image_url", image_url: { url: "https://x.test/a.png" } },
-                ]),
-                partChunk([{ type: "text", text: "Hi" }]),
-                partChunk(null, "stop"),
-              ),
-            ),
-          ),
+        const response = yield* generate(
+          partChunk([{ type: "reference", reference_ids: [1, 2] }]),
+          partChunk([
+            {
+              type: "thinking",
+              thinking: [
+                { type: "reference", reference_ids: [3] },
+                { type: "text", text: "Hm" },
+              ],
+            },
+          ]),
+          partChunk([
+            { type: "text", text: "" },
+            { type: "image_url", image_url: { url: "https://x.test/a.png" } },
+          ]),
+          partChunk([{ type: "text", text: "Hi" }]),
+          partChunk(null, "stop"),
         )
 
         expect(response.reasoning).toBe("Hm")
@@ -724,9 +708,7 @@ describe("OpenAI-compatible Chat route", () => {
 
     it.effect("accepts empty part arrays after the finish reason", () =>
       Effect.gen(function* () {
-        const response = yield* LLMClient.generate(mistral).pipe(
-          Effect.provide(fixedResponse(sseEvents(partChunk([{ type: "text", text: "Hi" }], "stop"), partChunk([])))),
-        )
+        const response = yield* generate(partChunk([{ type: "text", text: "Hi" }], "stop"), partChunk([]))
 
         expect(response.text).toBe("Hi")
       }),
@@ -734,11 +716,8 @@ describe("OpenAI-compatible Chat route", () => {
 
     it.effect("rejects part content after the finish reason", () =>
       Effect.gen(function* () {
-        const error = yield* LLMClient.generate(mistral).pipe(
-          Effect.provide(
-            fixedResponse(sseEvents(partChunk("Hi", "stop"), partChunk([{ type: "text", text: " late" }]))),
-          ),
-          Effect.flip,
+        const error = yield* Effect.flip(
+          generate(partChunk("Hi", "stop"), partChunk([{ type: "text", text: " late" }])),
         )
 
         expect(error.message).toContain("OpenAI Chat received content after the finish reason")
