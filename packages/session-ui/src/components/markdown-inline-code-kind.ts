@@ -836,7 +836,6 @@ const barePathExtensions = new Set([
   "smt",
   "smt2",
   "snakefile",
-  "snap",
   "snip",
   "snippet",
   "snippets",
@@ -881,7 +880,6 @@ const barePathExtensions = new Set([
   "sublime-workspace",
   "sublime_metrics",
   "sublime_session",
-  "sum",
   "surql",
   "sv",
   "svelte",
@@ -932,7 +930,6 @@ const barePathExtensions = new Set([
   "tmsnippet",
   "tmtheme",
   "tmux",
-  "toc",
   "tofu",
   "toit",
   "toml",
@@ -1143,11 +1140,14 @@ const slashedOnlyExtensions = new Set([
   "red",
   "s",
   "service",
+  "snap",
   "socket",
   "spec",
   "story",
+  "sum",
   "target",
   "timer",
+  "toc",
   "v",
   "y",
 ])
@@ -1433,28 +1433,22 @@ const bareCodeReceivers = new Set([
   "el",
   "err",
   "event",
-  "form",
   "global",
   "globalthis",
-  "input",
   "item",
   "log",
   "logger",
   "math",
   "navigator",
-  "node",
   "obj",
   "object",
   "process",
   "promise",
   "props",
   "req",
-  "request",
   "res",
-  "response",
   "router",
   "self",
-  "state",
   "store",
   "this",
   "window",
@@ -1571,6 +1565,7 @@ const posixRootPrefixes = new Set([
   "sys",
   "system",
   "tmp",
+  "users",
   "usr",
   "var",
   "volumes",
@@ -1608,7 +1603,7 @@ const compoundMiddleExtensions = new Set([
 ])
 
 const domainSegment =
-  /^(?:localhost(?::\d+)?|[a-z0-9-]+\.(?:com|org|net|io|dev|ai|app|edu|gov|co|me|gg|tv|xyz|fyi|local|localhost|internal|test|example|invalid)(?::\d+)?)$/i
+  /^(?:localhost(?::\d+)?|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|ai|app|edu|gov|co|me|gg|tv|xyz|fyi|land|cloud|tech|tools|page|site|online|local|localhost|internal|test|example|invalid)(?::\d+)?)$/i
 
 const lineHashSuffix = /#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i
 
@@ -1635,11 +1630,13 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   if (/[()\[\]{}*+=<>|&^"';`]/.test(text)) return
 
-  const clean = stripInlineCodeLocation(text).replaceAll("\\", "/")
+  const stripped = stripInlineCodeLocation(text).replaceAll("\\", "/")
 
-  if (!clean || clean === "/" || clean === "." || clean === "..") return
+  if (!stripped || stripped === "/" || stripped.startsWith("//") || stripped.startsWith("-")) return
 
-  if (clean.startsWith("//") || clean.startsWith("-") || clean.endsWith("/")) return
+  const clean = stripped.replace(/\/+$/, "")
+
+  if (!clean || clean === "." || clean === "..") return
 
   if (/^\/[a-z][a-z0-9-]*$/i.test(clean)) return
 

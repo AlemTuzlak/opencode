@@ -62,7 +62,9 @@ const setup: Setup<typeof File> = (ctx) => {
   const [handoff, setHandoff] = storage.memory<Handoff>("handoff", { initial: { sessions: {} } })
   const preference = desktop ? ctx.stores.app : undefined
   const [request, setRequest] = createStore<{ app?: OpenApp }>({})
-  let clickSeq = 0
+  let clickController: AbortController | undefined
+
+  onCleanup(() => clickController?.abort())
 
   // Tab objects per session screen, which stays while it routes another session, reused so neither strip updates nor a
   // session switch rebuild a trigger. `close` prunes them.
@@ -104,39 +106,42 @@ const setup: Setup<typeof File> = (ctx) => {
   const applySelection = (session: MountedSession, files: Files, path: string, selection: LineRange | undefined) => {
     if (!selection || artifactKind(path) !== "text") return
 
-    const tabKey = key(files, path)
+    const tabId = fileTabId(files, path)
+    const tabKey = `file:${tabId}`
     const existing = layout.scroll.get(session, tabKey)
+    const y = Math.max(0, (selection.start - 4) * 24)
 
     files.selection.set(path, selection)
     layout.scroll.set(session, tabKey, {
       x: existing?.x ?? 0,
-      y: Math.max(0, (selection.start - 4) * 24),
+      y,
     })
+
+    if (layout.state(tabKey, session) === "visible") {
+      requestAnimationFrame(() => {
+        const panel = document.getElementById(TABPANEL)
+        const viewport = panel?.querySelector('[data-component="scroll-view-viewport"]')
+
+        if (viewport instanceof HTMLElement) viewport.scrollTop = y
+      })
+    }
   }
 
-  const openPicker = (session: MountedSession, query: string, options?: OpenOptions) => {
-    layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
+  const expandDirectory = (session: MountedSession, files: Files, directory: string, options?: OpenOptions) => {
+    const segments = directory
+      .replaceAll("\\", "/")
+      .replace(/^\/+|\/+$/g, "")
+      .split("/")
+      .filter(Boolean)
 
-    if (shared.filter.apply) {
-      shared.filter.apply(query)
-      shared.filter.query = undefined
-    } else {
-      shared.filter.query = query
-    }
+    batch(() => {
+      shared.tree.setTab("all")
+      segments.forEach((_, index) => {
+        files.tree.expand(segments.slice(0, index + 1).join("/"))
+      })
+      layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
 
-    if (options?.background) return
-
-    queueMicrotask(() => {
-      if (shared.filter.query !== undefined && shared.filter.apply) {
-        shared.filter.apply(shared.filter.query)
-        shared.filter.query = undefined
-      }
-
-      const element = shared.filter.element
-
-      if (element?.isConnected) return element.focus()
-
-      shared.filter.pending = true
+      if (layout.narrow() && !layout.side.opened(session)) layout.side.toggle(session)
     })
   }
 
@@ -334,7 +339,14 @@ const setup: Setup<typeof File> = (ctx) => {
 
       if (!session) return
 
-      openPicker(session, "")
+      layout.open(`file:${OPEN}`, session, { tab: "preview" })
+      queueMicrotask(() => {
+        const element = shared.filter.element
+
+        if (element?.isConnected) return element.focus()
+
+        shared.filter.pending = true
+      })
     },
   })
 
@@ -467,7 +479,7 @@ const setup: Setup<typeof File> = (ctx) => {
 
       if (!session || !screen || !files || (link.session && link.session.key !== session.key)) return
 
-      const currentClick = ++clickSeq
+      clickController?.abort()
 
       // A known workspace file (the palette, a file comment) opens at once with every file listed.
       if (link.exact || link.origin === "file") {
@@ -483,12 +495,15 @@ const setup: Setup<typeof File> = (ctx) => {
         return
       }
 
+      const controller = new AbortController()
+      clickController = controller
+      const signal = AbortSignal.any([ctx.signal, controller.signal])
       const sessionKey = session.key
 
       void (async () => {
         const { parseFileLink, searchWorkspaceCandidates } = await import("./resolve-link")
 
-        if (ctx.signal.aborted || currentClick !== clickSeq) return
+        if (signal.aborted) return
 
         const activeSession = sessions.current()
 
@@ -502,7 +517,7 @@ const setup: Setup<typeof File> = (ctx) => {
         const openResolvedFile = (targetPath: string) => {
           const routed = sessions.current()
 
-          if (!routed || routed.key !== sessionKey || ctx.screen.current() !== screen || currentClick !== clickSeq) {
+          if (!routed || routed.key !== sessionKey || ctx.screen.current() !== screen || signal.aborted) {
             return
           }
 
@@ -525,8 +540,7 @@ const setup: Setup<typeof File> = (ctx) => {
             const latest = sessions.current()
 
             if (
-              ctx.signal.aborted ||
-              currentClick !== clickSeq ||
+              signal.aborted ||
               !latest ||
               latest.key !== sessionKey ||
               ctx.screen.current() !== screen ||
@@ -566,22 +580,22 @@ const setup: Setup<typeof File> = (ctx) => {
           parsed,
           activePath,
           openPaths,
-          signal: ctx.signal,
+          signal,
         })
 
-        if (ctx.signal.aborted || currentClick !== clickSeq) return
+        if (signal.aborted) return
 
         const latestSession = sessions.current()
 
         if (!latestSession || latestSession.key !== sessionKey || ctx.screen.current() !== screen) return
 
-        if (outcome.kind === "ambiguous" || outcome.kind === "directory") {
-          openPicker(latestSession, outcome.query, { background: link.background })
+        if (outcome.kind === "directory") {
+          expandDirectory(latestSession, files, outcome.query, { background: link.background })
 
           return
         }
 
-        openResolvedFile(outcome.kind === "match" ? outcome.path : direct)
+        openResolvedFile(outcome.kind === "match" || outcome.kind === "ambiguous" ? outcome.path : direct)
       })().catch(() => undefined)
     },
   })

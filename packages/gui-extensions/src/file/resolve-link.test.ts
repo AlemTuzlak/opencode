@@ -133,6 +133,14 @@ describe("scoreWorkspaceCandidates", () => {
       kind: "match",
       path: "src/foo.ts",
     })
+    expect(scoreWorkspaceCandidates("src/foo.js", ["scripts/foo.js", "src/foo.ts"])).toEqual({
+      kind: "match",
+      path: "src/foo.ts",
+    })
+    expect(scoreWorkspaceCandidates("src/foo.js", ["dist/foo.js", "packages/x/src/foo.ts"])).toEqual({
+      kind: "match",
+      path: "packages/x/src/foo.ts",
+    })
     expect(scoreWorkspaceCandidates("README", ["README.md", "docs/README.md"])).toEqual({
       kind: "match",
       path: "README.md",
@@ -148,6 +156,7 @@ describe("scoreWorkspaceCandidates", () => {
       scoreWorkspaceCandidates("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"]),
     ).toEqual({
       kind: "ambiguous",
+      path: "packages/a/src/index.ts",
       query: "src/index.ts",
     })
     expect(
@@ -204,18 +213,22 @@ describe("scoreWorkspaceCandidates", () => {
   test("marks tied duplicate basenames as ambiguous and normalizes .js alias picker queries", () => {
     expect(scoreWorkspaceCandidates("index.ts", workspaceFiles)).toEqual({
       kind: "ambiguous",
+      path: "packages/app/src/index.ts",
       query: "index.ts",
     })
     expect(scoreWorkspaceCandidates("util.js", ["packages/a/util.ts", "packages/b/util.ts"])).toEqual({
       kind: "ambiguous",
+      path: "packages/a/util.ts",
       query: "util.ts",
     })
     expect(scoreWorkspaceCandidates("src/foo.js", ["packages/a/src/foo.ts", "packages/b/src/foo.ts"])).toEqual({
       kind: "ambiguous",
+      path: "packages/a/src/foo.ts",
       query: "src/foo.ts",
     })
     expect(scoreWorkspaceCandidates("util.ts", ["p/util.ts", "p/q/r/s/t/u/v/w/x/util.ts"])).toEqual({
       kind: "ambiguous",
+      path: "p/util.ts",
       query: "util.ts",
     })
   })

@@ -23,12 +23,7 @@ export interface FileShared {
     directory?: string
   }
   /** The file browser's filter input, focused by the "Open file" menu item even when the browser chunk mounts later. */
-  readonly filter: {
-    element?: HTMLInputElement
-    pending?: boolean
-    query?: string
-    apply?: (value: string) => void
-  }
+  readonly filter: { element?: HTMLInputElement; pending?: boolean }
   /** Open-in-app availability checks, one per app for the window's lifetime. */
   readonly installed: Map<string, Promise<boolean>>
   /** The open-in-app choice. Desktop only. */

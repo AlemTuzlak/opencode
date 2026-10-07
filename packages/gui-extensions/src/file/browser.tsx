@@ -34,7 +34,7 @@ export function SessionFileBrowserTab(props: {
   state: PanelSidebar
   onSelect: (path: string) => void
   onSelectPermanent: (path: string) => void
-  filterRef?: (element: HTMLInputElement, setFilter: (value: string) => void) => void
+  filterRef?: (element: HTMLInputElement) => void
   mobile?: boolean
 }) {
   const ctx = useExtension()
@@ -126,7 +126,7 @@ export function SessionFileBrowserTab(props: {
           onFilterChange={setFilter}
           onFilterKeyDown={onFilterKeyDown}
           filterAutofocus={props.placeholder && !props.mobile}
-          filterRef={(element) => props.filterRef?.(element, setFilter)}
+          filterRef={(element) => props.filterRef?.(element)}
           filterControls={resultsID}
           filterActiveDescendant={highlighted() ? optionID(highlighted()!) : undefined}
           filterExpanded={query().length > 0 && files().length > 0}
@@ -263,17 +263,8 @@ export default function FileBrowser(props: {
       state={panel.sidebar}
       onSelect={(path) => shared.open(props.session, path, { tab: "preview" })}
       onSelectPermanent={(path) => shared.open(props.session, path)}
-      filterRef={(element, setFilter) => {
+      filterRef={(element) => {
         shared.filter.element = element
-        shared.filter.apply = setFilter
-        onCleanup(() => {
-          if (shared.filter.apply === setFilter) shared.filter.apply = undefined
-        })
-
-        if (shared.filter.query !== undefined) {
-          setFilter(shared.filter.query)
-          shared.filter.query = undefined
-        }
 
         if (!shared.filter.pending) return
         shared.filter.pending = false

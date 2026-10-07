@@ -18,7 +18,7 @@ export interface ResolveWorkspaceOptions {
 
 export type WorkspaceLinkResolution =
   | { readonly kind: "match"; readonly path: string }
-  | { readonly kind: "ambiguous"; readonly query: string }
+  | { readonly kind: "ambiguous"; readonly path: string; readonly query: string }
   | { readonly kind: "directory"; readonly query: string }
   | { readonly kind: "none" }
 
@@ -49,8 +49,7 @@ export function parseFileLink(href: string): ParsedFileLink {
   const isFileUrl = /^file:\/\//i.test(raw)
   const extracted = extractLineSelection(raw)
   const clean = normalizeRelativeSegments(extracted.path, isFileUrl)
-  const withoutClimb = clean.replace(/^(?:\.\.\/)+/, "")
-  const strippedPath = !clean.startsWith("../") && /^[ab]\/.+/.test(withoutClimb) ? withoutClimb.slice(2) : withoutClimb
+  const strippedPath = clean.replace(/^(?:\.\.\/)+/, "")
   const segments = strippedPath.split("/").filter(Boolean)
   const basename = segments.at(-1) ?? ""
 
@@ -117,26 +116,23 @@ function normalizeRelativeSegments(input: string, decode: boolean): string {
   const driveMatch = trimmed.match(/^([a-z]:)\/(.*)$/i)
   const prefix = driveMatch ? `${driveMatch[1]}/` : trimmed.startsWith("/") ? "/" : ""
   const rest = driveMatch ? (driveMatch[2] ?? "") : prefix ? trimmed.slice(1) : trimmed
+  const out: string[] = []
 
-  const out = rest.split("/").reduce<string[]>((acc, part) => {
-    if (!part || part === ".") return acc
+  for (const part of rest.split("/")) {
+    if (!part || part === ".") continue
 
     if (part === "..") {
-      if (acc.length > 0 && acc.at(-1) !== "..") {
-        acc.pop()
-
-        return acc
+      if (out.length > 0 && out.at(-1) !== "..") {
+        out.pop()
+      } else if (!prefix) {
+        out.push("..")
       }
 
-      if (!prefix) acc.push("..")
-
-      return acc
+      continue
     }
 
-    acc.push(part)
-
-    return acc
-  }, [])
+    out.push(part)
+  }
 
   return `${prefix}${out.join("/")}`
 }
@@ -234,16 +230,16 @@ export function scoreParsedWorkspaceCandidates(
   const queryBase = parsed.basename.toLowerCase()
   const tsStem = stripJsImportExtension(queryBase)
   const isDocStem = !queryBase.includes(".") && docStemPattern.test(queryBase)
-  const exactBasenameMatches = normalizedCandidates.filter((file) => basenameOf(file).toLowerCase() === queryBase)
 
-  const matchingPool =
-    exactBasenameMatches.length > 0
-      ? exactBasenameMatches
-      : tsStem
-        ? normalizedCandidates.filter((file) => isTsAliasMatch(basenameOf(file).toLowerCase(), tsStem))
-        : isDocStem
-          ? normalizedCandidates.filter((file) => isDocStemMatch(basenameOf(file).toLowerCase(), queryBase))
-          : []
+  const matchingPool = normalizedCandidates.filter((file) => {
+    const base = basenameOf(file).toLowerCase()
+
+    if (base === queryBase) return true
+
+    if (tsStem && isTsAliasMatch(base, tsStem)) return true
+
+    return isDocStem && isDocStemMatch(base, queryBase)
+  })
 
   if (matchingPool.length === 0) {
     return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
@@ -257,14 +253,16 @@ export function scoreParsedWorkspaceCandidates(
 
       if (!tier) return []
 
+      const fileBase = basenameOf(file)
       const contextBonus = computeContextBonus(file, options)
-      const caseBonus = basenameOf(file) === parsed.basename ? 16 : 0
+      const exactExtBonus = fileBase.toLowerCase() === queryBase ? 8 : 0
+      const caseBonus = fileBase === parsed.basename ? 16 : 0
 
       return [
         {
           path: file,
           tier: tier.tier,
-          score: tier.baseScore + contextBonus + caseBonus,
+          score: tier.baseScore + contextBonus + exactExtBonus + caseBonus,
         },
       ]
     })
@@ -274,7 +272,9 @@ export function scoreParsedWorkspaceCandidates(
 
   const top = scored[0]
 
-  if (!top) return { kind: "none" }
+  if (!top) {
+    return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
+  }
 
   const second = scored[1]
 
@@ -293,6 +293,7 @@ export function scoreParsedWorkspaceCandidates(
 
   return {
     kind: "ambiguous",
+    path: top.path,
     query: ambiguousPickerQuery(parsed, top.path),
   }
 }
@@ -313,7 +314,10 @@ export async function searchWorkspaceCandidates(input: {
     openPaths: input.openPaths,
   }
 
-  const primary = await input.files.search(input.parsed.strippedPath, { limit: 60, signal: input.signal })
+  const safeSearch = (query: string, limit: number) =>
+    input.files.search(query, { limit, signal: input.signal }).catch(() => [])
+
+  const primary = await safeSearch(input.parsed.strippedPath, 60)
 
   if (input.signal.aborted) return { kind: "none" }
 
@@ -323,10 +327,23 @@ export async function searchWorkspaceCandidates(input: {
     if (scored.kind !== "none") return scored
   }
 
+  if (/^[ab]\/.+/.test(input.parsed.strippedPath)) {
+    const withoutGitPrefix = input.parsed.strippedPath.slice(2)
+    const gitCandidates = await safeSearch(withoutGitPrefix, 60)
+
+    if (input.signal.aborted) return { kind: "none" }
+
+    if (gitCandidates.length > 0) {
+      const scored = scoreParsedWorkspaceCandidates(input.parsed, gitCandidates, options)
+
+      if (scored.kind !== "none") return scored
+    }
+  }
+
   const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
 
   if (stem && stem !== input.parsed.strippedPath) {
-    const secondary = await input.files.search(stem, { limit: 100, signal: input.signal })
+    const secondary = await safeSearch(stem, 100)
 
     if (input.signal.aborted) return { kind: "none" }
 
@@ -343,7 +360,9 @@ function ambiguousPickerQuery(parsed: ParsedFileLink, topPath: string): string {
 
   const raw = parsed.strippedPath.startsWith("@")
     ? parsed.strippedPath.replace(/^@[^/]+\//, "") || parsed.strippedPath
-    : parsed.strippedPath
+    : /^[ab]\/.+/.test(parsed.strippedPath)
+      ? parsed.strippedPath.slice(2)
+      : parsed.strippedPath
 
   if (topBase.toLowerCase() !== parsed.basename.toLowerCase()) {
     const dir = directoryOf(raw)
@@ -435,13 +454,16 @@ function scoreTier(
     }
   }
 
-  if (!climbs && querySegments.length > 1 && isAnchoredSubsequence(querySegments, fileSegments)) {
-    const trailing = countTrailingMatches(querySegments, fileSegments)
-    const extraDepth = Math.min(10, Math.max(0, fileSegments.length - querySegments.length) * 2)
+  const effectiveSegments =
+    querySegments.length > 1 && /^[ab]$/i.test(querySegments[0] ?? "") ? querySegments.slice(1) : querySegments
+
+  if (!climbs && effectiveSegments.length > 1 && isAnchoredSubsequence(effectiveSegments, fileSegments)) {
+    const trailing = countTrailingMatches(effectiveSegments, fileSegments)
+    const extraDepth = Math.min(10, Math.max(0, fileSegments.length - effectiveSegments.length) * 2)
 
     return {
       tier: 3,
-      baseScore: 600 + querySegments.length * 20 + trailing * 15 - extraDepth,
+      baseScore: 600 + effectiveSegments.length * 20 + trailing * 15 - extraDepth,
     }
   }
 
@@ -526,15 +548,18 @@ function isAnchoredSubsequence(query: readonly string[], target: readonly string
 }
 
 function countTrailingMatches(query: readonly string[], target: readonly string[]): number {
-  const length = Math.min(query.length, target.length)
+  const limit = Math.min(query.length, target.length)
 
-  return Array.from({ length }, (_, index) => index + 1).reduce((count, offset) => {
-    if (count !== offset - 1) return count
+  for (let offset = 1; offset <= limit; offset++) {
     const q = query[query.length - offset]
     const t = target[target.length - offset]
 
-    return q !== undefined && t !== undefined && segmentMatch(q, t, offset === 1) ? count + 1 : count
-  }, 0)
+    if (q === undefined || t === undefined || !segmentMatch(q, t, offset === 1)) {
+      return offset - 1
+    }
+  }
+
+  return limit
 }
 
 function hasTrailingSegmentMatch(query: readonly string[], target: readonly string[]): boolean {
