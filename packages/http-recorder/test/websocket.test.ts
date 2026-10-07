@@ -80,11 +80,7 @@ describe("WebSocket", () => {
     using directory = tempDirectory("http-recorder-websocket-constructor-")
     const recorder = HttpRecorder.layerWebSocketConstructor("websocket/constructor-record", {
       directory: directory.path,
-    }).pipe(
-      Layer.provide(
-        Layer.succeed(Socket.WebSocketConstructor, (url) => new EchoWebSocket(url) as unknown as globalThis.WebSocket),
-      ),
-    )
+    }).pipe(Layer.provide(Layer.succeed(Socket.WebSocketConstructor, (url) => new EchoWebSocket(url))))
 
     await withEnvironment("CI", undefined, () =>
       Effect.runPromise(
@@ -128,8 +124,7 @@ describe("WebSocket", () => {
       Layer.provide(
         Layer.succeed(Socket.WebSocketConstructor, (url, options) => {
           received = options
-          // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the fixture implements the WebSocket surface used by the recorder.
-          return new EchoWebSocket(url) as unknown as globalThis.WebSocket
+          return new EchoWebSocket(url)
         }),
       ),
     )
@@ -138,8 +133,7 @@ describe("WebSocket", () => {
       Effect.gen(function* () {
         const constructor = yield* Socket.WebSocketConstructor
         const options = { headers: { authorization: "Bearer fixture" } }
-        // oxlint-disable-next-line no-restricted-globals -- This test intentionally passes runtime constructor options absent from the public socket type.
-        const socket = Reflect.apply(constructor, undefined, ["wss://echo.example.test/options", options])
+        const socket = constructor("wss://echo.example.test/options", options)
         yield* Effect.callback<void>((resume) => {
           socket.addEventListener("open", () => {
             socket.close()
