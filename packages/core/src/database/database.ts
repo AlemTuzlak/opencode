@@ -9,6 +9,7 @@ import { closeSync, existsSync, openSync } from "node:fs"
 import { chmod } from "node:fs/promises"
 import { isAbsolute, join } from "path"
 import { DatabaseMigration } from "./migration.js"
+import { TablePrefix } from "./table-prefix.js"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 
 const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
@@ -20,6 +21,12 @@ export interface Interface {
 
 export const Options = Schema.Struct({
   path: Schema.optional(Schema.String),
+  /**
+   * Stores every OpenCode table and index as `<prefix><name>` so the database
+   * can be shared with tables OpenCode does not own. Changing it later starts
+   * from an empty namespace; existing tables are not renamed.
+   */
+  prefix: Schema.optional(TablePrefix.Prefix),
 })
 export type Options = typeof Options.Type
 
@@ -69,7 +76,7 @@ export function layer(options: Options = { path: ":memory:" }) {
     Effect.gen(function* () {
       const provide = (filename: string) =>
         databaseLayer(filename === ":memory:" ? Semaphore.make(1) : Effect.succeed(lockFor(filename))).pipe(
-          Layer.provide(sqliteLayer({ filename })),
+          Layer.provide(sqliteLayer({ filename, prefix: options.prefix })),
         )
       const filename = options.path ?? ":memory:"
       if (filename === ":memory:") return provide(filename)

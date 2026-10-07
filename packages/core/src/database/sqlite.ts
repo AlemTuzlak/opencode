@@ -5,6 +5,7 @@ import { identity } from "effect/Function"
 import { SqlClient, Statement } from "effect/unstable/sql"
 import type { Connection } from "effect/unstable/sql/SqlConnection"
 import type { SqlError } from "effect/unstable/sql/SqlError"
+import { TablePrefix } from "./table-prefix.js"
 
 export class Native extends Context.Service<Native, unknown>()("@opencode/core/database/SqliteNative") {}
 
@@ -12,6 +13,8 @@ export interface ClientConfig {
   readonly spanAttributes?: Record<string, unknown>
   readonly transformResultNames?: (str: string) => string
   readonly transformQueryNames?: (str: string) => string
+  /** Namespaces every table and index OpenCode names; see `TablePrefix.rewriter`. */
+  readonly prefix?: string
 }
 
 type Run = (
@@ -24,19 +27,26 @@ type RunValues = (
   params?: ReadonlyArray<unknown>,
 ) => Effect.Effect<ReadonlyArray<ReadonlyArray<unknown>>, SqlError>
 
-export const makeConnection = <Extensions extends object>(run: Run, runValues: RunValues, extensions: Extensions) =>
-  identity<Connection & Extensions>({
+export const makeConnection = <Extensions extends object>(
+  run: Run,
+  runValues: RunValues,
+  prefix: string | undefined,
+  extensions: Extensions,
+) => {
+  const rewrite = prefix === undefined ? identity<string> : TablePrefix.rewriter(prefix)
+  return identity<Connection & Extensions>({
     execute(query, params, transformRows) {
-      return transformRows ? Effect.map(run(query, params), transformRows) : run(query, params)
+      const rows = run(rewrite(query), params)
+      return transformRows ? Effect.map(rows, transformRows) : rows
     },
     executeRaw(query, params) {
-      return run(query, params)
+      return run(rewrite(query), params)
     },
     executeValues(query, params) {
-      return runValues(query, params)
+      return runValues(rewrite(query), params)
     },
     executeValuesUnprepared(query, params) {
-      return runValues(query, params)
+      return runValues(rewrite(query), params)
     },
     executeUnprepared(query, params, transformRows) {
       return this.execute(query, params, transformRows)
@@ -46,6 +56,7 @@ export const makeConnection = <Extensions extends object>(run: Run, runValues: R
     },
     ...extensions,
   })
+}
 
 export const makeClient = <
   Config extends ClientConfig,

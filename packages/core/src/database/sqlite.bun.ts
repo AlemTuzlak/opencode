@@ -56,7 +56,7 @@ const make = (options: Config) =>
         }
       })
 
-    const connection = Sqlite.makeConnection(run, runValues, {
+    const connection = Sqlite.makeConnection(run, runValues, options.prefix, {
       export: Effect.try({
         try: () => native.serialize(),
         catch: (cause) =>

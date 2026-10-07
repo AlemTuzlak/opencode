@@ -53,6 +53,8 @@ interface Config {
   readonly spanAttributes?: Record<string, unknown>
   readonly transformResultNames?: (str: string) => string
   readonly transformQueryNames?: (str: string) => string
+  /** Namespaces OpenCode's tables and indexes in the Durable Object's shared database. */
+  readonly prefix?: string
 }
 
 // sql.exec() rejects BEGIN/COMMIT/SAVEPOINT, so SqlClient.make's default
@@ -166,7 +168,7 @@ const make = (options: Config) =>
           }),
       })
 
-    const connection = Sqlite.makeConnection(run, runValues, {})
+    const connection = Sqlite.makeConnection(run, runValues, options.prefix, {})
 
     const semaphore = yield* Semaphore.make(1)
     const acquirer = semaphore.withPermits(1)(Effect.succeed(connection))
