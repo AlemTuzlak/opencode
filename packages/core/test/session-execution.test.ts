@@ -1243,6 +1243,15 @@ const itFullDisk = testEffect(
   ),
 )
 
+const failOnFullDisk = (database: Database.Service["Service"], sessionID: Session.ID) =>
+  disk.fill.pipe(
+    // Any write inside the turn now fails, as the runner's step publications did.
+    Effect.andThen(
+      database.db.update(SessionTable).set({ title: "unsaved" }).where(eq(SessionTable.id, sessionID)).run(),
+    ),
+    Effect.orDie,
+  )
+
 describe("SessionExecution on a full disk", () => {
   itFullDisk.effect("a turn that dies on a full disk records its failure once storage recovers", () =>
     Effect.gen(function* () {
@@ -1257,18 +1266,7 @@ describe("SessionExecution on a full disk", () => {
 
       const scope = yield* Scope.make()
       yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
-      const context = yield* buildExecution(scope, () =>
-        Effect.gen(function* () {
-          yield* disk.fill
-          // Any write inside the turn now fails, as the runner's step publications did.
-          yield* database.db
-            .update(SessionTable)
-            .set({ title: "unsaved" })
-            .where(eq(SessionTable.id, sessionID))
-            .run()
-            .pipe(Effect.orDie)
-        }),
-      )
+      const context = yield* buildExecution(scope, () => failOnFullDisk(database, sessionID))
       const execution = Context.get(context, SessionExecution.Service)
       const turn = yield* execution.resume(sessionID).pipe(Effect.exit, Effect.forkScoped)
 
@@ -1298,18 +1296,7 @@ describe("SessionExecution on a full disk", () => {
       const sessionID = Session.ID.make("ses_disk_full_shutdown")
       yield* seedSessions(database, [sessionID])
       const scope = yield* Scope.make()
-      const context = yield* buildExecution(scope, () =>
-        disk.fill.pipe(
-          Effect.andThen(
-            database.db
-              .update(SessionTable)
-              .set({ title: "unsaved" })
-              .where(eq(SessionTable.id, sessionID))
-              .run()
-              .pipe(Effect.orDie),
-          ),
-        ),
-      )
+      const context = yield* buildExecution(scope, () => failOnFullDisk(database, sessionID))
       const execution = Context.get(context, SessionExecution.Service)
       yield* execution.resume(sessionID).pipe(Effect.exit, Effect.forkScoped)
       yield* StorageFault.elapse(60_000)
@@ -1336,18 +1323,7 @@ describe("SessionExecution on a full disk", () => {
       const scope = yield* Scope.make()
       yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
       const context = yield* buildExecution(scope, ({ sessionID }) =>
-        sessionID !== childID
-          ? Effect.void
-          : Effect.gen(function* () {
-              yield* Deferred.await(backgrounded)
-              yield* disk.fill
-              yield* database.db
-                .update(SessionTable)
-                .set({ title: "unsaved" })
-                .where(eq(SessionTable.id, childID))
-                .run()
-                .pipe(Effect.orDie)
-            }),
+        sessionID !== childID ? Effect.void : Deferred.await(backgrounded).pipe(Effect.andThen(failOnFullDisk(database, childID))),
       )
       const sessions = Context.get(context, Session.Service)
       const execution = Context.get(context, SessionExecution.Service)

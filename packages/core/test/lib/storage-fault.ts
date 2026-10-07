@@ -7,6 +7,10 @@ import { classifySqliteError, SqlError } from "effect/unstable/sql/SqlError"
 import { Database } from "@opencode/core/database/database"
 import { Sqlite } from "@opencode/core/database/sqlite"
 
+const fullError = new SqlError({
+  reason: classifySqliteError(genuineFullError(), { message: "Failed to execute statement", operation: "execute" }),
+})
+
 /**
  * An in-memory SQLite database whose writes can be made to fail like a full disk.
  *
@@ -18,12 +22,7 @@ export function make() {
   const state = { full: false, failures: 0 }
   const fail = () => {
     state.failures++
-    const error = genuineFullError()
-    return Effect.fail(
-      new SqlError({
-        reason: classifySqliteError(error, { message: "Failed to execute statement", operation: "execute" }),
-      }),
-    )
+    return Effect.fail(fullError)
   }
 
   const client = Layer.effect(
@@ -81,13 +80,13 @@ export function make() {
   }
 }
 
-/** Lets TestClock time pass in half-second steps, settling real work between them so retries can reschedule. */
+/** Lets TestClock time pass in half-second steps, settling fibers between them so retries can reschedule. */
 export const elapse = Effect.fnUntraced(function* (millis: number) {
   for (let elapsed = 0; elapsed < millis; elapsed += 500) {
-    yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1)))
+    yield* Effect.yieldNow
     yield* TestClock.adjust("500 millis")
   }
-  yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1)))
+  yield* Effect.yieldNow
 })
 
 function genuineFullError() {

@@ -35,6 +35,28 @@ const stored = (id: string) =>
     return yield* db.select().from(EventTable).where(eq(EventTable.aggregate_id, id)).all().pipe(Effect.orDie)
   })
 
+const finishShellOnFullDisk = (shellID: string) =>
+  Effect.gen(function* () {
+    const jobs = yield* Job.Service
+    const release = yield* Deferred.make<void>()
+    yield* jobs.start({
+      id: shellID,
+      type: "shell",
+      recovery: {
+        kind: "shell",
+        sessionID: SessionSchema.ID.make(`ses_${shellID}`),
+        shellID,
+        command: "echo done",
+      },
+      run: Deferred.await(release).pipe(Effect.as("done")),
+    })
+    yield* jobs.background(shellID)
+    const waiting = yield* jobs.wait({ id: shellID }).pipe(Effect.forkScoped)
+    yield* disk.fill
+    yield* Deferred.succeed(release, undefined)
+    return { jobs, waiting }
+  })
+
 describe("StorageRetry", () => {
   test("treats a full, busy, or failing disk as transient and other SQLite errors as permanent", () => {
     const native = new Native(":memory:")
@@ -56,10 +78,14 @@ describe("StorageRetry", () => {
     expect(
       StorageRetry.isTransient(Cause.fail({ cause: Object.assign(new Error("busy"), { code: "SQLITE_BUSY" }) })),
     ).toBe(true)
-    expect(StorageRetry.isTransientError(Object.assign(new Error("write"), { code: "SQLITE_IOERR_WRITE" }))).toBe(true)
+    expect(StorageRetry.isTransient(Object.assign(new Error("write"), { code: "SQLITE_IOERR_WRITE" }))).toBe(true)
+    expect(
+      StorageRetry.isTransient(Object.assign(new Error("node write"), { code: "ERR_SQLITE_ERROR", errcode: 778 })),
+    ).toBe(true)
     expect(StorageRetry.isTransient(Cause.die(constraint))).toBe(false)
     expect(StorageRetry.isTransient(Cause.combine(Cause.die(full), Cause.interrupt()))).toBe(false)
     expect(StorageRetry.message(Cause.die({ cause: full }))).toBe("database or disk is full")
+    expect(StorageRetry.message(Cause.die(constraint))).toBeUndefined()
   })
 
   it.effect("a durable publish waits out a full disk and commits once", () =>
@@ -110,25 +136,7 @@ describe("StorageRetry", () => {
 
   it.effect("a background job settles even when its outcome cannot be persisted", () =>
     Effect.gen(function* () {
-      const jobs = yield* Job.Service
-      const release = yield* Deferred.make<void>()
-      const recovery = {
-        kind: "shell" as const,
-        sessionID: SessionSchema.ID.make("ses_disk_full_shell"),
-        shellID: "sh_disk_full",
-        command: "echo done",
-      }
-      yield* jobs.start({
-        id: recovery.shellID,
-        type: "shell",
-        recovery,
-        run: Deferred.await(release).pipe(Effect.as("done")),
-      })
-      yield* jobs.background(recovery.shellID)
-      const waiting = yield* jobs.wait({ id: recovery.shellID }).pipe(Effect.forkScoped)
-
-      yield* disk.fill
-      yield* Deferred.succeed(release, undefined)
+      const { waiting } = yield* finishShellOnFullDisk("sh_disk_full")
       yield* StorageFault.elapse(40_000)
       expect((yield* Fiber.join(waiting)).info).toMatchObject({ status: "completed", output: "done" })
       yield* disk.free
@@ -137,30 +145,12 @@ describe("StorageRetry", () => {
 
   it.effect("a background job persists its outcome once a briefly full disk frees", () =>
     Effect.gen(function* () {
-      const jobs = yield* Job.Service
-      const release = yield* Deferred.make<void>()
-      const recovery = {
-        kind: "shell" as const,
-        sessionID: SessionSchema.ID.make("ses_disk_brief_shell"),
-        shellID: "sh_disk_brief",
-        command: "echo done",
-      }
-      yield* jobs.start({
-        id: recovery.shellID,
-        type: "shell",
-        recovery,
-        run: Deferred.await(release).pipe(Effect.as("done")),
-      })
-      yield* jobs.background(recovery.shellID)
-      const waiting = yield* jobs.wait({ id: recovery.shellID }).pipe(Effect.forkScoped)
-
-      yield* disk.fill
-      yield* Deferred.succeed(release, undefined)
+      const { jobs, waiting } = yield* finishShellOnFullDisk("sh_disk_brief")
       yield* StorageFault.elapse(5_000)
       yield* disk.free
       yield* StorageFault.elapse(3_000)
       expect((yield* Fiber.join(waiting)).info).toMatchObject({ status: "completed" })
-      expect((yield* jobs.pendingBackground).find((item) => item.id === recovery.shellID)).toMatchObject({
+      expect((yield* jobs.pendingBackground).find((item) => item.id === "sh_disk_brief")).toMatchObject({
         status: "completed",
         output: "done",
       })
