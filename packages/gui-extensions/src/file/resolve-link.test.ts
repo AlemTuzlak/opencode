@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { parseFileLink, searchWorkspaceCandidates } from "./resolve-link"
+import { checkFileLinkExists, parseFileLink, searchWorkspaceCandidates } from "./resolve-link"
 
 const workspaceFiles = [
   "packages/app/src/app.tsx",
@@ -108,6 +108,15 @@ describe("searchWorkspaceCandidates", () => {
     expect(await resolve("@opencode/session-ui/src/components/markdown.tsx", workspaceFiles)).toEqual({
       kind: "match",
       path: "packages/session-ui/src/components/markdown.tsx",
+    })
+    expect(await resolve("@opencode/core/src/index.ts", ["packages/stats/core/src/index.ts"])).toEqual({
+      kind: "none",
+    })
+    expect(
+      await resolve("@opencode/core/src/index.ts", ["packages/core/src/index.ts", "packages/stats/core/src/index.ts"]),
+    ).toEqual({
+      kind: "match",
+      path: "packages/core/src/index.ts",
     })
   })
 
@@ -227,6 +236,10 @@ describe("searchWorkspaceCandidates", () => {
       kind: "match",
       path: "packages/session-ui/src/components/markdown.tsx",
     })
+    expect(await resolve("util/path.ts", ["packages/tui/src/util/path.ts", "packages/util/src/path.ts"])).toEqual({
+      kind: "ambiguous",
+      query: "util/path.ts",
+    })
     expect(await resolve("src/utils.ts", ["packages/x/src/deep/nested/utils.ts"])).toEqual({
       kind: "none",
     })
@@ -321,5 +334,26 @@ describe("searchWorkspaceCandidates", () => {
     })
 
     expect(aborted).toEqual({ kind: "none" })
+  })
+})
+
+describe("checkFileLinkExists", () => {
+  test("returns true for workspace matches or direct files and false for non-existent tokens", async () => {
+    const loaded = new Set(["C:/tmp/out.html"])
+
+    const files = {
+      root: "/repo/workspace",
+      search: async (query: string) => workspaceFiles.filter((item) => fuzzyMatches(query, item)),
+      get: (path: string) => (loaded.has(path) ? { path, name: path, loaded: true } : undefined),
+      sync: async () => undefined,
+      resolve: (path: string) => path.replace(/^\/repo\/workspace\//, ""),
+    }
+
+    const signal = new AbortController().signal
+
+    expect(await checkFileLinkExists({ files, href: "session/timeline/interaction.ts:74", signal })).toBe(true)
+    expect(await checkFileLinkExists({ files, href: "index.ts", signal })).toBe(true)
+    expect(await checkFileLinkExists({ files, href: "C:/tmp/out.html", signal })).toBe(true)
+    expect(await checkFileLinkExists({ files, href: "nonexistent-widget.tsx", signal })).toBe(false)
   })
 })

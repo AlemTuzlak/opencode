@@ -70,6 +70,8 @@ const setup: Setup<typeof File> = (ctx) => {
   const [filters, setFilters] = createStore<Record<string, { text: string; browsing: boolean } | undefined>>({})
 
   const revealListeners = new Map<string, Set<() => void>>()
+  const linkCache = new Map<string, { exists: boolean; expiresAt: number }>()
+  const linkInflight = new Map<string, Promise<boolean>>()
   let clickController: AbortController | undefined
 
   // Tab objects per session screen, which stays while it routes another session, reused so neither strip updates nor a
@@ -501,6 +503,56 @@ const setup: Setup<typeof File> = (ctx) => {
   // a browser tab for HTML when the desktop can load the file directly.
   ctx.add(LinkHandler, {
     match: () => true,
+    resolve(link) {
+      const session = sessions.current()
+      const screen = ctx.screen.current()
+      const files = screen?.file
+
+      if (!session || !screen || !files || (link.session && link.session.key !== session.key)) return false
+
+      const cacheKey = `${files.root}\n${link.href}`
+      const now = Date.now()
+      const cached = linkCache.get(cacheKey)
+
+      if (cached && now < cached.expiresAt) return cached.exists
+
+      const existing = linkInflight.get(cacheKey)
+
+      if (existing) return existing
+
+      const promise = import("./resolve-link")
+        .then(({ checkFileLinkExists }) => {
+          if (ctx.signal.aborted || ctx.screen.current() !== screen) return false
+
+          return checkFileLinkExists({ files, href: link.href, signal: ctx.signal })
+        })
+        .then((exists) => {
+          if (!ctx.signal.aborted) {
+            linkCache.delete(cacheKey)
+            linkCache.set(cacheKey, {
+              exists,
+              expiresAt: exists ? Number.POSITIVE_INFINITY : Date.now() + 5_000,
+            })
+
+            while (linkCache.size > 250) {
+              const oldest = linkCache.keys().next().value
+
+              if (oldest === undefined) break
+              linkCache.delete(oldest)
+            }
+          }
+
+          return exists
+        })
+        .catch(() => false)
+        .finally(() => {
+          linkInflight.delete(cacheKey)
+        })
+
+      linkInflight.set(cacheKey, promise)
+
+      return promise
+    },
     open(link) {
       const session = sessions.current()
       const screen = ctx.screen.current()
@@ -633,16 +685,19 @@ const setup: Setup<typeof File> = (ctx) => {
           return
         }
 
-        if (outcome.kind === "match" && (await openResolvedFile(outcome.path, parsed.selection))) {
+        if (outcome.kind === "match") {
+          await openResolvedFile(outcome.path, parsed.selection)
+
           return
         }
 
         const fallbackQuery = parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "") || parsed.strippedPath
         openPicker(latestSession, fallbackQuery)
       })().catch(() => {
-        const fallback = resolve(files, parsePathLineSuffix(link.href.replaceAll("\\", "/")).path, link.base)
+        const fallbackParsed = parsePathLineSuffix(link.href.replaceAll("\\", "/"))
+        const fallback = resolve(files, fallbackParsed.path, link.base)
 
-        if (fallback) void openResolvedFile(fallback)
+        if (fallback) void openResolvedFile(fallback, fallbackParsed.selection)
       })
     },
   })

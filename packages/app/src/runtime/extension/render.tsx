@@ -73,6 +73,7 @@ export function ExtensionLinks(props: ParentProps<{ session: MountedSession }>) 
     <MarkdownProvider
       readImage={markdown?.readImage}
       openLocalFile={(href) => void host.links.open({ href, session: props.session })}
+      resolveLocalFile={(href) => host.links.resolve({ href, session: props.session })}
     >
       {props.children}
     </MarkdownProvider>

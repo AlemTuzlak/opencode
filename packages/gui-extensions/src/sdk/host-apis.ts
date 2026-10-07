@@ -1025,6 +1025,13 @@ export interface Links {
    * @returns False when no handler matches.
    */
   open(link: Link): boolean
+  /**
+   * Checks whether a candidate inline-code path resolves to an existing target on the matching LinkHandler.
+   *
+   * @param link - The candidate link to check.
+   * @returns True when the target exists, or false when no handler matches or the target does not exist.
+   */
+  resolve(link: Link): boolean | Promise<boolean>
 }
 
 /** One dialog `Dialogs.open` opened. */

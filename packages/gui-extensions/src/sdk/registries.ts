@@ -520,6 +520,12 @@ export interface LinkHandler {
    * @param link - A link `match` accepted.
    */
   open(link: Link): void
+  /**
+   * Checks whether a candidate inline-code path resolves to an existing target before it is styled as a link.
+   *
+   * @param link - A link `match` accepted.
+   */
+  resolve?(link: Link): boolean | Promise<boolean>
 }
 
 /** A titlebar pill, or the dev channel badge as a toggle. */

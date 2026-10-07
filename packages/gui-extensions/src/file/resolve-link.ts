@@ -112,6 +112,7 @@ function decodePathSafely(value: string): string {
 
 function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions) {
   const primary = new Set<string>()
+  const scopedExact = new Set<string>()
   const gitDiff = new Set<string>()
   const climbedTail = new Set<string>()
 
@@ -145,8 +146,8 @@ function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions
     const scoped = literal.match(/^@[^/]+\/([^/]+)\/(.+)$/)
 
     if (scoped) {
-      primary.add(`packages/${scoped[1]}/${scoped[2]}`)
-      primary.add(`${scoped[1]}/${scoped[2]}`)
+      scopedExact.add(`packages/${scoped[1]}/${scoped[2]}`)
+      scopedExact.add(`${scoped[1]}/${scoped[2]}`)
     }
 
     if (/^[ab]\/.+/.test(literal)) {
@@ -159,6 +160,7 @@ function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions
   return {
     literal,
     primary: [...primary],
+    scopedExact: [...scopedExact],
     gitDiff: [...gitDiff],
     climbedTail: [...climbedTail],
   }
@@ -237,6 +239,16 @@ function scoreParsed(
 
   const second = scored[1]
 
+  if (
+    top.tier === 2 &&
+    scored.some((item) => item.tier === 3 && matchesTopLevelPackage(parsed.segments[0], item.path))
+  ) {
+    return {
+      kind: "ambiguous",
+      query: ambiguousPickerQuery(parsed, top.path),
+    }
+  }
+
   if (!second || top.tier < second.tier) {
     return { kind: "match", path: top.path }
   }
@@ -274,11 +286,7 @@ export async function searchWorkspaceCandidates(input: {
   const search = (query: string, limit: number) =>
     input.files.search(query, { limit, signal: input.signal }).catch(() => [])
 
-  const primaryQuery =
-    input.parsed.segments.length >= 3 && /^[ab]$/i.test(input.parsed.segments[0] ?? "")
-      ? input.parsed.strippedPath.slice(2)
-      : input.parsed.strippedPath
-
+  const primaryQuery = normalizeSearchQuery(input.parsed.strippedPath, rootName)
   const primary = await search(primaryQuery, 100)
 
   if (input.signal.aborted) return { kind: "none" }
@@ -303,6 +311,35 @@ export async function searchWorkspaceCandidates(input: {
   }
 
   return { kind: "none" }
+}
+
+function normalizeSearchQuery(strippedPath: string, rootName: string | undefined): string {
+  const withoutScope = strippedPath.startsWith("@")
+    ? strippedPath.replace(/^@[^/]+\//, "") || strippedPath
+    : strippedPath
+
+  if (rootName && withoutScope.toLowerCase().startsWith(`${rootName.toLowerCase()}/`)) {
+    const trimmed = withoutScope.slice(rootName.length + 1)
+
+    if (trimmed) return trimmed
+  }
+
+  if (withoutScope.split("/").filter(Boolean).length >= 3 && /^[ab]\//i.test(withoutScope)) {
+    return withoutScope.slice(2)
+  }
+
+  return withoutScope
+}
+
+function matchesTopLevelPackage(firstQuerySegment: string | undefined, filePath: string): boolean {
+  if (!firstQuerySegment) return false
+  const segments = filePath.split("/").filter(Boolean)
+
+  return (
+    segments.length >= 2 &&
+    (segments[0] === "packages" || segments[0] === "apps" || segments[0] === "crates") &&
+    segments[1]?.toLowerCase() === firstQuerySegment.toLowerCase()
+  )
 }
 
 function ambiguousPickerQuery(parsed: ParsedFileLink, topPath: string): string {
@@ -350,12 +387,14 @@ function scoreTier(
     return { tier: 1, baseScore: 1005 }
   }
 
-  if (variants.primary.some((variant) => fileLower === variant.toLowerCase())) {
+  const exactVariants = [...variants.primary, ...variants.scopedExact]
+
+  if (exactVariants.some((variant) => fileLower === variant.toLowerCase())) {
     return { tier: 1, baseScore: 1000 }
   }
 
   if (
-    variants.primary.some((variant) => {
+    exactVariants.some((variant) => {
       const segments = variant.split("/").filter(Boolean)
 
       return segments.length === fileSegments.length && hasTrailingSegmentMatch(segments, fileSegments)
@@ -551,4 +590,41 @@ function directoryOf(path: string): string {
   const index = path.lastIndexOf("/")
 
   return index === -1 ? "" : path.slice(0, index)
+}
+
+export async function checkFileLinkExists(input: {
+  readonly files: Pick<Files, "root" | "search" | "get" | "sync" | "resolve">
+  readonly href: string
+  readonly signal: AbortSignal
+}): Promise<boolean> {
+  const parsed = parseFileLink(input.href)
+  const root = input.files.root.replaceAll("\\", "/").replace(/\/+$/, "")
+
+  const direct =
+    /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/")
+      ? input.files.resolve(parsed.path)
+      : input.files.resolve(resolveArtifactPath(root, parsed.path) ?? parsed.path)
+
+  if (!direct) return false
+
+  if (input.files.get(direct)?.loaded) return true
+
+  const explicitAbsolute =
+    /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/") || /^file:/i.test(input.href.trim())
+
+  if (!explicitAbsolute) {
+    const outcome = await searchWorkspaceCandidates({
+      files: input.files,
+      parsed,
+      signal: input.signal,
+    })
+
+    if (input.signal.aborted) return false
+
+    if (outcome.kind !== "none") return true
+  }
+
+  await input.files.sync(direct, { silent: true })
+
+  return !input.signal.aborted && Boolean(input.files.get(direct)?.loaded)
 }

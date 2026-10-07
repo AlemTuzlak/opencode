@@ -37,7 +37,12 @@ import {
 import { inlineCodeKind } from "./markdown-inline-code-kind"
 import { renderMermaidSvg } from "./markdown-mermaid"
 import { createMarkdownRenderer } from "./markdown-solid"
-import { useMarkdown, type OpenMarkdownLocalFile, type ReadMarkdownImage } from "../context/markdown"
+import {
+  useMarkdown,
+  type OpenMarkdownLocalFile,
+  type ReadMarkdownImage,
+  type ResolveMarkdownLocalFile,
+} from "../context/markdown"
 import { createMarkdownImages } from "./markdown-image"
 import { createImagePreview } from "./image-preview"
 import { markSessionLinks, setupSessionLinks } from "./markdown-session-links"
@@ -100,7 +105,9 @@ async function code(text: string, language: string | undefined, key: string, com
     )
       console.error("Markdown highlighting worker failed", error)
 
-    return { language: language ?? "text", generation: 0, stable: [], unstable: [[text, ""] as MarkdownToken] }
+    const fallbackToken: MarkdownToken = [text, ""]
+
+    return { language: language ?? "text", generation: 0, stable: [], unstable: [fallbackToken] }
   }
 }
 
@@ -148,8 +155,13 @@ function createCopyButton(labels: CopyLabels) {
     return <MarkdownCopyButton labels={labelState()} copied={copied()} />
   }, host)
 
-  state.dispose = dispose
-  copyButtonState.set(host, state as CopyButtonState)
+  if (state.setLabels && state.setCopied) {
+    copyButtonState.set(host, {
+      setLabels: state.setLabels,
+      setCopied: state.setCopied,
+      dispose,
+    })
+  }
 
   return host
 }
@@ -372,15 +384,40 @@ function setupExternalLinkFavicons(root: HTMLDivElement) {
   return () => root.removeEventListener("load", loaded, true)
 }
 
-function markInlineCode(root: HTMLDivElement) {
-  const codeNodes = Array.from(root.querySelectorAll(":not(pre) > code"))
+function markInlineCode(source: HTMLDivElement, target: HTMLDivElement, resolveLocalFile?: ResolveMarkdownLocalFile) {
+  const codeNodes = Array.from(source.querySelectorAll(":not(pre) > code"))
+  const pending = new Set<string>()
 
   for (const code of codeNodes) {
     if (!(code instanceof HTMLElement)) continue
     delete code.dataset.inlineCodeKind
-    const kind = inlineCodeKind(code.textContent ?? "")
+    const text = (code.textContent ?? "").trim()
+    const kind = inlineCodeKind(text)
 
-    if (kind) code.dataset.inlineCodeKind = kind
+    if (!kind) continue
+
+    if (kind === "url" || !resolveLocalFile) {
+      code.dataset.inlineCodeKind = kind
+      continue
+    }
+
+    const result = resolveLocalFile(text)
+
+    if (!(result instanceof Promise)) {
+      if (result) code.dataset.inlineCodeKind = "path"
+      continue
+    }
+
+    if (pending.has(text)) continue
+    pending.add(text)
+    void result
+      .then((exists) => {
+        if (!exists || !target.isConnected) return
+        target.querySelectorAll<HTMLElement>(":not(pre) > code").forEach((node) => {
+          if ((node.textContent ?? "").trim() === text) node.dataset.inlineCodeKind = "path"
+        })
+      })
+      .catch(() => undefined)
   }
 }
 
@@ -728,7 +765,9 @@ export function Markdown(
     })
     activeCodeKeys.clear()
     nextCodeKeys.forEach((key) => activeCodeKeys.add(key))
-    content.forEach((block, index) => updateBlock(container, index, block, labels, !!markdown?.openSession))
+    content.forEach((block, index) =>
+      updateBlock(container, index, block, labels, !!markdown?.openSession, markdown?.resolveLocalFile),
+    )
 
     while (container.children.length > content.length) {
       const child = container.lastElementChild
@@ -821,6 +860,8 @@ function pendingBlocks(
     if (block.mode !== "code")
       return { key, mode: block.mode, raw: block.raw, hash: String(block.raw.length), html: fallback(block.src) }
 
+    const fallbackToken: MarkdownToken = [block.src, ""]
+
     return {
       key,
       mode: block.mode,
@@ -830,7 +871,7 @@ function pendingBlocks(
       complete: !!block.complete,
       stable: [],
       generation: 0,
-      unstable: [[block.src, ""] as MarkdownToken],
+      unstable: [fallbackToken],
     }
   })
 }
@@ -845,6 +886,7 @@ function updateBlock(
   block: RenderedBlock,
   labels: CopyLabels,
   sessionLinks: boolean,
+  resolveLocalFile?: ResolveMarkdownLocalFile,
 ) {
   const current = container.children[index]
 
@@ -872,7 +914,7 @@ function updateBlock(
 
   if (source === next) disposeCopyButtons(next)
   source.innerHTML = block.html
-  markInlineCode(source)
+  markInlineCode(source, next, resolveLocalFile)
   markCodeLinks(source)
 
   if (sessionLinks) markSessionLinks(source)
