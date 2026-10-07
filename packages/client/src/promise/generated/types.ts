@@ -343,6 +343,8 @@ export type SkillInfo = {
   content: string
 }
 
+export type FormatterStatus = { name: string; extensions: Array<string>; enabled: boolean }
+
 export type RpcOutput = { output?: any }
 
 export type PermissionReply = "once" | "always" | "reject"
@@ -6240,6 +6242,12 @@ export type SkillListInput = {
 }
 
 export type SkillListOutput = { location: LocationPublicRef; data: Array<SkillInfo> }
+
+export type FormatterStatusInput = {
+  readonly location?: { readonly location?: { readonly directory?: string | undefined } | undefined }["location"]
+}
+
+export type FormatterStatusOutput = { location: LocationPublicRef; data: Array<FormatterStatus> }
 
 export type RpcCallInput = {
   readonly rpcID: { readonly rpcID: string; readonly method: string }["rpcID"]
