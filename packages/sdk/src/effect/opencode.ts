@@ -32,8 +32,10 @@ export type Interface = Omit<OpenCodeClient, "plugin" | "workspace"> & {
   }
   readonly plugin: EmbeddedHost.Interface["plugins"]["register"] & OpenCodeClient["plugin"]
   /**
-   * This instance's HTTP API for external opencode clients. Serve it with an Effect `HttpServer`; a fetch
-   * handler cannot accept PTY WebSockets. Stop that server before closing this instance.
+   * This instance's HTTP API for external opencode clients, with CORS but without response compression.
+   * Serve it with an Effect `HttpServer`; a fetch handler cannot accept PTY WebSockets. Stop that server
+   * before closing this instance. Node's server waits for open SSE streams, so call `closeAllConnections()`
+   * when stopping it.
    */
   readonly http: EmbeddedHost.Interface["http"]
 }
