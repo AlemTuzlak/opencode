@@ -143,7 +143,7 @@ test("open file tab browses, searches, and tracks missing files", async ({ page 
   const panel = page.locator("#review-panel")
   const sidebar = panel.locator('[data-slot="session-review-v2-sidebar"]')
   const sidebarToggle = panel.getByRole("button", { name: "Toggle file tree" })
-  const contextButton = page.getByRole("button", { name: "View context usage" })
+  const contextButton = page.getByRole("button", { name: "Toggle session context" })
   const openFile = panel.getByRole("button", { name: "Open file" })
   const tab = (name: string) => panel.getByRole("tab", { name, exact: true })
   await contextButton.click()
@@ -309,7 +309,7 @@ test("context closes the side region only when its button opened it", async ({ p
   })
   const panel = page.locator("#review-panel")
   const toggle = page.getByRole("button", { name: "Toggle review", exact: true })
-  const contextButton = page.getByRole("button", { name: "View context usage" })
+  const contextButton = page.getByRole("button", { name: "Toggle session context" })
   const context = panel.getByRole("tab", { name: "Context", exact: true })
 
   await contextButton.click()
@@ -630,7 +630,7 @@ test("restores review state and the side-panel tab per session", async ({ page }
   await page.getByRole("option", { name: "Branch changes" }).click()
   await page.getByRole("button", { name: "beta.ts" }).click()
   await selectedFile("beta.ts")
-  await page.getByRole("button", { name: "View context usage" }).click()
+  await page.getByRole("button", { name: "Toggle session context" }).click()
   await selectedTab("Context")
 
   await switchSession("Gamma review state")
