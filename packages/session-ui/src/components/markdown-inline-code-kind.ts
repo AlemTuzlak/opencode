@@ -1,7 +1,7 @@
 import { parsePathLineSuffix } from "@opencode/util/path"
 
 // Curated file extensions for inline-code path detection.
-// Excludes single-letter tokens and common identifier/property suffixes (.id, .target, .tool, .url, .in, .is, .it, .on, .to, .do, .for, .self, etc.)
+// Excludes common identifier/property suffixes (.id, .target, .tool, .url, .in, .is, .it, .on, .to, .do, .for, .self, etc.)
 // so member expressions like `props.id`, `event.target`, and `obj.x` stay plain inline code.
 const barePathExtensions = new Set([
   "ada",
@@ -156,6 +156,7 @@ const barePathExtensions = new Set([
   "dfm",
   "dfy",
   "dhall",
+  "diff",
   "dircolors",
   "dita",
   "ditamap",
@@ -163,6 +164,7 @@ const barePathExtensions = new Set([
   "dll.config",
   "dockerfile",
   "docx",
+  "dot",
   "dotsettings",
   "dpatch",
   "dpr",
@@ -213,6 +215,7 @@ const barePathExtensions = new Set([
   "fbs",
   "fcgi",
   "fea",
+  "feature",
   "fir",
   "fish",
   "flix",
@@ -325,6 +328,7 @@ const barePathExtensions = new Set([
   "html.eex",
   "html.hl",
   "html.tmpl",
+  "http",
   "hurl",
   "hx",
   "hxml",
@@ -1142,13 +1146,10 @@ const barePathExtensions = new Set([
 const slashedOnlyExtensions = new Set([
   "as",
   "d",
-  "diff",
   "edge",
   "env",
   "f",
-  "feature",
   "flex",
-  "http",
   "inc",
   "l",
   "lock",
@@ -1391,6 +1392,7 @@ const pathFileNames = new Set([
   "packages.config",
   "phakefile",
   "pipfile",
+  "pipfile.lock",
   "pkgbuild",
   "podfile",
   "podfile.lock",
@@ -1630,6 +1632,11 @@ function isBareCodeExpression(basename: string) {
   if (capitalizedFrameworkNames.has(basename)) return true
 
   const lower = basename.toLowerCase()
+
+  if (lower === "session.diff" || lower === "snapshot.diff" || lower === "node.feature" || lower === "api.http") {
+    return true
+  }
+
   const parts = lower.split(".")
 
   if (parts.length < 2) return false

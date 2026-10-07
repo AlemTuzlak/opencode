@@ -291,8 +291,9 @@ export async function searchWorkspaceCandidates(input: {
   }
 
   const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
+  const hasJsExt = stem !== input.parsed.basename
 
-  if (stem && stem !== primaryQuery && primaryQuery.includes("/")) {
+  if (stem && stem !== primaryQuery && (primaryQuery.includes("/") || hasJsExt)) {
     const secondary = await search(stem, 100)
 
     if (input.signal.aborted) return { kind: "none" }

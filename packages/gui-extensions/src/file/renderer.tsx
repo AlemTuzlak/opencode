@@ -67,10 +67,7 @@ const setup: Setup<typeof File> = (ctx) => {
   const preference = desktop ? ctx.stores.app : undefined
   const [request, setRequest] = createStore<{ app?: OpenApp }>({})
 
-  const [filters, setFilters] = createStore<{
-    query: Record<string, string | undefined>
-    seq: Record<string, number | undefined>
-  }>({ query: {}, seq: {} })
+  const [filters, setFilters] = createStore<Record<string, { text: string; seq: number } | undefined>>({})
 
   const scrollListeners = new Map<string, Set<() => void>>()
   let filterSeq = 0
@@ -109,6 +106,7 @@ const setup: Setup<typeof File> = (ctx) => {
 
     if (!screen) return
 
+    setFilters(session.key, undefined)
     layout.open(key(screen.file, path), session, options)
     void screen.file.sync(path)
   }
@@ -127,10 +125,22 @@ const setup: Setup<typeof File> = (ctx) => {
     shared.restoreScroll.run(session.key, path)
   }
 
+  const updateFilter = (session: string, text: string, bumpSeq: boolean) => {
+    setFilters(
+      produce((draft) => {
+        const previousSeq = draft[session]?.seq ?? 0
+        delete draft[session]
+        draft[session] = { text, seq: bumpSeq ? ++filterSeq : previousSeq }
+        const keys = Object.keys(draft)
+
+        keys.slice(0, Math.max(0, keys.length - FILTER_SESSIONS)).forEach((item) => delete draft[item])
+      }),
+    )
+  }
+
   const openPicker = (session: MountedSession, query: string, options?: OpenOptions) => {
     batch(() => {
-      shared.filter.set(session.key, query)
-      setFilters("seq", session.key, ++filterSeq)
+      updateFilter(session.key, query, true)
       layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
 
       if (!options?.background && layout.narrow() && !layout.side.opened(session)) layout.side.toggle(session)
@@ -158,21 +168,9 @@ const setup: Setup<typeof File> = (ctx) => {
         }),
     },
     filter: {
-      get: (session) => filters.query[session] ?? "",
-      set: (session, value) =>
-        setFilters(
-          "query",
-          produce((draft) => {
-            delete draft[session]
-
-            if (!value) return
-            draft[session] = value
-            const keys = Object.keys(draft)
-
-            keys.slice(0, Math.max(0, keys.length - FILTER_SESSIONS)).forEach((item) => delete draft[item])
-          }),
-        ),
-      seq: (session) => filters.seq[session] ?? 0,
+      get: (session) => filters[session]?.text ?? "",
+      set: (session, value) => updateFilter(session, value, false),
+      seq: (session) => filters[session]?.seq ?? 0,
     },
     installed: new Map(),
     app: preference && {
@@ -555,6 +553,7 @@ const setup: Setup<typeof File> = (ctx) => {
           if (!latest || !files.get(targetPath)?.loaded) return false
 
           batch(() => {
+            setFilters(latest.key, undefined)
             applySelection(latest, files, targetPath, selection)
             layout.open(key(files, targetPath), latest, { background: link.background })
 
@@ -591,13 +590,10 @@ const setup: Setup<typeof File> = (ctx) => {
 
         if (!activeSession) return
 
+        const storedTabs = layout.stored(activeSession).filter(isFileTab)
         const activeId = focused.get(screen)
-        const activePath = activeId && isFileTab(activeId) ? fileTabPath(files, activeId) : undefined
-
-        const openPaths = layout
-          .stored(activeSession)
-          .filter(isFileTab)
-          .map((id) => fileTabPath(files, id))
+        const activePath = activeId && storedTabs.includes(activeId) ? fileTabPath(files, activeId) : undefined
+        const openPaths = storedTabs.map((id) => fileTabPath(files, id))
 
         const outcome = await searchWorkspaceCandidates({
           files,
@@ -617,11 +613,12 @@ const setup: Setup<typeof File> = (ctx) => {
           return
         }
 
-        if (outcome.kind === "match" && (await openResolvedFile(outcome.path, parsed.selection, true))) {
+        if (outcome.kind === "match" && (await openResolvedFile(outcome.path, parsed.selection))) {
           return
         }
 
-        openPicker(latestSession, parsed.basename || parsed.strippedPath)
+        const fallbackQuery = parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "") || parsed.strippedPath
+        openPicker(latestSession, fallbackQuery)
       })().catch(() => {
         const fallback = resolve(files, parsePathLineSuffix(link.href.replaceAll("\\", "/")).path, link.base)
 

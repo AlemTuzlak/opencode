@@ -4,7 +4,7 @@ import { Button } from "@opencode/ui/button"
 import { Tabs } from "@opencode/ui/tabs"
 import { getFilename } from "@opencode/util/path"
 import type { ChangeKind } from "../review/contract"
-import { createKeyed, useExtension, usePanel, type MountedSession, type SessionScreen } from "../sdk"
+import { useExtension, usePanel, type MountedSession, type SessionScreen } from "../sdk"
 import { SessionFileBrowserTab } from "./browser"
 import { useShared } from "./context"
 import { fileTabPath, isFileTab } from "./path"
@@ -20,15 +20,9 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
   const opened = createMemo(() => panel.open().filter(isFileTab))
   // The selected side tab when it is a file tab. A gone selection falls back to the first file tab.
   const activeFileTab = createMemo(() => opened().find((id) => shared.active(props.session, id)))
-  const [store, setStore] = createStore({ browsing: !activeFileTab() })
-  const browsing = () => store.browsing || !activeFileTab()
-
-  createKeyed(
-    () => shared.filter.seq(props.session.key),
-    (seq) => {
-      if (seq > 0) setStore("browsing", true)
-    },
-  )
+  const seq = () => shared.filter.seq(props.session.key)
+  const [store, setStore] = createStore({ browsing: !activeFileTab(), handledSeq: seq() })
+  const browsing = () => store.browsing || !activeFileTab() || seq() > store.handledSeq
 
   const active = createMemo(() => {
     const id = activeFileTab()
@@ -40,7 +34,7 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
 
   const open = (path: string) => {
     shared.open(props.session, path)
-    setStore("browsing", false)
+    setStore({ browsing: false, handledSeq: seq() })
   }
 
   return (
@@ -50,7 +44,7 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
           size="small"
           variant="ghost"
           class="shrink-0 mx-2"
-          onClick={() => setStore("browsing", true)}
+          onClick={() => setStore({ browsing: true, handledSeq: seq() })}
           aria-pressed={browsing()}
         >
           {ctx.t("tree.all")}
@@ -105,7 +99,7 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
             width: () => 240,
             transition: () => false,
             resize: () => undefined,
-            toggle: () => setStore("browsing", !browsing()),
+            toggle: () => setStore({ browsing: !browsing(), handledSeq: seq() }),
           }}
           onSelect={open}
           onSelectPermanent={open}

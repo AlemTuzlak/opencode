@@ -155,7 +155,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
         }),
       )
 
-      if (silent) return
+      if (silent && notFound) return
       showToast({
         variant: "error",
         title: language.t("toast.file.loadFailed.title"),

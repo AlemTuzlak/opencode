@@ -96,7 +96,7 @@ const lineHashSuffixPattern = /^(.*?)#L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i
 
 const lineColonSuffixPattern = /^(.*?):(\d+)(?::\d+)?(?:-(\d+)(?::\d+)?)?:?$/
 
-function toLineRange(first: number, second: number): { start: number; end: number } | undefined {
+function toLineRange(first: number, second: number) {
   if (
     !Number.isSafeInteger(first) ||
     !Number.isSafeInteger(second) ||
@@ -114,14 +114,11 @@ function toLineRange(first: number, second: number): { start: number; end: numbe
   }
 }
 
-export function isLineRangeHash(hash: string): boolean {
+export function isLineRangeHash(hash: string) {
   return lineHashPattern.test(hash)
 }
 
-export function parsePathLineSuffix(input: string): {
-  path: string
-  selection?: { start: number; end: number }
-} {
+export function parsePathLineSuffix(input: string) {
   const hashMatch = input.match(lineHashSuffixPattern)
 
   if (hashMatch) {
@@ -146,5 +143,5 @@ export function parsePathLineSuffix(input: string): {
     }
   }
 
-  return { path: input }
+  return { path: input, selection: undefined }
 }

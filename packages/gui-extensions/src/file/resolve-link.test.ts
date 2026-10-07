@@ -17,6 +17,18 @@ const workspaceFiles = [
   "docs/README.md",
 ]
 
+function fuzzyMatches(query: string, target: string) {
+  const q = query.toLowerCase()
+  const t = target.toLowerCase()
+  let qi = 0
+
+  for (const ch of t) {
+    if (ch === q[qi]) qi += 1
+  }
+
+  return qi === q.length
+}
+
 function resolve(
   href: string,
   candidates: readonly string[],
@@ -25,7 +37,7 @@ function resolve(
   return searchWorkspaceCandidates({
     files: {
       root: `/repo/${options?.rootName ?? "workspace"}`,
-      search: async () => [...candidates],
+      search: async (query) => candidates.filter((item) => fuzzyMatches(query, item)),
     },
     parsed: parseFileLink(href),
     activePath: options?.activePath,
@@ -178,6 +190,10 @@ describe("searchWorkspaceCandidates", () => {
     expect(await resolve("src/foo.js", ["dist/foo.js", "packages/x/src/foo.ts"])).toEqual({
       kind: "match",
       path: "packages/x/src/foo.ts",
+    })
+    expect(await resolve("foo.js", ["src/foo.ts"])).toEqual({
+      kind: "match",
+      path: "src/foo.ts",
     })
     expect(await resolve("README", ["README.md", "docs/README.md"])).toEqual({
       kind: "match",
