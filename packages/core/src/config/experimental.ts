@@ -6,7 +6,11 @@ import { Policy as PolicyV2 } from "../policy"
 
 // Each core domain exports the policy actions it supports. Adding an action to
 // this union makes it valid in authored config while keeping Policy generic.
-export const PolicyAction = Schema.Union([Catalog.PolicyActions])
+export const PolicyAction = Schema.Union([
+  Catalog.PolicyActions,
+  Schema.Literal("integration.use"),
+  Schema.Literal("permission"),
+])
 
 export class Policy extends Schema.Class<Policy>("ConfigV2.Experimental.Policy")({
   ...PolicyV2.Info.fields,

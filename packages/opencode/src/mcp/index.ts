@@ -1,6 +1,7 @@
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Policy } from "@opencode-ai/core/policy"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { Client, type ClientOptions } from "@modelcontextprotocol/sdk/client/index.js"
@@ -208,6 +209,12 @@ const layer = Layer.effect(
     const auth = yield* McpAuth.Service
     const events = yield* EventV2Bridge.Service
     const browser = yield* McpBrowser.Service
+    const policy = {
+      evaluate: Effect.fnUntraced(function* (action: string, resource: string, fallback: Policy.Effect) {
+        const config = yield* cfgSvc.get()
+        return Policy.decision(config.experimental?.policies ?? [], action, resource, fallback)
+      }),
+    }
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
@@ -371,7 +378,7 @@ const layer = Layer.effect(
 
     const create = Effect.fn("MCP.create")(
       function* (key: string, mcp: ConfigMCPV1.Info) {
-        if (mcp.enabled === false) {
+        if (mcp.enabled === false || (yield* policy.evaluate("integration.use", `mcp:${key}`, "allow")) === "deny") {
           return DISABLED_RESULT
         }
 
@@ -511,7 +518,10 @@ const layer = Layer.effect(
                 return
               }
 
-              if (mcp.enabled === false) {
+              if (
+                mcp.enabled === false ||
+                (yield* policy.evaluate("integration.use", `mcp:${key}`, "allow")) === "deny"
+              ) {
                 s.status[key] = { status: "disabled" }
                 return
               }
@@ -597,11 +607,17 @@ const layer = Layer.effect(
 
       for (const [key, mcp] of Object.entries(config)) {
         if (!isMcpConfigured(mcp)) continue
-        result[key] = s.status[key] ?? { status: "disabled" }
+        result[key] =
+          (yield* policy.evaluate("integration.use", `mcp:${key}`, "allow")) === "deny"
+            ? { status: "disabled" }
+            : (s.status[key] ?? { status: "disabled" })
       }
 
       for (const key of Object.keys(s.config)) {
-        result[key] = s.status[key] ?? { status: "disabled" }
+        result[key] =
+          (yield* policy.evaluate("integration.use", `mcp:${key}`, "allow")) === "deny"
+            ? { status: "disabled" }
+            : (s.status[key] ?? { status: "disabled" })
       }
 
       return result
@@ -609,13 +625,20 @@ const layer = Layer.effect(
 
     const clients = Effect.fn("MCP.clients")(function* () {
       const s = yield* InstanceState.get(state)
-      return s.clients
+      return Object.fromEntries(
+        yield* Effect.forEach(Object.entries(s.clients), ([name, client]) =>
+          policy
+            .evaluate("integration.use", `mcp:${name}`, "allow")
+            .pipe(Effect.map((decision) => (decision === "deny" ? [] : [[name, client] as const]))),
+        ).pipe(Effect.map((entries) => entries.flat())),
+      )
     })
 
     const instructions = Effect.fn("MCP.instructions")(function* () {
       const s = yield* InstanceState.get(state)
+      const allowed = new Set(Object.keys(yield* clients()))
       return Object.entries(s.instructions)
-        .filter(([name]) => s.status[name]?.status === "connected")
+        .filter(([name]) => s.status[name]?.status === "connected" && allowed.has(name))
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, item]) => ({
           name,
@@ -672,7 +695,11 @@ const layer = Layer.effect(
       const defaultTimeout = cfg.experimental?.mcp_timeout
 
       for (const [clientName, client] of Object.entries(s.clients)) {
-        if (s.status[clientName]?.status !== "connected") continue
+        if (
+          s.status[clientName]?.status !== "connected" ||
+          (yield* policy.evaluate("integration.use", `mcp:${clientName}`, "allow")) === "deny"
+        )
+          continue
         const mcpConfig = config[clientName]
         const listed = s.defs[clientName]
         if (!listed) {
@@ -701,13 +728,25 @@ const layer = Layer.effect(
             ([name]) => s.status[name]?.status === "connected" && (!targetClientName || name === targetClientName),
           ),
           ([clientName, client]) =>
-            McpCatalog.fetch(
-              clientName,
-              client,
-              (c) => listFn(c, requestTimeout(s, clientName, cfg.mcp?.[clientName], cfg.experimental?.mcp_timeout)),
-              label,
-              key,
-            ).pipe(Effect.map((items) => Object.entries(items ?? {}))),
+            policy
+              .evaluate("integration.use", `mcp:${clientName}`, "allow")
+              .pipe(
+                Effect.flatMap((decision) =>
+                  decision === "deny"
+                    ? Effect.succeed([])
+                    : McpCatalog.fetch(
+                        clientName,
+                        client,
+                        (c) =>
+                          listFn(
+                            c,
+                            requestTimeout(s, clientName, cfg.mcp?.[clientName], cfg.experimental?.mcp_timeout),
+                          ),
+                        label,
+                        key,
+                      ).pipe(Effect.map((items) => Object.entries(items ?? {}))),
+                ),
+              ),
           { concurrency: "unbounded" },
         ).pipe(Effect.map((results) => Object.fromEntries<T & { client: string }>(results.flat())))
       })
@@ -743,6 +782,7 @@ const layer = Layer.effect(
       label: string,
       meta?: Record<string, unknown>,
     ) {
+      if ((yield* policy.evaluate("integration.use", `mcp:${clientName}`, "allow")) === "deny") return undefined
       const s = yield* InstanceState.get(state)
       const client = s.clients[clientName]
       if (!client) {
@@ -788,6 +828,7 @@ const layer = Layer.effect(
     })
 
     const getMcpConfig = Effect.fnUntraced(function* (mcpName: string) {
+      if ((yield* policy.evaluate("integration.use", `mcp:${mcpName}`, "allow")) === "deny") return undefined
       const s = yield* InstanceState.get(state)
       if (s.config[mcpName]) return s.config[mcpName]
 

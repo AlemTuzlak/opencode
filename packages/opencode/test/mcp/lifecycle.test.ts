@@ -14,6 +14,8 @@ import {
   type Tool,
 } from "@modelcontextprotocol/sdk/types.js"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Config } from "../../src/config/config"
+import { InstanceStore } from "../../src/project/instance-store"
 import { Cause, Effect, Exit } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 import { MCP } from "../../src/mcp/index"
@@ -21,7 +23,7 @@ import { McpOAuthCallback } from "../../src/mcp/oauth-callback"
 import { TestInstance } from "../fixture/fixture"
 import { pollWithTimeout, testEffect } from "../lib/effect"
 
-const it = testEffect(LayerNode.compile(MCP.node))
+const it = testEffect(LayerNode.compile(LayerNode.group([MCP.node, Config.node])))
 const stdioFixture = path.join(import.meta.dir, "../fixture/mcp-lifecycle-stdio.ts")
 
 type Page<T> = { items: T[]; nextCursor?: string }
@@ -181,6 +183,44 @@ function statusName(status: Record<string, MCPNS.Status> | MCPNS.Status, server:
 }
 
 const remote = (url: string, timeout?: number) => ({ type: "remote" as const, url, oauth: false as const, timeout })
+
+it.instance(
+  "integration policies prevent connections and are respected after a configuration refresh",
+  () =>
+    Effect.gen(function* () {
+      const server = yield* lifecycleServer({ instructions: "Blocked server guidance" })
+      server.state.prompts = [{ name: "prompt" }]
+      server.state.resources = [{ name: "resource", uri: "test://resource" }]
+      const mcp = yield* MCP.Service
+      const config = yield* Config.Service
+      expect(statusName((yield* mcp.add("blocked", remote(server.url))).status, "blocked")).toBe("disabled")
+      expect(server.state.requests).toHaveLength(0)
+      yield* mcp.add("allowed", remote(server.url))
+      expect(Object.keys(yield* mcp.clients())).toEqual(["allowed"])
+      expect(Object.keys(yield* mcp.tools())).not.toHaveLength(0)
+      const instance = yield* TestInstance
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(instance.directory, "opencode.json"),
+          JSON.stringify({
+            mcp: { allowed: remote(server.url) },
+            experimental: { policies: [{ action: "integration.use", resource: "*", effect: "deny" }] },
+          }),
+        ),
+      )
+      yield* config.invalidate()
+      const instances = yield* InstanceStore.Service
+      yield* instances.disposeAll()
+      expect(yield* mcp.clients()).toEqual({})
+      expect(yield* mcp.tools()).toEqual({})
+      expect(yield* mcp.instructions()).toEqual([])
+      expect(yield* mcp.prompts()).toEqual({})
+      expect(yield* mcp.resources()).toEqual({})
+      expect(statusName(yield* mcp.status(), "allowed")).toBe("disabled")
+      expect(yield* mcp.readResource("allowed", "test://resource")).toBeUndefined()
+    }),
+  { config: { experimental: { policies: [{ action: "integration.use", resource: "mcp:blocked", effect: "deny" }] } } },
+)
 
 it.instance("advertises and lists the instance directory as its root", () =>
   Effect.gen(function* () {

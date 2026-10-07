@@ -1,3 +1,5 @@
+import { Policy } from "@opencode-ai/core/policy"
+import { fileURLToPath } from "node:url"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import type {
   Hooks,
@@ -178,7 +180,16 @@ const layer = Layer.effect(
           if (init._tag === "Some") hooks.push(init.value)
         }
 
-        const plugins = flags.pure ? [] : (cfg.plugin_origins ?? [])
+        const plugins = flags.pure
+          ? []
+          : (cfg.plugin_origins ?? []).filter((origin) => {
+              const spec = typeof origin.spec === "string" ? origin.spec : origin.spec[0]
+              const name = spec.startsWith("file://") ? fileURLToPath(spec) : parsePluginSpecifier(spec).pkg
+              return (
+                Policy.decision(cfg.experimental?.policies ?? [], "integration.use", `plugin:${name}`, "allow") ===
+                "allow"
+              )
+            })
         if (flags.pure && cfg.plugin_origins?.length) {
         }
         if (plugins.length) yield* config.waitForDependencies()

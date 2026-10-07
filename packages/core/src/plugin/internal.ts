@@ -21,6 +21,7 @@ import { Global } from "../global"
 import { Integration } from "../integration"
 import { Location } from "../location"
 import { ModelsDev } from "../models-dev"
+import { Policy } from "../policy"
 import { Npm } from "../npm"
 import { PluginV2 } from "../plugin"
 import { Reference } from "../reference"
@@ -48,6 +49,7 @@ export type Requirements =
   | Location.Service
   | ModelsDev.Service
   | Npm.Service
+  | Policy.Service
   | Reference.Service
   | SkillV2.Service
 
@@ -71,6 +73,7 @@ const layer = Layer.effectDiscard(
     const location = yield* Location.Service
     const modelsDev = yield* ModelsDev.Service
     const npm = yield* Npm.Service
+    const policy = yield* Policy.Service
     const events = yield* EventV2.Service
     const fs = yield* FSUtil.Service
     const filesystem = yield* FileSystem.Service
@@ -93,6 +96,7 @@ const layer = Layer.effectDiscard(
               Effect.provideService(Location.Service, location),
               Effect.provideService(ModelsDev.Service, modelsDev),
               Effect.provideService(Npm.Service, npm),
+              Effect.provideService(Policy.Service, policy),
               Effect.provideService(EventV2.Service, events),
               Effect.provideService(FSUtil.Service, fs),
               Effect.provideService(FileSystem.Service, filesystem),
@@ -142,6 +146,7 @@ export const node = makeLocationNode({
     Location.node,
     ModelsDev.node,
     Npm.node,
+    Policy.node,
     EventV2.node,
     FSUtil.node,
     FileSystem.node,

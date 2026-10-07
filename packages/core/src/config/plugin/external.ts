@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "url"
 import { Config } from "../../config"
 import { FSUtil } from "../../fs-util"
 import { Location } from "../../location"
+import { Policy } from "../../policy"
 import { Npm } from "../../npm"
 import { define } from "../../plugin/internal"
 import { PluginPromise } from "../../plugin/promise"
@@ -36,6 +37,7 @@ export const Plugin = define({
     const fs = yield* FSUtil.Service
     const location = yield* Location.Service
     const npm = yield* Npm.Service
+    const policy = yield* Policy.Service
     yield* Effect.gen(function* () {
       const configured: { package: string; options?: Record<string, any> }[] = []
 
@@ -71,6 +73,12 @@ export const Plugin = define({
       }
 
       for (const ref of configured) {
+        // Check before installing or importing: module initialization can have side effects.
+        const packageName =
+          !path.isAbsolute(ref.package) && ref.package.lastIndexOf("@") > 0
+            ? ref.package.slice(0, ref.package.lastIndexOf("@"))
+            : ref.package
+        if ((yield* policy.evaluate("integration.use", `plugin:${packageName}`, "allow")) === "deny") continue
         yield* Effect.gen(function* () {
           const entrypoint = path.isAbsolute(ref.package)
             ? pathToFileURL(ref.package).href

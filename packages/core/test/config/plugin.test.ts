@@ -9,6 +9,7 @@ import { Location } from "@opencode-ai/core/location"
 import { Npm } from "@opencode-ai/core/npm"
 import { PluginV2 } from "@opencode-ai/core/plugin"
 import { PluginHost } from "@opencode-ai/core/plugin/host"
+import { Policy } from "@opencode-ai/core/policy"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "../plugin/fixture"
@@ -17,6 +18,52 @@ const it = testEffect(PluginTestLayer)
 const decode = Schema.decodeUnknownSync(Config.Info)
 
 describe("ConfigExternalPlugin", () => {
+  it.live("blocks a plugin before importing its module, including local paths containing @", () =>
+    Effect.gen(function* () {
+      const plugins = yield* PluginV2.Service
+      const agents = yield* AgentV2.Service
+      const location = yield* Location.Service
+      const policy = yield* Policy.Service
+      const host = yield* PluginHost.make(plugins)
+      const blocked = path.join(location.directory, "blocked@plugin.ts")
+      const marker = path.join(location.directory, "imported.txt")
+      yield* Effect.promise(() =>
+        Bun.write(
+          blocked,
+          `await Bun.write(${JSON.stringify(marker)}, "loaded"); export default { id: "blocked", setup() {} }`,
+        ),
+      )
+      yield* policy.load([
+        new Policy.Info({ action: "integration.use", resource: `plugin:${blocked}`, effect: "deny" }),
+      ])
+      yield* ConfigExternalPlugin.Plugin.effect(host).pipe(
+        Effect.provideService(
+          Config.Service,
+          Config.Service.of({
+            entries: () =>
+              Effect.succeed([
+                new Config.Document({
+                  type: "document",
+                  path: path.join(import.meta.dir, "opencode.json"),
+                  info: decode({
+                    plugins: [
+                      blocked,
+                      {
+                        package: "../plugin/fixtures/config-promise-plugin.ts",
+                        options: { description: "After blocked plugin" },
+                      },
+                    ],
+                  }),
+                }),
+              ]),
+          }),
+        ),
+      )
+      expect(yield* waitForAgent(agents, "configured")).toMatchObject({ description: "After blocked plugin" })
+      expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
+    }),
+  )
+
   it.live("resolves and loads a configured Promise plugin with options", () =>
     Effect.gen(function* () {
       const plugins = yield* PluginV2.Service

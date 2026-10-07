@@ -73,6 +73,28 @@ const triggerSystemTransform = Effect.fn("PluginTriggerTest.triggerSystemTransfo
 })
 
 describe("plugin.trigger", () => {
+  it.instance("does not import a local plugin denied by an integration policy", () =>
+    Effect.gen(function* () {
+      const instance = yield* TestInstance
+      const file = path.join(instance.directory, "plugin.ts")
+      const marker = path.join(instance.directory, "imported.txt")
+      yield* Effect.promise(() =>
+        Bun.write(file, `await Bun.write(${JSON.stringify(marker)}, "loaded"); export default async () => ({})`),
+      )
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(instance.directory, "opencode.json"),
+          JSON.stringify({
+            plugin: [pathToFileURL(file).href],
+            experimental: { policies: [{ action: "integration.use", resource: `plugin:${file}`, effect: "deny" }] },
+          }),
+        ),
+      )
+      expect(yield* triggerSystemTransform()).toEqual([])
+      expect(yield* Effect.promise(() => Bun.file(marker).exists())).toBe(false)
+    }),
+  )
+
   it.instance("runs synchronous hooks without crashing", () =>
     withProject(
       [

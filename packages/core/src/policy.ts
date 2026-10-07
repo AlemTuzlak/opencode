@@ -34,11 +34,7 @@ const layer = Layer.effect(
       }),
       hasStatements: () => statements.length > 0,
       evaluate: EffectRuntime.fn("Policy.evaluate")(function* (action, resource, fallback) {
-        return (
-          statements.findLast(
-            (statement) => Wildcard.match(action, statement.action) && Wildcard.match(resource, statement.resource),
-          )?.effect ?? fallback
-        )
+        return decision(statements, action, resource, fallback)
       }),
     })
   }),
@@ -47,3 +43,12 @@ const layer = Layer.effect(
 export const locationLayer = layer
 
 export const node = makeLocationNode({ service: Service, layer, deps: [Location.node] })
+
+/** Shared statement ordering for the location runtime and the legacy configuration runtime. */
+export function decision(statements: ReadonlyArray<Info>, action: string, resource: string, fallback: Effect): Effect {
+  return (
+    statements.findLast(
+      (statement) => Wildcard.match(action, statement.action) && Wildcard.match(resource, statement.resource),
+    )?.effect ?? fallback
+  )
+}
