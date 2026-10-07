@@ -1,27 +1,16 @@
-import { getFilename, parsePathLineSuffix } from "@opencode/util/path"
+import { parsePathLineSuffix } from "@opencode/util/path"
 import type { Files, LineRange } from "../sdk"
-import { resolveArtifactPath } from "./artifact"
 
 export type ParsedFileLink = {
+  /** The normalized path: absolute, or relative with any leading `../` kept. */
   readonly path: string
-  readonly strippedPath: string
-  readonly segments: readonly string[]
-  readonly basename: string
   readonly selection?: LineRange
 }
 
-type ResolveWorkspaceOptions = {
-  readonly rootName?: string
-  readonly activePath?: string
-}
-
-export type WorkspaceLinkResolution =
-  | { readonly kind: "match"; readonly path: string }
-  | { readonly kind: "ambiguous"; readonly query: string }
-  | { readonly kind: "directory"; readonly query: string }
-  | { readonly kind: "none" }
-
-const docStemPattern = /^(?:readme|license|changelog|copying|authors|notice)$/i
+/** What a relative path names in the workspace: one file, or several to pick from. */
+export type FileLinkTarget =
+  | { readonly kind: "file"; readonly path: string }
+  | { readonly kind: "picker"; readonly query: string }
 
 /**
  * Extracts a normalized file path and optional 1-based line range from a markdown link or inline-code token.
@@ -31,18 +20,65 @@ export function parseFileLink(href: string): ParsedFileLink {
   const raw = href.trim().replaceAll("\\", "/")
   const isFileUrl = /^file:\/\//i.test(raw)
   const extracted = extractLineSelection(raw, isFileUrl)
-  const clean = normalizeRelativeSegments(extracted.path, isFileUrl)
-  const strippedPath = clean.replace(/^(?:\.\.(?:\/|$))+/, "")
-  const segments = strippedPath.split("/").filter(Boolean)
-  const basename = segments.at(-1) ?? ""
 
-  return {
-    path: clean,
-    strippedPath,
-    segments,
-    basename,
-    selection: extracted.selection,
-  }
+  return { path: normalizeRelativeSegments(extracted.path, isFileUrl), selection: extracted.selection }
+}
+
+export function isAbsoluteLink(path: string) {
+  return /^[a-z]:\//i.test(path) || path.startsWith("/")
+}
+
+/**
+ * The workspace files a relative path names: the literal path when it exists, else every file whose path ends with
+ * it. One file opens; several open the picker.
+ */
+export async function findFileLink(input: {
+  readonly files: Pick<Files, "search">
+  readonly path: string
+  readonly signal: AbortSignal
+}): Promise<FileLinkTarget | undefined> {
+  const query = input.path.replace(/^(?:\.\.\/)+/, "")
+
+  if (!query) return
+
+  const wanted = query.toLowerCase()
+  const results = await input.files.search(query, { limit: 200, signal: input.signal }).catch(() => [])
+
+  const matches = [...new Set(results)].filter((file) => {
+    const candidate = file.toLowerCase()
+
+    return candidate === wanted || candidate.endsWith(`/${wanted}`)
+  })
+
+  const literal = matches.find((file) => file.toLowerCase() === wanted)
+
+  if (literal) return { kind: "file", path: literal }
+
+  if (matches.length === 1 && matches[0]) return { kind: "file", path: matches[0] }
+
+  if (matches.length > 1) return { kind: "picker", query }
+}
+
+/**
+ * Whether a path named in a message opens something, without reading any file. Absolute paths list their directory;
+ * relative paths ask the search index, then list the literal path's directory for files the index skips (ignored
+ * files such as `.env`).
+ */
+export async function checkFileLinkExists(input: {
+  readonly files: Pick<Files, "search" | "resolve" | "exists">
+  readonly href: string
+  readonly signal: AbortSignal
+}): Promise<boolean> {
+  const parsed = parseFileLink(input.href)
+
+  // `~` is the server's home folder, which the app cannot expand.
+  if (!parsed.path || parsed.path.startsWith("~")) return false
+
+  if (isAbsoluteLink(parsed.path)) return input.files.exists(input.files.resolve(parsed.path))
+
+  if (await findFileLink({ files: input.files, path: parsed.path, signal: input.signal })) return true
+
+  return !input.signal.aborted && input.files.exists(parsed.path)
 }
 
 function extractLineSelection(input: string, isFileUrl: boolean) {
@@ -108,516 +144,4 @@ function decodePathSafely(value: string): string {
   } catch {
     return value
   }
-}
-
-function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions) {
-  const primary = new Set<string>()
-  const scopedExact = new Set<string>()
-  const gitDiff = new Set<string>()
-  const climbedTail = new Set<string>()
-
-  const clean = (value: string | undefined) =>
-    value?.replaceAll("\\", "/").replace(/^\.\//, "").replace(/^\/+/, "").replace(/\/+$/, "")
-
-  if (options?.activePath && (path === ".." || path.startsWith("../"))) {
-    const activeDir = directoryOf(options.activePath.replaceAll("\\", "/"))
-    const resolved = activeDir ? clean(resolveArtifactPath(activeDir, path)) : undefined
-
-    if (resolved) primary.add(resolved)
-  }
-
-  const literal = !(path === ".." || path.startsWith("../")) ? clean(path) : undefined
-
-  if (path === ".." || path.startsWith("../")) {
-    const tail = clean(path.replace(/^(?:\.\.(?:\/|$))+/, ""))
-
-    if (tail) climbedTail.add(tail)
-  } else if (literal) {
-    primary.add(literal)
-
-    const rootName = options?.rootName?.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
-
-    if (rootName && literal.toLowerCase().startsWith(`${rootName.toLowerCase()}/`)) {
-      const withoutRoot = clean(literal.slice(rootName.length + 1))
-
-      if (withoutRoot) primary.add(withoutRoot)
-    }
-
-    const scoped = literal.match(/^@[^/]+\/([^/]+)\/(.+)$/)
-
-    if (scoped) {
-      scopedExact.add(`packages/${scoped[1]}/${scoped[2]}`)
-      scopedExact.add(`${scoped[1]}/${scoped[2]}`)
-    }
-
-    if (/^[ab]\/.+/.test(literal)) {
-      const withoutGitPrefix = clean(literal.slice(2))
-
-      if (withoutGitPrefix) gitDiff.add(withoutGitPrefix)
-    }
-  }
-
-  return {
-    literal,
-    primary: [...primary],
-    scopedExact: [...scopedExact],
-    gitDiff: [...gitDiff],
-    climbedTail: [...climbedTail],
-  }
-}
-
-/**
- * Ranks workspace file candidates deterministically across 4 tiers:
- * 1. Exact workspace path match (or expanded monorepo/active-tab relative variant)
- * 2. Segment-boundary suffix match (`session/timeline/interaction.ts` -> `packages/app/src/session/timeline/interaction.ts`)
- * 3. Package-anchored segment subsequence (`packages/session-ui/markdown.tsx` -> `packages/session-ui/src/components/markdown.tsx`)
- * 4. Unique bare basename match (`tool-renderer.tsx`); duplicate basenames return `ambiguous`.
- *
- * Within a tier, a candidate only auto-opens when its score leads the runner-up by at least 15 points
- * (for example an extra matched segment `+25`, a top-level package anchor `+20`, or an exact case match `+16`).
- * Depth penalties are capped at `10` (`2` per extra directory level) so path depth alone never breaks a tie.
- */
-function scoreParsed(
-  parsed: ParsedFileLink,
-  candidates: readonly string[],
-  options?: ResolveWorkspaceOptions,
-): WorkspaceLinkResolution {
-  const variants = expandWorkspaceVariants(parsed.path, options)
-  const normalizedCandidates = [...new Set(candidates.map((item) => item.replaceAll("\\", "/").replace(/\/+$/, "")))]
-
-  if (!parsed.basename) {
-    return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
-  }
-
-  const queryBase = parsed.basename.toLowerCase()
-  // `.js` names `.ts` sources only in import paths; a bare `Node.js` is a product name, not `node.ts`.
-  const tsStem = parsed.segments.length > 1 ? stripJsImportExtension(queryBase) : undefined
-  const isDocStem = !queryBase.includes(".") && docStemPattern.test(queryBase)
-
-  const matchingPool = normalizedCandidates.filter((file) => {
-    const base = basenameOf(file).toLowerCase()
-
-    if (base === queryBase) return true
-
-    if (tsStem && isTsAliasMatch(base, tsStem)) return true
-
-    return isDocStem && isDocStemMatch(base, queryBase)
-  })
-
-  if (matchingPool.length === 0) {
-    return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
-  }
-
-  const climbs = parsed.path === ".." || parsed.path.startsWith("../")
-
-  const scored = matchingPool
-    .flatMap((file) => {
-      const tier = scoreTier(file, variants, parsed.segments, climbs)
-
-      if (!tier) return []
-
-      const fileBase = basenameOf(file)
-      const exactExtBonus = fileBase.toLowerCase() === queryBase ? 8 : 0
-      const caseBonus = fileBase === parsed.basename ? 16 : 0
-
-      return [
-        {
-          path: file,
-          tier: tier.tier,
-          score: tier.baseScore + exactExtBonus + caseBonus,
-        },
-      ]
-    })
-    .toSorted(
-      (a, b) => a.tier - b.tier || b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path),
-    )
-
-  const top = scored[0]
-
-  if (!top) {
-    return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
-  }
-
-  const second = scored[1]
-
-  if (
-    top.tier === 2 &&
-    scored.some((item) => item.tier === 3 && matchesTopLevelPackage(parsed.segments[0], item.path))
-  ) {
-    return {
-      kind: "ambiguous",
-      query: ambiguousPickerQuery(parsed, top.path),
-    }
-  }
-
-  if (!second || top.tier < second.tier) {
-    return { kind: "match", path: top.path }
-  }
-
-  if (top.tier === 1 && top.score > second.score) {
-    return { kind: "match", path: top.path }
-  }
-
-  if (top.score - second.score >= 15) {
-    return { kind: "match", path: top.path }
-  }
-
-  return {
-    kind: "ambiguous",
-    query: ambiguousPickerQuery(parsed, top.path),
-  }
-}
-
-export async function searchWorkspaceCandidates(input: {
-  readonly files: Pick<Files, "root" | "search">
-  readonly parsed: ParsedFileLink
-  readonly activePath?: string
-  readonly signal: AbortSignal
-}): Promise<WorkspaceLinkResolution> {
-  if (!input.parsed.basename) return { kind: "none" }
-
-  const root = input.files.root.replaceAll("\\", "/").replace(/\/+$/, "")
-  const rootName = getFilename(root)
-
-  const options: ResolveWorkspaceOptions = {
-    rootName,
-    activePath: input.activePath,
-  }
-
-  const search = (query: string, limit: number) =>
-    input.files.search(query, { limit, signal: input.signal }).catch(() => [])
-
-  const primaryQuery = normalizeSearchQuery(input.parsed.strippedPath, rootName)
-  const primary = await search(primaryQuery, 100)
-
-  if (input.signal.aborted) return { kind: "none" }
-
-  if (primary.length > 0) {
-    const scored = scoreParsed(input.parsed, primary, options)
-
-    if (scored.kind !== "none") return scored
-  }
-
-  const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
-
-  if (stem && stem !== primaryQuery && primaryQuery.includes("/")) {
-    const secondary = await search(stem, 100)
-
-    if (input.signal.aborted) return { kind: "none" }
-
-    if (secondary.length > 0) {
-      return scoreParsed(input.parsed, secondary, options)
-    }
-  }
-
-  return { kind: "none" }
-}
-
-function normalizeSearchQuery(strippedPath: string, rootName: string | undefined): string {
-  const withoutScope = strippedPath.startsWith("@")
-    ? strippedPath.replace(/^@[^/]+\//, "") || strippedPath
-    : strippedPath
-
-  if (rootName && withoutScope.toLowerCase().startsWith(`${rootName.toLowerCase()}/`)) {
-    const trimmed = withoutScope.slice(rootName.length + 1)
-
-    if (trimmed) return trimmed
-  }
-
-  if (withoutScope.split("/").filter(Boolean).length >= 3 && /^[ab]\//i.test(withoutScope)) {
-    return withoutScope.slice(2)
-  }
-
-  return withoutScope
-}
-
-function matchesTopLevelPackage(firstQuerySegment: string | undefined, filePath: string): boolean {
-  if (!firstQuerySegment) return false
-  const segments = filePath.split("/").filter(Boolean)
-
-  return (
-    segments.length >= 2 &&
-    (segments[0] === "packages" || segments[0] === "apps" || segments[0] === "crates") &&
-    segments[1]?.toLowerCase() === firstQuerySegment.toLowerCase()
-  )
-}
-
-function ambiguousPickerQuery(parsed: ParsedFileLink, topPath: string): string {
-  const topBase = basenameOf(topPath)
-
-  const raw = parsed.strippedPath.startsWith("@")
-    ? parsed.strippedPath.replace(/^@[^/]+\//, "") || parsed.strippedPath
-    : /^[ab]\/.+/.test(parsed.strippedPath)
-      ? parsed.strippedPath.slice(2)
-      : parsed.strippedPath
-
-  if (topBase.toLowerCase() !== parsed.basename.toLowerCase()) {
-    const dir = directoryOf(raw)
-
-    return dir ? `${dir}/${topBase}` : topBase
-  }
-
-  return raw
-}
-
-function matchDirectoryCandidates(variants: readonly string[], candidates: readonly string[]): WorkspaceLinkResolution {
-  const matched = variants.find((variant) => {
-    const prefix = `${variant.toLowerCase()}/`
-
-    return candidates.some((file) => file.toLowerCase().startsWith(prefix))
-  })
-
-  return matched ? { kind: "directory", query: `${matched}/` } : { kind: "none" }
-}
-
-function scoreTier(
-  file: string,
-  variants: ReturnType<typeof expandWorkspaceVariants>,
-  querySegments: readonly string[],
-  climbs: boolean,
-): { tier: 1 | 2 | 3 | 4; baseScore: number } | undefined {
-  const fileLower = file.toLowerCase()
-  const fileSegments = file.split("/").filter(Boolean)
-
-  if (variants.literal && file === variants.literal) {
-    return { tier: 1, baseScore: 1010 }
-  }
-
-  if (variants.literal && fileLower === variants.literal.toLowerCase()) {
-    return { tier: 1, baseScore: 1005 }
-  }
-
-  const exactVariants = [...variants.primary, ...variants.scopedExact]
-
-  if (exactVariants.some((variant) => fileLower === variant.toLowerCase())) {
-    return { tier: 1, baseScore: 1000 }
-  }
-
-  if (
-    exactVariants.some((variant) => {
-      const segments = variant.split("/").filter(Boolean)
-
-      return segments.length === fileSegments.length && hasTrailingSegmentMatch(segments, fileSegments)
-    })
-  ) {
-    return { tier: 1, baseScore: 990 }
-  }
-
-  const primarySuffix = variants.primary.find((variant) => {
-    const segments = variant.split("/").filter(Boolean)
-
-    return segments.length > 1 && hasTrailingSegmentMatch(segments, fileSegments)
-  })
-
-  if (primarySuffix) {
-    const variantSegments = primarySuffix.split("/").filter(Boolean)
-    const extraDepth = Math.min(10, Math.max(0, fileSegments.length - variantSegments.length) * 2)
-
-    const pkgAnchored =
-      fileSegments.length === variantSegments.length + 1 &&
-      (fileSegments[0] === "packages" || fileSegments[0] === "apps" || fileSegments[0] === "crates")
-        ? 20
-        : 0
-
-    return {
-      tier: 2,
-      baseScore: 800 + variantSegments.length * 25 + pkgAnchored - extraDepth,
-    }
-  }
-
-  const climbedSuffix = variants.climbedTail.find((tail) => {
-    const tailSegments = tail.split("/").filter(Boolean)
-
-    return (
-      tailSegments.length > 1 &&
-      fileSegments.length > tailSegments.length &&
-      hasTrailingSegmentMatch(tailSegments, fileSegments)
-    )
-  })
-
-  if (climbedSuffix) {
-    const tailSegments = climbedSuffix.split("/").filter(Boolean)
-    const extraDepth = Math.min(10, (fileSegments.length - tailSegments.length) * 2)
-
-    return {
-      tier: 2,
-      baseScore: 800 + tailSegments.length * 25 - extraDepth,
-    }
-  }
-
-  const gitExact = variants.gitDiff.find((variant) => fileLower === variant.toLowerCase())
-
-  if (gitExact) {
-    return { tier: 2, baseScore: 780 }
-  }
-
-  const gitSuffix = variants.gitDiff.find((variant) => {
-    const segments = variant.split("/").filter(Boolean)
-
-    return segments.length > 1 && hasTrailingSegmentMatch(segments, fileSegments)
-  })
-
-  if (gitSuffix) {
-    const gitSegments = gitSuffix.split("/").filter(Boolean)
-    const extraDepth = Math.min(10, Math.max(0, fileSegments.length - gitSegments.length) * 2)
-
-    return {
-      tier: 2,
-      baseScore: 740 + gitSegments.length * 20 - extraDepth,
-    }
-  }
-
-  const effectiveSegments =
-    querySegments.length > 1 && /^[ab]$/i.test(querySegments[0] ?? "") ? querySegments.slice(1) : querySegments
-
-  if (!climbs && effectiveSegments.length > 1 && isAnchoredSubsequence(effectiveSegments, fileSegments)) {
-    const trailing = countTrailingMatches(effectiveSegments, fileSegments)
-    const extraDepth = Math.min(10, Math.max(0, fileSegments.length - effectiveSegments.length) * 2)
-
-    return {
-      tier: 3,
-      baseScore: 600 + effectiveSegments.length * 20 + trailing * 15 - extraDepth,
-    }
-  }
-
-  if (!climbs && querySegments.length === 1) {
-    const depthPenalty = Math.min(10, fileSegments.length * 2)
-
-    return {
-      tier: 4,
-      baseScore: 400 - depthPenalty,
-    }
-  }
-
-  return undefined
-}
-
-/**
- * Requires the query's first directory segment to anchor at the candidate's root or package root
- * (e.g. `packages/session-ui/markdown.tsx` or `session-ui/markdown.tsx`), preventing generic `src/utils.ts`
- * from matching an unrelated `packages/x/src/deep/nested/utils.ts`.
- */
-function isAnchoredSubsequence(query: readonly string[], target: readonly string[]): boolean {
-  const firstQuery = query[0]?.toLowerCase()
-  const firstTarget = target[0]?.toLowerCase()
-  const secondTarget = target[1]?.toLowerCase()
-
-  const anchoredAtStart =
-    firstQuery !== undefined &&
-    firstQuery !== "src" &&
-    (firstQuery === firstTarget ||
-      ((firstTarget === "packages" || firstTarget === "apps" || firstTarget === "crates") &&
-        firstQuery === secondTarget))
-
-  if (!anchoredAtStart) return false
-
-  const matched = target.reduce((qi, segment) => {
-    const current = query[qi]
-
-    if (current !== undefined && segmentMatch(current, segment, qi === query.length - 1)) {
-      return qi + 1
-    }
-
-    return qi
-  }, 0)
-
-  return matched === query.length
-}
-
-function countTrailingMatches(query: readonly string[], target: readonly string[]): number {
-  const limit = Math.min(query.length, target.length)
-
-  const mismatchIndex = Array.from({ length: limit }, (_, index) => index + 1).findIndex((offset) => {
-    const q = query[query.length - offset]
-    const t = target[target.length - offset]
-
-    return q === undefined || t === undefined || !segmentMatch(q, t, offset === 1)
-  })
-
-  return mismatchIndex === -1 ? limit : mismatchIndex
-}
-
-function hasTrailingSegmentMatch(query: readonly string[], target: readonly string[]): boolean {
-  return target.length >= query.length && countTrailingMatches(query, target) === query.length
-}
-
-function segmentMatch(querySeg: string, targetSeg: string, isBasename: boolean): boolean {
-  const q = querySeg.toLowerCase()
-  const t = targetSeg.toLowerCase()
-
-  if (q === t) return true
-
-  if (!isBasename) return false
-  const stem = stripJsImportExtension(q)
-
-  if (stem && isTsAliasMatch(t, stem)) return true
-
-  return !q.includes(".") && docStemPattern.test(q) && isDocStemMatch(t, q)
-}
-
-function stripJsImportExtension(basename: string): string | undefined {
-  const match = basename.match(/^(.+)\.(?:js|jsx|mjs|cjs)$/i)
-
-  return match?.[1]
-}
-
-function isTsAliasMatch(candidateBasename: string, stem: string): boolean {
-  return (
-    candidateBasename === `${stem}.ts` ||
-    candidateBasename === `${stem}.tsx` ||
-    candidateBasename === `${stem}.mts` ||
-    candidateBasename === `${stem}.cts`
-  )
-}
-
-function isDocStemMatch(candidateBasename: string, stem: string): boolean {
-  return (
-    candidateBasename === `${stem}.md` ||
-    candidateBasename === `${stem}.mdx` ||
-    candidateBasename === `${stem}.txt` ||
-    candidateBasename === `${stem}.rst` ||
-    candidateBasename === `${stem}.adoc`
-  )
-}
-
-function basenameOf(path: string): string {
-  const index = path.lastIndexOf("/")
-
-  return index === -1 ? path : path.slice(index + 1)
-}
-
-function directoryOf(path: string): string {
-  const index = path.lastIndexOf("/")
-
-  return index === -1 ? "" : path.slice(0, index)
-}
-
-/**
- * Whether a path named in a message opens a file, without reading any file. Absolute paths list their directory;
- * other paths ask the workspace search index, then list the literal path's directory for files the index skips
- * (ignored files such as `.env`). Ambiguous names count: a click opens the picker on them.
- */
-export async function checkFileLinkExists(input: {
-  readonly files: Pick<Files, "root" | "search" | "resolve" | "exists">
-  readonly href: string
-  readonly signal: AbortSignal
-}): Promise<boolean> {
-  const parsed = parseFileLink(input.href)
-
-  // `~` is the server's home folder, which the app cannot expand.
-  if (!parsed.basename || parsed.path.startsWith("~")) return false
-
-  const absolute = /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/")
-  const root = input.files.root.replaceAll("\\", "/").replace(/\/+$/, "")
-  const direct = input.files.resolve(absolute ? parsed.path : (resolveArtifactPath(root, parsed.path) ?? parsed.path))
-
-  if (absolute) return input.files.exists(direct)
-
-  const outcome = await searchWorkspaceCandidates({ files: input.files, parsed, signal: input.signal })
-
-  if (input.signal.aborted) return false
-
-  if (outcome.kind === "match" || outcome.kind === "ambiguous") return true
-
-  return input.files.exists(direct)
 }

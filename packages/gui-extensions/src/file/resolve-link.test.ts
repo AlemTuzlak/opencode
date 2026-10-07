@@ -1,20 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { checkFileLinkExists, parseFileLink, searchWorkspaceCandidates } from "./resolve-link"
+import { checkFileLinkExists, findFileLink, parseFileLink, type FileLinkTarget } from "./resolve-link"
 
 const workspaceFiles = [
-  "packages/app/src/app.tsx",
+  "src/index.ts",
   "packages/app/src/index.ts",
   "packages/app/src/session/timeline/interaction.ts",
-  "packages/app/src/workspaces/files/model.tsx",
-  "packages/app/src/workspaces/files/path.ts",
   "packages/session-ui/src/index.ts",
   "packages/session-ui/src/components/markdown.tsx",
-  "packages/session-ui/src/components/markdown-inline-code-kind.ts",
-  "packages/session-ui/src/tools/tool-renderer.tsx",
-  "packages/gui-extensions/src/file/renderer.tsx",
-  "packages/gui-extensions/src/file/path.ts",
-  "packages/core/src/filesystem/search.ts",
-  "docs/README.md",
+  "packages/util/src/path.ts",
+  "packages/tui/src/util/path.ts",
 ]
 
 function fuzzyMatches(query: string, target: string) {
@@ -29,17 +23,11 @@ function fuzzyMatches(query: string, target: string) {
   return qi === q.length
 }
 
-function resolve(href: string, candidates: readonly string[], options?: { rootName?: string; activePath?: string }) {
-  return searchWorkspaceCandidates({
-    files: {
-      root: `/repo/${options?.rootName ?? "workspace"}`,
-      search: async (query) => candidates.filter((item) => fuzzyMatches(query, item)),
-    },
-    parsed: parseFileLink(href),
-    activePath: options?.activePath,
-    signal: new AbortController().signal,
-  })
+const files = {
+  search: async (query: string) => workspaceFiles.filter((item) => fuzzyMatches(query, item)),
 }
+
+const find = (path: string) => findFileLink({ files, path, signal: new AbortController().signal })
 
 describe("parseFileLink", () => {
   test.each([
@@ -77,284 +65,40 @@ describe("parseFileLink", () => {
   })
 })
 
-describe("searchWorkspaceCandidates", () => {
-  test("resolves exact paths, git diff prefixes, root folder prefixes, and scoped packages (Tier 1 & Tier 2)", async () => {
-    expect(await resolve("packages/app/src/app.tsx", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/app/src/app.tsx",
-    })
-    expect(await resolve("b/packages/app/src/app.tsx#L42", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/app/src/app.tsx",
-    })
-    expect(
-      await resolve("quiet-cactus/packages/app/src/app.tsx", workspaceFiles, { rootName: "quiet-cactus" }),
-    ).toEqual({
-      kind: "match",
-      path: "packages/app/src/app.tsx",
-    })
-    expect(await resolve("x/src/foo.ts", ["packages/x/src/foo.ts", "packages/y/x/src/foo.ts"])).toEqual({
-      kind: "match",
-      path: "packages/x/src/foo.ts",
-    })
-    expect(
-      await resolve("quiet-cactus/src/x.ts", ["src/x.ts", "quiet-cactus/src/x.ts"], {
-        rootName: "quiet-cactus",
-      }),
-    ).toEqual({
-      kind: "match",
-      path: "quiet-cactus/src/x.ts",
-    })
-    expect(await resolve("@opencode/session-ui/src/components/markdown.tsx", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/session-ui/src/components/markdown.tsx",
-    })
-    expect(await resolve("@opencode/core/src/index.ts", ["packages/stats/core/src/index.ts"])).toEqual({
-      kind: "none",
-    })
-    expect(
-      await resolve("@opencode/core/src/index.ts", ["packages/core/src/index.ts", "packages/stats/core/src/index.ts"]),
-    ).toEqual({
-      kind: "match",
-      path: "packages/core/src/index.ts",
-    })
-  })
-
-  test("enforces strict tier priority so Tier 1 exact matches always beat deep Tier 2 suffix matches", async () => {
-    const deep = "a/b/c/d/e/f/g/h/i.ts"
-    expect(await resolve(deep, [deep, `packages/x/${deep}`])).toEqual({
-      kind: "match",
-      path: deep,
-    })
-
-    const target = "packages/app/src/session/timeline/interaction.ts"
-    expect(
-      await resolve(target, [target, `fixtures/repo/${target}`], {
-        activePath: "fixtures/repo/packages/app/src/session/timeline/screen.ts",
-      }),
-    ).toEqual({
-      kind: "match",
-      path: target,
-    })
-  })
-
-  test("ranks literal a/src/index.ts suffix match above git-diff stripped src/index.ts", async () => {
-    expect(await resolve("a/src/index.ts", ["packages/a/src/index.ts", "src/index.ts"])).toEqual({
-      kind: "match",
-      path: "packages/a/src/index.ts",
-    })
-  })
-
-  test("does not match unrelated external or node_modules prefixes via reverse suffix", async () => {
-    expect(await resolve("node_modules/pkg/docs/README.md", ["docs/README.md"])).toEqual({
-      kind: "none",
-    })
-    expect(await resolve("../sibling/src/index.ts", ["src/index.ts"])).toEqual({
-      kind: "none",
-    })
-  })
-
-  test("resolves ../ relative paths against activePath or suffix-matches deeper workspace files", async () => {
-    expect(
-      await resolve("../timeline/interaction.ts:74", workspaceFiles, {
-        activePath: "packages/app/src/session/screen.tsx",
-      }),
-    ).toEqual({
-      kind: "match",
-      path: "packages/app/src/session/timeline/interaction.ts",
-    })
-    expect(await resolve("../timeline/interaction.ts:74", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/app/src/session/timeline/interaction.ts",
-    })
-  })
-
-  test("resolves partial suffix paths, TypeScript .js import aliases, and extensionless doc stems", async () => {
-    expect(await resolve("session/timeline/interaction.ts:74", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/app/src/session/timeline/interaction.ts",
-    })
-    expect(await resolve("src/components/markdown.tsx", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/session-ui/src/components/markdown.tsx",
-    })
-    expect(await resolve("src/filesystem/search.js", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/core/src/filesystem/search.ts",
-    })
-    expect(await resolve("src/foo.js", ["src/foo.ts", "packages/x/src/foo.ts"])).toEqual({
-      kind: "match",
-      path: "src/foo.ts",
-    })
-    expect(await resolve("src/foo.js", ["scripts/foo.js", "src/foo.ts"])).toEqual({
-      kind: "match",
-      path: "src/foo.ts",
-    })
-    expect(await resolve("src/foo.js", ["dist/foo.js", "packages/x/src/foo.ts"])).toEqual({
-      kind: "match",
-      path: "packages/x/src/foo.ts",
-    })
-    expect(await resolve("foo.js", ["src/foo.ts"])).toEqual({ kind: "none" })
-    expect(await resolve("Node.js", ["packages/core/src/node.ts"])).toEqual({ kind: "none" })
-    expect(await resolve("README", ["README.md", "docs/README.md"])).toEqual({
-      kind: "match",
-      path: "README.md",
-    })
-    expect(await resolve("README", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "docs/README.md",
-    })
-  })
-
-  test("marks equal-suffix matches at different depths as ambiguous unless case disambiguates them", async () => {
-    expect(await resolve("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"])).toEqual({
-      kind: "ambiguous",
-      query: "src/index.ts",
-    })
-    expect(
-      await resolve("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"], {
-        activePath: "packages/foo/bar/src/main.ts",
-      }),
-    ).toEqual({
-      kind: "ambiguous",
-      query: "src/index.ts",
-    })
-    expect(await resolve("app.tsx", ["packages/a/App.tsx", "packages/b/app.tsx"])).toEqual({
-      kind: "match",
-      path: "packages/b/app.tsx",
-    })
-  })
-
-  test("resolves package-anchored directory segment subsequences when intermediate folders like src/ are omitted (Tier 3)", async () => {
-    expect(await resolve("packages/session-ui/markdown.tsx", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/session-ui/src/components/markdown.tsx",
-    })
-    expect(await resolve("session-ui/markdown.tsx", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/session-ui/src/components/markdown.tsx",
-    })
-    expect(await resolve("util/path.ts", ["packages/tui/src/util/path.ts", "packages/util/src/path.ts"])).toEqual({
-      kind: "ambiguous",
-      query: "util/path.ts",
-    })
-    expect(await resolve("src/utils.ts", ["packages/x/src/deep/nested/utils.ts"])).toEqual({
-      kind: "none",
-    })
-  })
-
-  test("resolves unique bare filenames and marks duplicate basenames as ambiguous regardless of active tab (Tier 4)", async () => {
-    expect(await resolve("tool-renderer.tsx", workspaceFiles)).toEqual({
-      kind: "match",
-      path: "packages/session-ui/src/tools/tool-renderer.tsx",
-    })
-    expect(
-      await resolve("path.ts", workspaceFiles, {
-        activePath: "packages/app/src/session/timeline/interaction.ts",
-      }),
-    ).toEqual({
-      kind: "ambiguous",
-      query: "path.ts",
-    })
-    expect(
-      await resolve("path.ts", workspaceFiles, {
-        activePath: "packages/gui-extensions/src/file/renderer.tsx",
-      }),
-    ).toEqual({
-      kind: "ambiguous",
-      query: "path.ts",
-    })
-  })
-
-  test("marks tied duplicate basenames as ambiguous and normalizes .js alias picker queries", async () => {
-    expect(await resolve("index.ts", workspaceFiles)).toEqual({
-      kind: "ambiguous",
-      query: "index.ts",
-    })
-    expect(await resolve("lib/util.js", ["packages/a/lib/util.ts", "packages/b/lib/util.ts"])).toEqual({
-      kind: "ambiguous",
-      query: "lib/util.ts",
-    })
-    expect(await resolve("util.ts", ["p/util.ts", "p/q/r/s/t/u/v/w/x/util.ts"])).toEqual({
-      kind: "ambiguous",
-      query: "util.ts",
-    })
-  })
-
-  test("returns directory resolution when the link targets a folder with files", async () => {
-    expect(await resolve("packages/session-ui/src/components", workspaceFiles)).toEqual({
-      kind: "directory",
-      query: "packages/session-ui/src/components/",
-    })
-  })
-
-  test("returns none when no workspace file matches", async () => {
-    expect(await resolve("nonexistent-widget.tsx", workspaceFiles)).toEqual({
-      kind: "none",
-    })
-  })
-
-  test("falls back across git-diff prefixes and .js import stems, and handles aborted signals", async () => {
-    const queries: string[] = []
-
-    const files = {
-      root: "/repo/quiet-cactus",
-      search: async (query: string, options?: { signal?: AbortSignal }) => {
-        if (options?.signal?.aborted) throw new Error("Aborted")
-        queries.push(query)
-
-        if (query === "search") return ["packages/core/src/filesystem/search.ts"]
-
-        return []
-      },
-    }
-
-    const controller = new AbortController()
-
-    const resolved = await searchWorkspaceCandidates({
-      files,
-      parsed: parseFileLink("src/filesystem/search.js"),
-      signal: controller.signal,
-    })
-
-    expect(resolved).toEqual({
-      kind: "match",
-      path: "packages/core/src/filesystem/search.ts",
-    })
-    expect(queries).toEqual(["src/filesystem/search.js", "search"])
-
-    controller.abort()
-
-    const aborted = await searchWorkspaceCandidates({
-      files,
-      parsed: parseFileLink("src/filesystem/search.js"),
-      signal: controller.signal,
-    })
-
-    expect(aborted).toEqual({ kind: "none" })
+describe("findFileLink", () => {
+  test.each<[string, FileLinkTarget | undefined]>([
+    ["src/index.ts", { kind: "file", path: "src/index.ts" }],
+    ["session/timeline/interaction.ts", { kind: "file", path: "packages/app/src/session/timeline/interaction.ts" }],
+    ["../timeline/interaction.ts", { kind: "file", path: "packages/app/src/session/timeline/interaction.ts" }],
+    ["markdown.tsx", { kind: "file", path: "packages/session-ui/src/components/markdown.tsx" }],
+    ["index.ts", { kind: "picker", query: "index.ts" }],
+    ["util/path.ts", { kind: "file", path: "packages/tui/src/util/path.ts" }],
+    ["console.log", undefined],
+    ["session-ui/markdown.tsx", undefined],
+  ])("%s", async (path, expected) => {
+    expect(await find(path)).toEqual(expected)
   })
 })
 
 describe("checkFileLinkExists", () => {
-  test("confirms indexed, ignored, and absolute files without reading them, and rejects unknown names", async () => {
+  test("confirms indexed, ignored, and absolute files without reading them", async () => {
     // `.env` is ignored, so the search index skips it; only a directory listing finds it.
     const onDisk = new Set(["C:/tmp/out.html", ".env"])
-
-    const files = {
-      root: "/repo/workspace",
-      search: async (query: string) => workspaceFiles.filter((item) => fuzzyMatches(query, item)),
-      exists: async (path: string) => onDisk.has(path),
-      resolve: (path: string) => path.replace(/^\/repo\/workspace\//, ""),
-    }
-
     const signal = new AbortController().signal
 
-    expect(await checkFileLinkExists({ files, href: "session/timeline/interaction.ts:74", signal })).toBe(true)
-    expect(await checkFileLinkExists({ files, href: "index.ts", signal })).toBe(true)
-    expect(await checkFileLinkExists({ files, href: ".env", signal })).toBe(true)
-    expect(await checkFileLinkExists({ files, href: "C:/tmp/out.html", signal })).toBe(true)
-    expect(await checkFileLinkExists({ files, href: "C:/tmp/missing.html", signal })).toBe(false)
-    expect(await checkFileLinkExists({ files, href: "~/README.md", signal })).toBe(false)
-    expect(await checkFileLinkExists({ files, href: "nonexistent-widget.tsx", signal })).toBe(false)
+    const check = (href: string) =>
+      checkFileLinkExists({
+        files: { ...files, exists: async (path: string) => onDisk.has(path), resolve: (path: string) => path },
+        href,
+        signal,
+      })
+
+    expect(await check("interaction.ts:74")).toBe(true)
+    expect(await check("index.ts")).toBe(true)
+    expect(await check(".env")).toBe(true)
+    expect(await check("C:/tmp/out.html")).toBe(true)
+    expect(await check("C:/tmp/missing.html")).toBe(false)
+    expect(await check("~/README.md")).toBe(false)
+    expect(await check("console.log")).toBe(false)
   })
 })

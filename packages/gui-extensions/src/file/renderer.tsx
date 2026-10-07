@@ -654,7 +654,7 @@ const setup: Setup<typeof File> = (ctx) => {
       }
 
       void (async () => {
-        const { parseFileLink, searchWorkspaceCandidates } = await import("./resolve-link")
+        const { findFileLink, isAbsoluteLink, parseFileLink } = await import("./resolve-link")
 
         if (!stillCurrent()) return
 
@@ -663,50 +663,26 @@ const setup: Setup<typeof File> = (ctx) => {
 
         if (!direct) return
 
-        const explicitAbsolute =
-          /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/") || /^file:/i.test(link.href.trim())
-
-        if (explicitAbsolute || link.base !== undefined || link.background) {
+        // Absolute paths, links written relative to a document, and agent previews name one exact file.
+        if (isAbsoluteLink(parsed.path) || link.base !== undefined || link.background) {
           await openResolvedFile(direct, parsed.selection)
 
           return
         }
 
-        if (await openResolvedFile(direct, parsed.selection, true)) return
+        const target = await findFileLink({ files, path: parsed.path, signal })
+        const latest = stillCurrent()
 
-        const activeSession = stillCurrent()
+        if (!latest) return
 
-        if (!activeSession) return
-
-        const storedTabs = layout.stored(activeSession).filter(isFileTab)
-        const activeId = focused.get(screen)
-        const activePath = activeId && storedTabs.includes(activeId) ? fileTabPath(files, activeId) : undefined
-
-        const outcome = await searchWorkspaceCandidates({
-          files,
-          parsed,
-          activePath,
-          signal,
-        })
-
-        const latestSession = stillCurrent()
-
-        if (!latestSession) return
-
-        if (outcome.kind === "ambiguous" || outcome.kind === "directory") {
-          openPicker(latestSession, outcome.query)
+        if (target?.kind === "picker") {
+          openPicker(latest, target.query)
 
           return
         }
 
-        if (outcome.kind === "match") {
-          await openResolvedFile(outcome.path, parsed.selection)
-
-          return
-        }
-
-        const fallbackQuery = parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "") || parsed.strippedPath
-        openPicker(latestSession, fallbackQuery)
+        // With no match, the literal path still covers files the search index skips, such as an ignored `.env`.
+        await openResolvedFile(target?.path ?? direct, parsed.selection, !target)
       })().catch(() => {
         const fallbackParsed = parsePathLineSuffix(link.href.replaceAll("\\", "/"))
         const fallback = resolve(files, fallbackParsed.path, link.base)
