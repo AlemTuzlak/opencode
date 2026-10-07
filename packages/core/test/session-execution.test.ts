@@ -22,9 +22,10 @@ import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunner } from "@opencode/core/session/runner/index"
 import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
-import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Scope } from "effect"
+import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Option, Scope, Stream } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
+import { StorageFault } from "./lib/storage-fault"
 
 const it = testEffect(
   AppNodeBuilder.build(
@@ -1229,6 +1230,95 @@ describe("SessionExecution interrupt continuation", () => {
 
       // The queued prompt is next in line; the compaction behind it waits its turn.
       expect(drains).toEqual([])
+    }),
+  )
+})
+
+const disk = StorageFault.make()
+const itFullDisk = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([Database.node, Bus.node, SessionStore.node, SessionInbox.node, Job.node, KV.node, Session.node]),
+    [Database.node.replace(disk.node)],
+  ),
+)
+
+describe("SessionExecution on a full disk", () => {
+  itFullDisk.effect("a turn that dies on a full disk records its failure once storage recovers", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const bus = yield* Bus.Service
+      const store = yield* SessionStore.Service
+      const sessionID = Session.ID.make("ses_disk_full_turn")
+      yield* seedSessions(database, [sessionID])
+      const failed = yield* bus
+        .subscribe(SessionEvent.Execution.Failed)
+        .pipe(Stream.runHead, Effect.forkScoped({ startImmediately: true }))
+
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(scope, () =>
+        Effect.gen(function* () {
+          yield* disk.fill
+          // Any write inside the turn now fails, as the runner's step publications did.
+          yield* database.db
+            .update(SessionTable)
+            .set({ title: "unsaved" })
+            .where(eq(SessionTable.id, sessionID))
+            .run()
+            .pipe(Effect.orDie)
+        }),
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      const turn = yield* execution.resume(sessionID).pipe(Effect.exit, Effect.forkScoped)
+
+      // Longer than one write's retry window. The outcome cannot be recorded yet, so the
+      // Session stays busy instead of silently dropping its terminal and its claim.
+      yield* StorageFault.elapse(120_000)
+      expect(yield* execution.isActive(sessionID)).toBe(true)
+      expect((yield* claims(database))[sessionID]).toBe(true)
+
+      yield* disk.free
+      yield* StorageFault.elapse(15_000)
+      expect(Exit.isFailure(yield* Fiber.join(turn))).toBe(true)
+      yield* execution.awaitIdle(sessionID)
+      expect((yield* claims(database))[sessionID]).toBe(false)
+      expect((yield* store.get(sessionID))?.outcome).toBe("failed")
+      const event = yield* Fiber.join(failed)
+      expect(Option.getOrUndefined(event)?.data.error).toEqual({
+        type: "storage",
+        message: "Couldn’t save the session: database or disk is full",
+      })
+    }),
+  )
+
+  itFullDisk.effect("shutdown during a full disk stops waiting and keeps the claim for restart", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const sessionID = Session.ID.make("ses_disk_full_shutdown")
+      yield* seedSessions(database, [sessionID])
+      const scope = yield* Scope.make()
+      const context = yield* buildExecution(scope, () =>
+        disk.fill.pipe(
+          Effect.andThen(
+            database.db
+              .update(SessionTable)
+              .set({ title: "unsaved" })
+              .where(eq(SessionTable.id, sessionID))
+              .run()
+              .pipe(Effect.orDie),
+          ),
+        ),
+      )
+      const execution = Context.get(context, SessionExecution.Service)
+      yield* execution.resume(sessionID).pipe(Effect.exit, Effect.forkScoped)
+      yield* StorageFault.elapse(60_000)
+      expect(yield* execution.isActive(sessionID)).toBe(true)
+
+      const closing = yield* Scope.close(scope, Exit.void).pipe(Effect.forkScoped)
+      yield* StorageFault.elapse(1_000)
+      expect(closing.pollUnsafe()).toBeDefined()
+      yield* disk.free
+      expect((yield* claims(database))[sessionID]).toBe(true)
     }),
   )
 })
