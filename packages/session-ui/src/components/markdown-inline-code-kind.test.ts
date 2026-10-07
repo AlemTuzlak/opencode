@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { inlineCodeKind } from "./markdown-inline-code-kind"
+import { inlineCodeKind, stripInlineCodeLocation } from "./markdown-inline-code-kind"
 
 describe("inlineCodeKind", () => {
-  test("leaves code expressions as normal inline code", () => {
+  test("leaves code expressions and non-file slash tokens as normal inline code", () => {
     expect(
       inlineCodeKind(`case "form.created": ... input.setStore("form", form.sessionID, [form]) / splice/insert`),
     ).toBeUndefined()
@@ -11,11 +11,34 @@ describe("inlineCodeKind", () => {
     expect(inlineCodeKind(`@opencode/app <StatusPopover />)`)).toBeUndefined()
     expect(inlineCodeKind(`sync.data.session`)).toBeUndefined()
     expect(inlineCodeKind(`window.api`)).toBeUndefined()
+    expect(inlineCodeKind(`props.id`)).toBeUndefined()
+    expect(inlineCodeKind(`event.target`)).toBeUndefined()
+    expect(inlineCodeKind(`item.tool`)).toBeUndefined()
+    expect(inlineCodeKind(`req.url`)).toBeUndefined()
+    expect(inlineCodeKind(`process.env`)).toBeUndefined()
+    expect(inlineCodeKind(`console.log`)).toBeUndefined()
+    expect(inlineCodeKind(`Object.is`)).toBeUndefined()
+    expect(inlineCodeKind(`obj.x`)).toBeUndefined()
+    expect(inlineCodeKind(`workspace`)).toBeUndefined()
+    expect(inlineCodeKind(`root`)).toBeUndefined()
+    expect(inlineCodeKind(`build`)).toBeUndefined()
+    expect(inlineCodeKind(`true/false`)).toBeUndefined()
+    expect(inlineCodeKind(`read/write`)).toBeUndefined()
+    expect(inlineCodeKind(`application/json`)).toBeUndefined()
+    expect(inlineCodeKind(`origin/v2`)).toBeUndefined()
+    expect(inlineCodeKind(`@opencode/app`)).toBeUndefined()
+    expect(inlineCodeKind(`session/status`)).toBeUndefined()
+    expect(inlineCodeKind(`anthropic/claude-sonnet-4`)).toBeUndefined()
+    expect(inlineCodeKind(`packages/desktop-electron`)).toBeUndefined()
+    expect(inlineCodeKind(`CI/CD`)).toBeUndefined()
     expect(inlineCodeKind(`1.2`)).toBeUndefined()
   })
 
-  test("detects file and directory paths", () => {
+  test("detects file paths, anchored paths, and line-suffixed references", () => {
     expect(inlineCodeKind(`app.tsx`)).toBe("path")
+    expect(inlineCodeKind(`app.tsx:42`)).toBe("path")
+    expect(inlineCodeKind(`app.tsx:42:10`)).toBe("path")
+    expect(inlineCodeKind(`app.tsx#L42-L55`)).toBe("path")
     expect(inlineCodeKind(`vite.config.mjs`)).toBe("path")
     expect(inlineCodeKind(`eslint.config.cjs`)).toBe("path")
     expect(inlineCodeKind(`app.d.ts`)).toBe("path")
@@ -24,15 +47,17 @@ describe("inlineCodeKind", () => {
     expect(inlineCodeKind(`Dockerfile`)).toBe("path")
     expect(inlineCodeKind(`Dockerfile.dev`)).toBe("path")
     expect(inlineCodeKind(`.gitignore`)).toBe("path")
+    expect(inlineCodeKind(`.env.local`)).toBe("path")
     expect(inlineCodeKind(`Cargo.lock`)).toBe("path")
     expect(inlineCodeKind(`go.sum`)).toBe("path")
     expect(inlineCodeKind(`bun.lockb`)).toBe("path")
     expect(inlineCodeKind(`terraform.tfvars`)).toBe("path")
     expect(inlineCodeKind(`pnpm-lock.yaml`)).toBe("path")
-    expect(inlineCodeKind(`packages/desktop-electron`)).toBe("path")
+    expect(inlineCodeKind(`src/file.ts`)).toBe("path")
+    expect(inlineCodeKind(`src/main.c:12`)).toBe("path")
+    expect(inlineCodeKind(`@opencode/session-ui/src/components/markdown.tsx`)).toBe("path")
     expect(inlineCodeKind(`~/.config/opencode`)).toBe("path")
-    expect(inlineCodeKind(`@opencode/app`)).toBe("path")
-    expect(inlineCodeKind(`session/status`)).toBe("path")
+    expect(inlineCodeKind(`./scripts/release`)).toBe("path")
   })
 
   test("detects urls", () => {
@@ -40,5 +65,13 @@ describe("inlineCodeKind", () => {
     expect(inlineCodeKind(`http://localhost:4444`)).toBe("url")
     expect(inlineCodeKind(`file:///tmp/opencode`)).toBeUndefined()
     expect(inlineCodeKind(`ftp://opencode.ai/docs`)).toBeUndefined()
+  })
+
+  test("strips line and range suffixes without corrupting drive roots", () => {
+    expect(stripInlineCodeLocation(`src/app.tsx:42`)).toBe(`src/app.tsx`)
+    expect(stripInlineCodeLocation(`src/app.tsx:42:8`)).toBe(`src/app.tsx`)
+    expect(stripInlineCodeLocation(`src/app.tsx:42-50`)).toBe(`src/app.tsx`)
+    expect(stripInlineCodeLocation(`src/app.tsx#L42-L50`)).toBe(`src/app.tsx`)
+    expect(stripInlineCodeLocation(`C:/tmp/file.ts:10`)).toBe(`C:/tmp/file.ts`)
   })
 })

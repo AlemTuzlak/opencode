@@ -39,6 +39,7 @@ import { FileTree, OpenInApp } from "./contract"
 import type File from "./index"
 import { FileVisual } from "./label"
 import { fileTabId, fileTabPath, isFileTab, workspaceFileUrl } from "./path"
+import { parseFileLink, scoreWorkspaceCandidates, type ParsedFileLink } from "./resolve-link"
 import tabStyles from "./tabs.css?inline"
 
 const OPEN = "open"
@@ -98,6 +99,38 @@ const setup: Setup<typeof File> = (ctx) => {
 
     layout.open(key(screen.file, path), session, options)
     void screen.file.sync(path)
+  }
+
+  const applySelection = (session: MountedSession, files: Files, path: string, selection: LineRange | undefined) => {
+    if (!selection) return
+
+    files.selection.set(path, selection)
+    layout.scroll.set(session, key(files, path), {
+      x: 0,
+      y: Math.max(0, (selection.start - 4) * 24),
+    })
+  }
+
+  const openPicker = (session: MountedSession, query?: string, options?: OpenOptions) => {
+    layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
+
+    if (query !== undefined) {
+      shared.filter.query = query
+      shared.filter.set?.(query)
+    }
+
+    queueMicrotask(() => {
+      if (shared.filter.query !== undefined && shared.filter.set) {
+        shared.filter.set(shared.filter.query)
+        shared.filter.query = undefined
+      }
+
+      const element = shared.filter.element
+
+      if (element?.isConnected) return element.focus()
+
+      shared.filter.pending = true
+    })
   }
 
   const shared: FileShared = {
@@ -293,14 +326,7 @@ const setup: Setup<typeof File> = (ctx) => {
 
       if (!session) return
 
-      layout.open(`file:${OPEN}`, session, { tab: "preview" })
-      queueMicrotask(() => {
-        const element = shared.filter.element
-
-        if (element?.isConnected) return element.focus()
-
-        shared.filter.pending = true
-      })
+      openPicker(session)
     },
   })
 
@@ -409,8 +435,7 @@ const setup: Setup<typeof File> = (ctx) => {
    */
   const resolve = (files: Files, href: string, base?: string) => {
     const root = files.root.replaceAll("\\", "/").replace(/\/+$/, "")
-    // Agents cite locations as path:line or path:line:col; the file is what opens.
-    const value = href.replaceAll("\\", "/").replace(/:\d+(?::\d+)?$/, "")
+    const value = parseFileLink(href).path
 
     if (/^[a-z]:\//i.test(value) || value.startsWith("/")) return files.resolve(value)
 
@@ -424,23 +449,119 @@ const setup: Setup<typeof File> = (ctx) => {
     return files.resolve(resolveArtifactPath(dir, value) ?? value)
   }
 
+  const resolvedLinks = new Map<string, Promise<string | null | undefined>>()
+  const searchIndexed = new Map<string, Promise<boolean>>()
+
+  const hasSearchIndex = (files: Files) => {
+    const root = files.root
+    const existing = searchIndexed.get(root)
+
+    if (existing) return existing
+
+    const probe = files
+      .search("e", { limit: 1 })
+      .then((first) => (first.length > 0 ? true : files.search("a", { limit: 1 }).then((second) => second.length > 0)))
+
+    searchIndexed.set(root, probe)
+
+    return probe
+  }
+
+  const searchWorkspace = async (
+    files: Files,
+    parsed: ParsedFileLink,
+    base: string | undefined,
+    screen: SessionScreen,
+    session: MountedSession,
+  ) => {
+    const root = files.root.replaceAll("\\", "/").replace(/\/+$/, "")
+    const rootName = getFilename(root)
+    const activeId = focused.get(screen)
+    const activePath = activeId && isFileTab(activeId) ? fileTabPath(files, activeId) : undefined
+
+    const openPaths = layout
+      .stored(session)
+      .filter(isFileTab)
+      .map((id) => fileTabPath(files, id))
+
+    const options = { base, rootName, activePath, openPaths }
+    const primary = await files.search(parsed.strippedPath, { limit: 60 })
+
+    if (primary.length > 0) {
+      const scored = scoreWorkspaceCandidates(parsed.path, primary, options)
+
+      if (scored.kind !== "none") return scored
+    }
+
+    const stem = parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
+    const fallbackQuery = stem !== parsed.basename ? stem : parsed.basename
+
+    if (fallbackQuery && fallbackQuery !== parsed.strippedPath) {
+      const secondary = await files.search(fallbackQuery, { limit: 100 })
+
+      if (secondary.length > 0) {
+        return scoreWorkspaceCandidates(parsed.path, secondary, options)
+      }
+    }
+
+    return { kind: "none" as const }
+  }
+
   // Opens files the agent references as side panel tabs, inside or outside the workspace, or as
   // a browser tab for HTML when the desktop can load the file directly.
   ctx.add(LinkHandler, {
     match: () => true,
+    resolve(link) {
+      const session = sessions.current()
+      const screen = ctx.screen.current()
+      const files = screen?.file
+
+      if (!session || !screen || !files || (link.session && link.session.key !== session.key)) return undefined
+
+      const parsed = parseFileLink(link.href)
+
+      if (!parsed.path) return null
+
+      const direct = resolve(files, parsed.path, link.base)
+
+      if (!direct) return null
+
+      if (files.absolute(direct) || files.get(direct)?.loaded) return direct
+
+      const cacheKey = `${files.root}\n${link.base ?? ""}\n${parsed.path}`
+      const cached = resolvedLinks.get(cacheKey)
+
+      if (cached) return cached
+
+      const job = searchWorkspace(files, parsed, link.base, screen, session).then(async (outcome) => {
+        if (outcome.kind === "match") return outcome.path
+
+        if (outcome.kind === "ambiguous" || outcome.kind === "directory") return outcome.query
+
+        return (await hasSearchIndex(files)) ? null : undefined
+      })
+
+      resolvedLinks.set(cacheKey, job)
+
+      return job
+    },
     open(link) {
       const session = sessions.current()
-      const files = ctx.screen.current()?.file
+      const screen = ctx.screen.current()
+      const files = screen?.file
 
-      if (!session || !files || (link.session && link.session.key !== session.key)) return
+      if (!session || !screen || !files || (link.session && link.session.key !== session.key)) return
+
+      const parsed = parseFileLink(link.href)
 
       // A known workspace file (the palette, a file comment) opens at once with every file listed.
       if (link.exact || link.origin === "file") {
-        const path = files.resolve(link.href)
+        const path = files.resolve(parsed.path)
 
         if (!path) return
 
         batch(() => {
+          applySelection(session, files, path, parsed.selection)
           open(session, path, { background: link.background })
           shared.tree.setTab("all")
         })
@@ -448,30 +569,51 @@ const setup: Setup<typeof File> = (ctx) => {
         return
       }
 
-      const path = resolve(files, link.href, link.base)
+      const direct = resolve(files, parsed.path, link.base)
 
-      if (!path) return
+      if (!direct) return
 
-      // The browser pane shows HTML it can load. While it is pending or off, the file opens as a tab instead.
-      const pane = ctx.uses.browser()
+      const openResolvedFile = (targetPath: string) => {
+        // The browser pane shows HTML it can load. While it is pending or off, the file opens as a tab instead.
+        const pane = ctx.uses.browser()
 
-      if (artifactKind(path) === "html" && pane.status === "active" && pane.value.canOpen(session, path)) {
-        pane.value.open(session, workspaceFileUrl(files.root, path))
+        if (artifactKind(targetPath) === "html" && pane.status === "active" && pane.value.canOpen(session, targetPath)) {
+          pane.value.open(session, workspaceFileUrl(files.root, targetPath))
+
+          return
+        }
+
+        // Confirm the file exists before a tab appears for it, suppressing 404 toasts on guessed tokens.
+        // Always reread: V2 publishes no workspace file change events, so a cached copy can be stale.
+        void files.sync(targetPath, { force: true, silent: true }).then(() => {
+          if (ctx.signal.aborted || !files.get(targetPath)?.loaded) return
+
+          batch(() => {
+            applySelection(session, files, targetPath, parsed.selection)
+            layout.open(key(files, targetPath), session, { background: link.background })
+
+            // A tapped link switches the narrow-screen view; the side region still opens for when the window is wide.
+            if (layout.narrow() && !layout.side.opened(session)) layout.side.toggle(session)
+          })
+        })
+      }
+
+      if (files.absolute(direct)) {
+        openResolvedFile(direct)
 
         return
       }
 
-      // Inline paths are guessed from text, so confirm the file exists before a tab appears for it.
-      // Always reread: V2 publishes no workspace file change events, so a cached copy can be stale.
-      void files.sync(path, { force: true }).then(() => {
-        if (!files.get(path)?.loaded) return
+      void searchWorkspace(files, parsed, link.base, screen, session).then((outcome) => {
+        if (ctx.signal.aborted) return
 
-        batch(() => {
-          layout.open(key(files, path), session, { background: link.background })
+        if (outcome.kind === "ambiguous" || outcome.kind === "directory") {
+          openPicker(session, outcome.query, { background: link.background })
 
-          // A tapped link switches the narrow-screen view; the side region still opens for when the window is wide.
-          if (layout.narrow() && !layout.side.opened(session)) layout.side.toggle(session)
-        })
+          return
+        }
+
+        openResolvedFile(outcome.kind === "match" ? outcome.path : direct)
       })
     },
   })

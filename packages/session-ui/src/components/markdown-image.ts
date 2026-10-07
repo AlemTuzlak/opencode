@@ -20,16 +20,26 @@ export function localImagePath(source: string) {
   return decodePath(value)
 }
 
+const lineHash = /^(#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?)$/i
+
 /**
  * A link is local when it names a file on disk instead of a web resource. Fragment-only and
- * query-only hrefs stay in-page; mailto and other schemes stay external.
+ * query-only hrefs stay in-page; mailto and other schemes stay external. Line-range fragments
+ * such as `#L42` and `#L42-L58` stay attached so the file viewer can select the target lines.
  */
 export function localLinkPath(href: string) {
   const value = href.trim()
 
   if (!value || value.startsWith("#") || value.startsWith("?")) return
 
-  return localImagePath(value.split(/[?#]/, 1)[0] ?? "")
+  const hashIndex = value.indexOf("#")
+  const hash = hashIndex === -1 ? "" : value.slice(hashIndex)
+  const suffix = lineHash.test(hash) ? hash : ""
+  const base = localImagePath(value.split(/[?#]/, 1)[0] ?? "")
+
+  if (!base) return
+
+  return `${base}${suffix}`
 }
 
 function decodePath(value: string) {

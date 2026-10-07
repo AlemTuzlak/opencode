@@ -161,6 +161,15 @@
       unicode-bidi: isolate;
     }
 
+    [data-highlight="file"][data-clickable] {
+      cursor: pointer;
+
+      &:hover {
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+    }
+
     [data-slot="user-message-mention-prefix"] {
       color: var(--user-message-mention-prefix-color);
       transition: color 200ms ease;

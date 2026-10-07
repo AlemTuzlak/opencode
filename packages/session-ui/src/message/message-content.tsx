@@ -4,6 +4,7 @@ import { useData } from "../context"
 import { useDialog } from "@opencode/ui/context/dialog"
 import { useI18n } from "@opencode/ui/context/i18n"
 import { Markdown } from "../components/markdown"
+import { useMarkdown } from "../context/markdown"
 import { ImagePreview } from "@opencode/ui/image-preview"
 import { getFilename } from "@opencode/util/path"
 import { AttachmentCard } from "./attachment-card"
@@ -216,6 +217,7 @@ function PacedMarkdown(props: { text: string; cacheKey: string; streaming: boole
 
 function UserMessageComments(props: { comments: SessionUserComment[]; bounded: boolean }) {
   const i18n = useI18n()
+  const markdown = useMarkdown()
   const [state, setState] = createStore({ expanded: false })
   const comments = createMemo(() => (props.bounded && !state.expanded ? props.comments.slice(0, 5) : props.comments))
 
@@ -229,6 +231,16 @@ function UserMessageComments(props: { comments: SessionUserComment[]; bounded: b
               comment.type === "note"
                 ? { type: "note", label: comment.label, icon: comment.icon }
                 : { type: "file", path: comment.path, selection: comment.selection }
+            }
+            onClick={
+              comment.type !== "note" && markdown?.openLocalFile
+                ? () =>
+                    markdown.openLocalFile?.(
+                      comment.selection
+                        ? `${comment.path}#L${comment.selection.startLine}-L${comment.selection.endLine}`
+                        : comment.path,
+                    )
+                : undefined
             }
             title={comment.comment}
             tooltip
@@ -258,6 +270,7 @@ export function CurrentUserMessageDisplay(props: {
   const data = useData()
   const dialog = useDialog()
   const i18n = useI18n()
+  const markdown = useMarkdown()
   const [state, setState] = createStore({ copied: false, reverting: false, updating: false })
   const pending = createMemo(() => !!props.actions?.pending?.steer(props.message.id))
   const attachments = createMemo(() => (props.message.files ?? []).filter(attached))
@@ -309,7 +322,12 @@ export function CurrentUserMessageDisplay(props: {
       <div data-slot="user-message-attachments">
         <For each={references()}>
           {(file) => (
-            <AttachmentCard title={file.name} hover={file.path}>
+            <AttachmentCard
+              title={file.name}
+              hover={file.path}
+              clickable={!!markdown?.openLocalFile}
+              onClick={() => markdown?.openLocalFile?.(file.path)}
+            >
               {typeLabel(file.name, file.mime, i18n.t("ui.common.file"))}
             </AttachmentCard>
           )}
@@ -452,10 +470,21 @@ function CurrentHighlightedText(props: {
   files: PromptFileAttachment[]
   agents: PromptAgentAttachment[]
 }) {
+  const markdown = useMarkdown()
+
   const segments = createMemo(() => {
     const references = [
       ...props.files.flatMap((file) =>
-        file.mention ? [{ start: file.mention.start, end: file.mention.end, type: "file" as const }] : [],
+        file.mention
+          ? [
+              {
+                start: file.mention.start,
+                end: file.mention.end,
+                type: "file" as const,
+                path: file.source.type === "uri" ? file.source.uri : file.name,
+              },
+            ]
+          : [],
       ),
       ...props.agents.flatMap((agent) =>
         agent.mention ? [{ start: agent.mention.start, end: agent.mention.end, type: "agent" as const }] : [],
@@ -468,7 +497,11 @@ function CurrentHighlightedText(props: {
       if (reference.start < last) return
 
       if (reference.start > last) result.push({ text: props.text.slice(last, reference.start) })
-      result.push({ text: props.text.slice(reference.start, reference.end), type: reference.type })
+      result.push({
+        text: props.text.slice(reference.start, reference.end),
+        type: reference.type,
+        path: "path" in reference ? reference.path : undefined,
+      })
       last = reference.end
     })
 
@@ -479,19 +512,34 @@ function CurrentHighlightedText(props: {
 
   return (
     <For each={segments()}>
-      {(segment) => (
-        <span data-highlight={segment.type}>
-          <Show when={segment.type && segment.text.startsWith("@")} fallback={segment.text}>
-            <span data-slot="user-message-mention-prefix">@</span>
-            {segment.text.slice(1)}
-          </Show>
-        </span>
-      )}
+      {(segment) => {
+        const target = () =>
+          segment.type === "file"
+            ? (segment.path ?? (segment.text.startsWith("@") ? segment.text.slice(1) : segment.text))
+            : undefined
+
+        return (
+          <span
+            data-highlight={segment.type}
+            data-clickable={target() && markdown?.openLocalFile ? "true" : undefined}
+            onClick={() => {
+              const path = target()
+
+              if (path) markdown?.openLocalFile?.(path)
+            }}
+          >
+            <Show when={segment.type && segment.text.startsWith("@")} fallback={segment.text}>
+              <span data-slot="user-message-mention-prefix">@</span>
+              {segment.text.slice(1)}
+            </Show>
+          </span>
+        )
+      }}
     </For>
   )
 }
 
-type HighlightSegment = { text: string; type?: "file" | "agent" }
+type HighlightSegment = { text: string; type?: "file" | "agent"; path?: string }
 
 /** A compaction the server admitted but has not started, drawn as the divider a started one opens with. */
 export function SessionCompactionQueued() {

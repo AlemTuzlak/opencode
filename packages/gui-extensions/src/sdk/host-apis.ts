@@ -199,6 +199,8 @@ export interface Files {
     options?: {
       /** Reloads even when the content has loaded. Defaults to false. */
       readonly force?: boolean
+      /** Suppresses the error toast when the file cannot be read, e.g. while probing a guessed path. Defaults to false. */
+      readonly silent?: boolean
     },
   ): Promise<void>
   /**
@@ -1023,6 +1025,13 @@ export interface Links {
    * @returns False when no handler matches.
    */
   open(link: Link): boolean
+  /**
+   * Resolves a local link target through the highest-priority matching LinkHandler that implements `resolve`: its
+   * canonical path when found, null when the target does not exist, or undefined when no handler resolves it.
+   *
+   * @param link - The link to resolve.
+   */
+  resolve(link: Link): Promise<string | null | undefined>
 }
 
 /** One dialog `Dialogs.open` opened. */

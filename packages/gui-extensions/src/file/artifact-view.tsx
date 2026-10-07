@@ -403,6 +403,7 @@ function ArtifactMarkdown(props: { session: MountedSession; path: string; text: 
     <MarkdownProvider
       readImage={(src, signal) => parent?.readImage?.(resolve(src), signal) ?? Promise.resolve(undefined)}
       openLocalFile={(href) => void links.open({ href, base: dir(), session: props.session })}
+      resolveLocalFile={(href) => links.resolve({ href, base: dir(), session: props.session })}
     >
       <div class="mx-auto w-full max-w-3xl px-8 py-6">
         <Markdown text={props.text} cacheKey={props.cacheKey} class="select-text" />

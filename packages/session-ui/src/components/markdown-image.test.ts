@@ -4,6 +4,8 @@ import { localImagePath, localLinkPath } from "./markdown-image"
 test.each([
   ["./out/report.html", "./out/report.html"],
   ["docs/guide.md#usage", "docs/guide.md"],
+  ["src/app.ts#L42", "src/app.ts#L42"],
+  ["src/app.ts#L42-L58", "src/app.ts#L42-L58"],
   ["file:///tmp/demo.mp4", "/tmp/demo.mp4"],
   ["file:///C:/tmp/demo%20clip.mp4", "C:/tmp/demo clip.mp4"],
   ["src/app.ts?plain=1", "src/app.ts"],

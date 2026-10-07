@@ -520,6 +520,13 @@ export interface LinkHandler {
    * @param link - A link `match` accepted.
    */
   open(link: Link): void
+  /**
+   * Resolves a link target to its canonical path before the user clicks it, or null when the target does not exist.
+   * Omit it when the handler only resolves on open.
+   *
+   * @param link - A link `match` accepted.
+   */
+  resolve?(link: Link): Promise<string | null | undefined> | string | null | undefined
 }
 
 /** A titlebar pill, or the dev channel badge as a toggle. */
