@@ -15,7 +15,7 @@ import { ResizeHandle } from "@opencode/ui/resize-handle"
 import { Slot, type BackgroundTask, type MountedSession, type SessionScreen } from "@opencode/gui-extensions/sdk"
 import { MessageTimeline } from "@/session/timeline/message-timeline"
 import { ComposerDropzone } from "@/composer/dropzone"
-import { useSettings } from "@/settings/model"
+import { useSettings, type PermissionMode } from "@/settings/model"
 import { useServer } from "@/runtime/server/current"
 import type { SessionModel } from "@/session/model"
 import { SESSION_PANEL_WIDTH_MIN } from "@/session/session-panel-width"
@@ -226,6 +226,7 @@ function SessionScreenContent(props: {
   props.bindBackground(composer.requests.background.tasks)
   useUsageExceededDialogs()
   const server = useServer()
+
   const workspaceMove = createMemo(() => {
     const info = session.data.info()
     const project = info ? server.ctx.projects.detailsForSession(info) : undefined
@@ -233,6 +234,19 @@ function SessionScreenContent(props: {
     if (!info || !project) return
 
     return { project, sessionID: info.id }
+  })
+
+  // Subagents share their root session's mode, so the footer reads and writes the root's.
+  const permission = createMemo(() => {
+    const id = session.identity.sessionID()
+
+    if (!id) return
+    const root = session.shared.data.session.root(id)
+
+    return {
+      mode: settings.permissions.mode(server.ctx.sdk.scope, root),
+      onChange: (mode: PermissionMode) => settings.permissions.setMode(server.ctx.sdk.scope, root, mode),
+    }
   })
 
   const sessionErrorFallback = (cause: unknown, reset: () => void) => {
@@ -377,7 +391,10 @@ function SessionScreenContent(props: {
                 move={workspaceMove()}
                 directory={session.workspace.directory()}
                 local={!session.workspace.current()}
-                branch={session.shared.data.location.vcs.info({ directory: session.workspace.directory() })?.branch.current}
+                branch={
+                  session.shared.data.location.vcs.info({ directory: session.workspace.directory() })?.branch.current
+                }
+                permission={permission()}
               />
             }
           />

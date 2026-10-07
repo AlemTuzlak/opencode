@@ -4,15 +4,19 @@ import { Show } from "solid-js"
 import { useLanguage } from "@/runtime/i18n/language"
 import type { Project } from "@/runtime/server/types"
 import { workspaceDirectories } from "@/workspaces/paths"
+import type { PermissionMode } from "@/settings/model"
 import { SessionWorkspaceMenu } from "./workspace-menu"
+import { SessionPermissionMenu } from "./permission-menu"
 
 export function SessionWorkspaceFooter(props: {
   directory: string
   local: boolean
   branch?: string
   move?: { project: Project; sessionID: string }
+  permission?: { mode: PermissionMode; onChange: (mode: PermissionMode) => void }
 }) {
   const language = useLanguage()
+
   const label = () => (
     <>
       <Icon
@@ -25,7 +29,9 @@ export function SessionWorkspaceFooter(props: {
           ? language.t("session.new.workspace.triggerLocal")
           : getFilename(
               (props.move &&
-                workspaceDirectories(props.move.project).find((directory) => containsDirectory(directory, props.directory))) ??
+                workspaceDirectories(props.move.project).find((directory) =>
+                  containsDirectory(directory, props.directory),
+                )) ??
                 props.directory,
             )}
       </span>
@@ -34,10 +40,8 @@ export function SessionWorkspaceFooter(props: {
 
   return (
     <div data-component="session-workspace-footer" class="w-full shrink-0 rounded-b-xl bg-v2-background-bg-deep">
-      <div
-        class="flex h-9 w-full min-w-0 items-center gap-2 px-2.5 text-[12px] font-[440] leading-text-compact tracking-[-0.04px] text-v2-text-text-faint"
-      >
-        <div class="min-w-0 max-w-[203px]" title={props.directory}>
+      <div class="flex h-9 w-full min-w-0 items-center gap-2 px-2.5 text-[12px] font-[440] leading-text-compact tracking-[-0.04px] text-v2-text-text-faint">
+        <div class="min-w-[84px] max-w-[203px]" title={props.directory}>
           <Show when={props.move} fallback={<div class="flex h-6 min-w-0 items-center gap-1 px-1.5">{label()}</div>}>
             {(move) => (
               <SessionWorkspaceMenu
@@ -56,13 +60,20 @@ export function SessionWorkspaceFooter(props: {
         <Show when={props.branch}>
           {(branch) => (
             <div
-              class="flex h-5 min-w-0 max-w-[220px] items-center gap-1 rounded-full bg-v2-background-bg-layer-02 px-2"
+              class="flex h-5 min-w-0 max-w-[220px] shrink-[8] items-center gap-1 rounded-full bg-v2-background-bg-layer-02 px-2"
               title={branch()}
             >
               <Icon name="branch" size="small" class="shrink-0 text-v2-icon-icon-muted" />
               <span dir="auto" class="min-w-0 truncate">
                 {branch()}
               </span>
+            </div>
+          )}
+        </Show>
+        <Show when={props.permission}>
+          {(permission) => (
+            <div class="ms-auto flex min-w-[72px] justify-end">
+              <SessionPermissionMenu mode={permission().mode} onChange={permission().onChange} />
             </div>
           )}
         </Show>
