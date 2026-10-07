@@ -2,6 +2,7 @@ import { Pty } from "@opencode/core/pty"
 import { PtyProtocol } from "@opencode/core/pty/protocol"
 import { PtyTicket } from "@opencode/core/pty/ticket"
 import { Location } from "@opencode/core/location"
+import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { Effect, Queue } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { HttpApiBuilder, HttpApiSchema } from "effect/http-api"
@@ -14,7 +15,7 @@ import {
   PTY_CONNECT_TOKEN_HEADER,
   PTY_CONNECT_TOKEN_HEADER_VALUE,
 } from "@opencode/protocol/groups/pty"
-import { response } from "../location"
+import { locationErrors, requestRef, response } from "../location"
 import { PtyEnvironment } from "../pty-environment"
 import { type Outbound, runPtySocket } from "./pty-socket"
 
@@ -25,6 +26,7 @@ const ticketScope = Effect.gen(function* () {
 
 export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
   Effect.gen(function* () {
+    const locations = yield* LocationServiceMap.Service
     const tickets = yield* PtyTicket.Service
     const cors = yield* CorsConfig
     const environment = yield* PtyEnvironment.Service
@@ -142,74 +144,84 @@ export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
       .handleRaw(
         "pty.connect",
         Effect.fn("PtyHandler.connect")(function* (ctx) {
-          const pty = yield* Pty.Service
-          const exists = yield* pty.get(ctx.params.ptyID).pipe(
-            Effect.as(true),
-            Effect.catchTag("Pty.NotFoundError", () => Effect.succeed(false)),
-          )
-          if (!exists) return HttpServerResponse.empty({ status: 404 })
+          if (!isAllowedRequestOrigin(ctx.request.headers.origin, ctx.request.headers.host, cors))
+            return HttpServerResponse.empty({ status: 403 })
 
+          const ref = LocationServiceMap.canonical(requestRef(ctx.request))
           const url = new URL(ctx.request.url, "http://localhost")
           const ticket = url.searchParams.get(PTY_CONNECT_TICKET_QUERY)
-          if (ticket) {
-            const valid = isAllowedRequestOrigin(ctx.request.headers.origin, ctx.request.headers.host, cors)
-              ? yield* tickets.consume({ ticket, ptyID: ctx.params.ptyID, ...(yield* ticketScope) })
-              : false
-            if (!valid) return HttpServerResponse.empty({ status: 403 })
-          }
-          const parsedCursor = url.searchParams.get("cursor")
-          const cursorNumber = parsedCursor === null ? undefined : Number(parsedCursor)
-          const cursor =
-            cursorNumber !== undefined && Number.isSafeInteger(cursorNumber) && cursorNumber >= -1
-              ? cursorNumber
-              : undefined
+          if (
+            ticket &&
+            !(yield* tickets.consume({
+              ticket,
+              ptyID: ctx.params.ptyID,
+              directory: ref.directory,
+              workspaceID: ref.workspaceID,
+            }))
+          )
+            return HttpServerResponse.empty({ status: 403 })
 
-          const socket = yield* Effect.orDie(ctx.request.upgrade)
-          const closeAccepted = (event: Socket.CloseEvent) =>
-            Effect.gen(function* () {
-              const reader = yield* socket.reader
-              const writer = yield* socket.writer
-              yield* writer.write(event).pipe(Effect.catch(() => Effect.void))
-              while (true) yield* reader.pull
-            }).pipe(
-              Effect.timeout("1 second"),
-              Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void),
-              Effect.catch(() => Effect.void),
+          return yield* Effect.gen(function* () {
+            const pty = yield* Pty.Service
+            const exists = yield* pty.get(ctx.params.ptyID).pipe(
+              Effect.as(true),
+              Effect.catchTag("Pty.NotFoundError", () => Effect.succeed(false)),
             )
+            if (!exists) return HttpServerResponse.empty({ status: 404 })
+            const parsedCursor = url.searchParams.get("cursor")
+            const cursorNumber = parsedCursor === null ? undefined : Number(parsedCursor)
+            const cursor =
+              cursorNumber !== undefined && Number.isSafeInteger(cursorNumber) && cursorNumber >= -1
+                ? cursorNumber
+                : undefined
 
-          // TODO: Integrate graceful-shutdown socket tracking before clients migrate to this route.
-          const outbox = yield* Queue.unbounded<Outbound>()
-          const attachment = yield* pty
-            .attach(ctx.params.ptyID, {
-              cursor,
-              onData: (chunk) => Queue.offerUnsafe(outbox, chunk),
-              onEnd: () => Queue.offerUnsafe(outbox, new Socket.CloseEvent(1000)),
+            const socket = yield* Effect.orDie(ctx.request.upgrade)
+            const closeAccepted = (event: Socket.CloseEvent) =>
+              Effect.gen(function* () {
+                const reader = yield* socket.reader
+                const writer = yield* socket.writer
+                yield* writer.write(event).pipe(Effect.catch(() => Effect.void))
+                while (true) yield* reader.pull
+              }).pipe(
+                Effect.timeout("1 second"),
+                Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void),
+                Effect.catch(() => Effect.void),
+              )
+
+            // TODO: Integrate graceful-shutdown socket tracking before clients migrate to this route.
+            const outbox = yield* Queue.unbounded<Outbound>()
+            const attachment = yield* pty
+              .attach(ctx.params.ptyID, {
+                cursor,
+                onData: (chunk) => Queue.offerUnsafe(outbox, chunk),
+                onEnd: () => Queue.offerUnsafe(outbox, new Socket.CloseEvent(1000)),
+              })
+              .pipe(
+                Effect.catchTags({
+                  "Pty.NotFoundError": () =>
+                    closeAccepted(new Socket.CloseEvent(4404, "session not found")).pipe(Effect.as(undefined)),
+                  "Pty.ExitedError": () =>
+                    closeAccepted(new Socket.CloseEvent(4404, "session exited")).pipe(Effect.as(undefined)),
+                }),
+              )
+            if (!attachment) return HttpServerResponse.empty()
+
+            for (const chunk of PtyProtocol.chunks(attachment.replay)) Queue.offerUnsafe(outbox, chunk)
+            Queue.offerUnsafe(outbox, PtyProtocol.metaFrame(attachment.cursor))
+            attachment.activate()
+
+            yield* runPtySocket({
+              socket,
+              outbox,
+              onMessage: (message) =>
+                Effect.sync(() => {
+                  const decoded = PtyProtocol.decodeInput(message)
+                  if (decoded !== undefined) attachment.write(decoded)
+                }),
+              detach: attachment.detach,
             })
-            .pipe(
-              Effect.catchTags({
-                "Pty.NotFoundError": () =>
-                  closeAccepted(new Socket.CloseEvent(4404, "session not found")).pipe(Effect.as(undefined)),
-                "Pty.ExitedError": () =>
-                  closeAccepted(new Socket.CloseEvent(4404, "session exited")).pipe(Effect.as(undefined)),
-              }),
-            )
-          if (!attachment) return HttpServerResponse.empty()
-
-          for (const chunk of PtyProtocol.chunks(attachment.replay)) Queue.offerUnsafe(outbox, chunk)
-          Queue.offerUnsafe(outbox, PtyProtocol.metaFrame(attachment.cursor))
-          attachment.activate()
-
-          yield* runPtySocket({
-            socket,
-            outbox,
-            onMessage: (message) =>
-              Effect.sync(() => {
-                const decoded = PtyProtocol.decodeInput(message)
-                if (decoded !== undefined) attachment.write(decoded)
-              }),
-            detach: attachment.detach,
-          })
-          return HttpServerResponse.empty()
+            return HttpServerResponse.empty()
+          }).pipe(Effect.provide(locations.get(ref)), locationErrors)
         }),
       )
   }),
