@@ -176,18 +176,6 @@ export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
                 : undefined
 
             const socket = yield* Effect.orDie(ctx.request.upgrade)
-            const closeAccepted = (event: Socket.CloseEvent) =>
-              Effect.gen(function* () {
-                const reader = yield* socket.reader
-                const writer = yield* socket.writer
-                yield* writer.write(event).pipe(Effect.catch(() => Effect.void))
-                while (true) yield* reader.pull
-              }).pipe(
-                Effect.timeout("1 second"),
-                Effect.catchReason("SocketError", "SocketCloseError", () => Effect.void),
-                Effect.catch(() => Effect.void),
-              )
-
             // TODO: Integrate graceful-shutdown socket tracking before clients migrate to this route.
             const outbox = yield* Queue.unbounded<Outbound>()
             const attachment = yield* pty
@@ -199,26 +187,31 @@ export const PtyHandler = HttpApiBuilder.group(Api, "server.pty", (handlers) =>
               .pipe(
                 Effect.catchTags({
                   "Pty.NotFoundError": () =>
-                    closeAccepted(new Socket.CloseEvent(4404, "session not found")).pipe(Effect.as(undefined)),
+                    Effect.sync(() => {
+                      Queue.offerUnsafe(outbox, new Socket.CloseEvent(4404, "session not found"))
+                    }),
                   "Pty.ExitedError": () =>
-                    closeAccepted(new Socket.CloseEvent(4404, "session exited")).pipe(Effect.as(undefined)),
+                    Effect.sync(() => {
+                      Queue.offerUnsafe(outbox, new Socket.CloseEvent(4404, "session exited"))
+                    }),
                 }),
               )
-            if (!attachment) return HttpServerResponse.empty()
-
-            for (const chunk of PtyProtocol.chunks(attachment.replay)) Queue.offerUnsafe(outbox, chunk)
-            Queue.offerUnsafe(outbox, PtyProtocol.metaFrame(attachment.cursor))
-            attachment.activate()
+            if (attachment) {
+              for (const chunk of PtyProtocol.chunks(attachment.replay)) Queue.offerUnsafe(outbox, chunk)
+              Queue.offerUnsafe(outbox, PtyProtocol.metaFrame(attachment.cursor))
+              attachment.activate()
+            }
 
             yield* runPtySocket({
               socket,
               outbox,
               onMessage: (message) =>
                 Effect.sync(() => {
+                  if (!attachment) return
                   const decoded = PtyProtocol.decodeInput(message)
                   if (decoded !== undefined) attachment.write(decoded)
                 }),
-              detach: attachment.detach,
+              detach: () => attachment?.detach(),
             })
             return HttpServerResponse.empty()
           }).pipe(Effect.provide(locations.get(ref)), locationErrors)

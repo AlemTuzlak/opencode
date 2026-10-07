@@ -54,7 +54,7 @@ live(
           url.searchParams.set("ticket", token.data.ticket)
           const socket = new WebSocket(url)
           socket.binaryType = "arraybuffer"
-          const state = { output: "", frames: [] as string[], closed: false, code: 0, error: false }
+          const state = { output: "", frames: [] as string[], closed: false, code: 0, reason: "", error: false }
           socket.addEventListener("message", (event) => {
             if (typeof event.data === "string") {
               state.output += event.data
@@ -72,6 +72,7 @@ live(
           socket.addEventListener("close", (event) => {
             state.closed = true
             state.code = event.code
+            state.reason = event.reason
           })
           socket.addEventListener("error", () => {
             state.error = true
@@ -114,6 +115,7 @@ live(
             const exited = await open()
             await waitFor(() => exited.state.closed)
             expect(exited.state.code).toBe(4404)
+            expect(exited.state.reason).toBe("session exited")
             expect(exited.state.frames).toEqual([])
           } finally {
             second.socket.close()
