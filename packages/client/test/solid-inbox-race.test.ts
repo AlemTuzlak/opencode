@@ -130,6 +130,29 @@ test.each(["delivered", "cancelled"] as const)(
   },
 )
 
+test.each(["failed", "interrupted"] as const)("an undelivered immediate prompt becomes pending after execution %s", async (outcome) => {
+  const setup = fixture(async () => Response.json({ data: { id: item.id } }))
+  try {
+    await setup.data.session.prompt({ sessionID: item.sessionID, id: item.id, text: item.payload.text, immediate: true })
+    setup.emit(enqueued)
+    setup.data.session.setStatus(item.sessionID, "running")
+    const pending = () => setup.data.session.pending.steer(item.sessionID, item.id)
+    expect(pending()).toBe(false)
+    setup.emit({
+      id: "evt_settled",
+      type: `session.execution.${outcome}`,
+      created: 2,
+      durable: { aggregateID: item.sessionID, seq: 2, version: 1 },
+      data: { sessionID: item.sessionID, reason: "user" },
+    })
+    expect(setup.data.session.status(item.sessionID)).toBe("idle")
+    expect(setup.data.session.input.has(item.sessionID, item.id)).toBe(true)
+    expect(pending()).toBe(true)
+  } finally {
+    setup.dispose()
+  }
+})
+
 test.each(["enqueue", "delivery"] as const)("inbox hydration retains a concurrent %s event", async (action) => {
   const response = Promise.withResolvers<Response>()
   const setup = fixture(() => response.promise)

@@ -261,7 +261,7 @@ export function createData(config: CreateDataInput) {
 
   function removePending(sessionID: string, inboxID?: string) {
     if (!inboxID) return
-    immediate.delete(inboxID)
+    setImmediate(inboxID, undefined)
     pendingUpdates.get(sessionID)?.set(inboxID, undefined)
     if (store.session.pending[sessionID]?.some((item) => item.id === inboxID))
       setStore(
@@ -314,7 +314,7 @@ export function createData(config: CreateDataInput) {
     const item = store.session.pending[sessionID]?.[index]
     pendingUpdates.get(sessionID)?.set(inboxID, item ? { ...item, delivery } : delivery)
     if (index < 0 || !item || item.delivery === delivery) return
-    immediate.delete(inboxID)
+    setImmediate(inboxID, undefined)
     setStore("session", "pending", sessionID, index, { ...item, delivery })
   }
 
@@ -327,7 +327,7 @@ export function createData(config: CreateDataInput) {
 
   // Prompts sent while idle start execution rather than steering existing work.
   // Keep that local presentation distinction until delivery, including after the enqueue echo.
-  const immediate = new Set<string>()
+  const [immediate, setImmediate] = createStore<Record<string, boolean | undefined>>({})
 
   // Session IDs of optimistic create admissions still awaiting acknowledgement
   // (the session.created echo or the create response itself). A failed create
@@ -551,7 +551,7 @@ export function createData(config: CreateDataInput) {
     // Keep unacknowledged submissions until their echo or rollback settles them.
     const pending = store.session.pending[sessionID]?.filter((item) => outbox.has(item.id)) ?? []
     store.session.pending[sessionID]?.forEach((item) => {
-      if (!outbox.has(item.id)) immediate.delete(item.id)
+      if (!outbox.has(item.id)) setImmediate(item.id, undefined)
     })
     const messages = store.session.message[sessionID]?.filter((item) => outbox.has(item.id)) ?? []
     messageIndex.delete(sessionID)
@@ -573,7 +573,7 @@ export function createData(config: CreateDataInput) {
     activeUpdates?.set(sessionID, undefined)
     store.session.pending[sessionID]?.forEach((item) => {
       outbox.delete(item.id)
-      immediate.delete(item.id)
+      setImmediate(item.id, undefined)
     })
     messageIndex.delete(sessionID)
     sync.invalidate(`session:${sessionID}`)
@@ -1037,7 +1037,10 @@ export function createData(config: CreateDataInput) {
       case "session.execution.succeeded":
       case "session.execution.failed":
       case "session.execution.interrupted":
-        setSessionActive(event.data.sessionID, "idle")
+        batch(() => {
+          setSessionActive(event.data.sessionID, "idle")
+          store.session.pending[event.data.sessionID]?.forEach((item) => setImmediate(item.id, undefined))
+        })
         message.update(event.data.sessionID, (draft) => {
           const currentAssistant = message.activeAssistant(draft)
           if (currentAssistant) currentAssistant.retry = undefined
@@ -1416,7 +1419,7 @@ export function createData(config: CreateDataInput) {
           return (
             store.session.pending[sessionID]?.some(
               (item) => item.id === inboxID && item.type === "user" && item.delivery === "steer",
-            ) === true && !immediate.has(inboxID)
+            ) === true && !immediate[inboxID]
           )
         },
         sync(sessionID: string) {
@@ -1449,7 +1452,7 @@ export function createData(config: CreateDataInput) {
               const inflight = (store.session.pending[sessionID] ?? []).filter((item) => outbox.has(item.id))
               const merged = inflight.length === 0 ? pending : [...pending, ...inflight]
               store.session.pending[sessionID]?.forEach((item) => {
-                if (!merged.some((entry) => entry.id === item.id)) immediate.delete(item.id)
+                if (!merged.some((entry) => entry.id === item.id)) setImmediate(item.id, undefined)
               })
               batch(() => {
                 setStore("session", "pending", sessionID, reconcile(merged))
@@ -1579,7 +1582,7 @@ export function createData(config: CreateDataInput) {
           !store.session.pending[request.sessionID]?.some((item) => item.id === id)
         if (fresh) {
           outbox.add(id)
-          if (startsExecution && (request.delivery ?? "steer") === "steer") immediate.add(id)
+          if (startsExecution && (request.delivery ?? "steer") === "steer") setImmediate(id, true)
           admitLocal({
             id,
             sessionID: request.sessionID,
