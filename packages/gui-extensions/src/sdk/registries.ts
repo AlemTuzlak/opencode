@@ -487,7 +487,7 @@ export interface Server {
 
 /** A local link the app routes to a `LinkHandler`, e.g. a file path in a message. */
 export interface Link {
-  /** The link target: a path, URL or `file://` link. */
+  /** The link target: a path, URL or `file://` link, with an optional `:line`, `:line:col`, `:start-end`, or `#Lstart-Lend` range suffix. */
   readonly href: string
   /** The extension that produced the linked item, e.g. the origin of a composer comment. */
   readonly origin?: string

@@ -410,6 +410,21 @@ export function SessionFileView(props: { session: MountedSession; screen: Sessio
 
   const previous = { loaded: false, ready: false, active: false }
 
+  createKeyed(
+    () => {
+      const p = path()
+
+      return p ? `${props.session.key}\n${p}` : undefined
+    },
+    (targetKey) =>
+      onCleanup(
+        shared.restoreScroll.register(targetKey, () => {
+          setNote("selected", null)
+          scrollSync.queueRestore()
+        }),
+      ),
+  )
+
   // Restores the stored scroll when the file loads, its view state loads, or the tab shows a loaded file again.
   createKeyed(
     () => ({ loaded: !!current()?.loaded, ready: file.ready(), shown: active() }),

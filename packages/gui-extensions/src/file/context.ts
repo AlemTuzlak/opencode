@@ -35,6 +35,11 @@ export interface FileShared {
     get(session: string, path: string): LineRange | null | undefined
     set(session: string, files: Record<string, LineRange | null>): void
   }
+  /** Restores scroll on a mounted file view when a link action selects a line range on it. */
+  readonly restoreScroll: {
+    register(key: string, run: () => void): () => void
+    run(session: string, path: string): void
+  }
   /** The tab is the session's selected side tab. */
   active(session: MountedSession, id: string): boolean
   open(session: MountedSession, path: string, options?: OpenOptions): void

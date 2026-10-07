@@ -31,7 +31,7 @@ const docStemPattern = /^(?:readme|license|changelog|copying|authors|notice)$/i
 export function parseFileLink(href: string): ParsedFileLink {
   const raw = href.trim().replaceAll("\\", "/")
   const isFileUrl = /^file:\/\//i.test(raw)
-  const extracted = extractLineSelection(raw)
+  const extracted = extractLineSelection(raw, isFileUrl)
   const clean = normalizeRelativeSegments(extracted.path, isFileUrl)
   const strippedPath = clean.replace(/^(?:\.\.(?:\/|$))+/, "")
   const segments = strippedPath.split("/").filter(Boolean)
@@ -64,13 +64,14 @@ function validLineRange(first: number, second: number): LineRange | undefined {
   }
 }
 
-function extractLineSelection(input: string) {
+function extractLineSelection(input: string, isFileUrl: boolean) {
   const hashMatch = input.match(hashLineSuffix)
 
   if (hashMatch) {
     const first = Number(hashMatch[2])
     const second = hashMatch[3] ? Number(hashMatch[3]) : first
-    const withoutQuery = (hashMatch[1] ?? "").split("?", 1)[0] ?? ""
+    const base = hashMatch[1] ?? ""
+    const withoutQuery = isFileUrl ? (base.split("?", 1)[0] ?? "") : base
 
     return {
       path: withoutQuery,
@@ -78,9 +79,8 @@ function extractLineSelection(input: string) {
     }
   }
 
-  // Strip a trailing fragment only when it follows a file extension in the final segment (preserving `src/C#/a.cs` and `foo#bar.ts`).
-  const withoutFragment = input.replace(/(\.[a-z0-9]+)#[^/.]*$/i, "$1")
-  const withoutQuery = withoutFragment.split("?", 1)[0] ?? ""
+  const withoutFragment = isFileUrl ? input.replace(/(\.[a-z0-9]+)#[^/.]*$/i, "$1") : input
+  const withoutQuery = isFileUrl ? (withoutFragment.split("?", 1)[0] ?? "") : withoutFragment
   const colonMatch = withoutQuery.match(colonLinePattern)
 
   if (colonMatch && !/^[a-z]:?$/i.test(colonMatch[1] ?? "")) {
@@ -208,14 +208,6 @@ function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions
  * 3. Package-anchored segment subsequence (`packages/session-ui/markdown.tsx` -> `packages/session-ui/src/components/markdown.tsx`)
  * 4. Bare basename match (`tool-renderer.tsx`), disambiguated by active/open package context.
  */
-export function scoreWorkspaceCandidates(
-  rawPath: string,
-  candidates: readonly string[],
-  options?: ResolveWorkspaceOptions,
-): string | undefined {
-  return scoreParsed(parseFileLink(rawPath), candidates, options)
-}
-
 function scoreParsed(
   parsed: ParsedFileLink,
   candidates: readonly string[],
@@ -309,7 +301,12 @@ export async function searchWorkspaceCandidates(input: {
   const search = (query: string, limit: number) =>
     input.files.search(query, { limit, signal: input.signal }).catch(() => [])
 
-  const primary = await search(input.parsed.strippedPath, 60)
+  const primaryQuery =
+    input.parsed.segments.length >= 3 && /^[ab]$/i.test(input.parsed.segments[0] ?? "")
+      ? input.parsed.strippedPath.slice(2)
+      : input.parsed.strippedPath
+
+  const primary = await search(primaryQuery, 100)
 
   if (input.signal.aborted) return undefined
 
@@ -319,22 +316,9 @@ export async function searchWorkspaceCandidates(input: {
     if (matched) return matched
   }
 
-  if (/^[ab]\/.+/.test(input.parsed.strippedPath)) {
-    const withoutGitPrefix = input.parsed.strippedPath.slice(2)
-    const gitCandidates = await search(withoutGitPrefix, 60)
-
-    if (input.signal.aborted) return undefined
-
-    if (gitCandidates.length > 0) {
-      const matched = scoreParsed(input.parsed, gitCandidates, options)
-
-      if (matched) return matched
-    }
-  }
-
   const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
 
-  if (stem && stem !== input.parsed.strippedPath) {
+  if (stem && stem !== primaryQuery) {
     const secondary = await search(stem, 100)
 
     if (input.signal.aborted) return undefined

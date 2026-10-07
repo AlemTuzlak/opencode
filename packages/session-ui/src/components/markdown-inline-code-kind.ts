@@ -72,6 +72,7 @@ const barePathExtensions = new Set([
   "ccxml",
   "cdc",
   "cds",
+  "cer",
   "cfc",
   "cfg",
   "cfm",
@@ -115,6 +116,7 @@ const barePathExtensions = new Set([
   "cql",
   "cr",
   "creole",
+  "crt",
   "cs",
   "cscfg",
   "csd",
@@ -397,6 +399,7 @@ const barePathExtensions = new Set([
   "just",
   "kak",
   "kdl",
+  "key",
   "kicad_mod",
   "kicad_pcb",
   "kicad_sch",
@@ -612,6 +615,7 @@ const barePathExtensions = new Set([
   "pdf",
   "peggy",
   "pegjs",
+  "pem",
   "perl",
   "pfa",
   "pgsql",
@@ -679,6 +683,7 @@ const barePathExtensions = new Set([
   "psd1",
   "psgi",
   "psm1",
+  "pub",
   "pubxml",
   "pug",
   "puml",
@@ -1147,7 +1152,6 @@ const slashedOnlyExtensions = new Set([
   "mount",
   "move",
   "properties",
-  "pub",
   "red",
   "s",
   "snap",
@@ -1443,10 +1447,11 @@ const exactCaseFileNames = new Set([
 
 const pathFileNamePrefixes = new Set([".env", "containerfile", "dockerfile", "makefile"])
 
-// Extensions where 1-letter stems (`a.c`, `x.h`, `e.m`, `s.r`, `x.el`, `c.json`, `_.zip`, `a.b.c`) are code variables.
-const shortStemExcludedExtensions = new Set(["c", "db", "el", "h", "json", "log", "m", "r", "sh", "zip"])
+// Extensions where 1-letter stems (`a.c`, `x.h`, `e.m`, `s.r`, `x.el`, `c.json`, `x.pub`, `_.zip`, `a.b.c`) are code variables.
+const shortStemExcludedExtensions = new Set(["c", "db", "el", "h", "json", "key", "log", "m", "pub", "r", "sh", "zip"])
 
 // Identifier stems on bare `stem.ext` tokens that are code receivers rather than file names.
+// `.ts` and `.tsx` are exempted below because `session.ts`, `context.ts`, and `options.ts` are common TypeScript files.
 const bareReceiverStems = new Set([
   "_",
   "console",
@@ -1461,6 +1466,40 @@ const bareReceiverStems = new Set([
   "self",
   "this",
   "vim",
+])
+
+const capitalizedFrameworkNames = new Set([
+  "Astro.js",
+  "Bun.js",
+  "Chart.js",
+  "D3.js",
+  "Deno.js",
+  "Ember.js",
+  "Express.js",
+  "Next.js",
+  "Node.js",
+  "Nuxt.js",
+  "React.js",
+  "Solid.js",
+  "Svelte.js",
+  "Three.js",
+  "Vue.js",
+])
+
+const extensionlessPathPrefixes = new Set([
+  ".git",
+  ".github",
+  ".opencode",
+  ".vscode",
+  "bin",
+  "etc",
+  "home",
+  "opt",
+  "scripts",
+  "tmp",
+  "users",
+  "usr",
+  "var",
 ])
 
 const compoundMiddleExtensions = new Set([
@@ -1562,6 +1601,8 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
   }
 
   if (anchored && segments.length > 1) return "path"
+
+  if (segments.length > 1 && extensionlessPathPrefixes.has(segments[0]!.toLowerCase())) return "path"
 }
 
 function hasPathExtension(basename: string, slashed: boolean) {
@@ -1599,8 +1640,7 @@ function hasPathFileName(basename: string) {
 function isBareCodeExpression(basename: string) {
   if (basename.startsWith(".")) return false
 
-  // Capitalized `.js` product names in prose (`Node.js`, `Next.js`, `React.js`, `Vue.js`).
-  if (/^[A-Z][a-z0-9]*\.js$/.test(basename)) return true
+  if (capitalizedFrameworkNames.has(basename)) return true
 
   const lower = basename.toLowerCase()
   const parts = lower.split(".")
@@ -1609,6 +1649,7 @@ function isBareCodeExpression(basename: string) {
   const stem = parts[0]!
   const ext = parts[parts.length - 1]!
 
+  // Preserve `.ts` and `.tsx` filenames such as `options.ts` while blocking `options.fs`, `res.json`, and `console.log`.
   if (parts.length === 2 && bareReceiverStems.has(stem) && ext !== "ts" && ext !== "tsx") return true
 
   if (!shortStemExcludedExtensions.has(ext)) return false

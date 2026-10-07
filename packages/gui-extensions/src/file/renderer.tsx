@@ -64,6 +64,7 @@ const setup: Setup<typeof File> = (ctx) => {
   const [handoff, setHandoff] = storage.memory<Handoff>("handoff", { initial: { sessions: {} } })
   const preference = desktop ? ctx.stores.app : undefined
   const [request, setRequest] = createStore<{ app?: OpenApp }>({})
+  const scrollListeners = new Map<string, Set<() => void>>()
   let clickController: AbortController | undefined
 
   // Tab objects per session screen, which stays while it routes another session, reused so neither strip updates nor a
@@ -114,6 +115,7 @@ const setup: Setup<typeof File> = (ctx) => {
       x: existing?.x ?? 0,
       y: Math.max(0, (selection.start - 4) * DEFAULT_LINE_HEIGHT),
     })
+    shared.restoreScroll.run(session.key, path)
   }
 
   const shared: FileShared = {
@@ -149,6 +151,22 @@ const setup: Setup<typeof File> = (ctx) => {
 
           keys.slice(0, Math.max(0, keys.length - HANDOFF_SESSIONS)).forEach((item) => delete draft.sessions[item])
         }),
+    },
+    restoreScroll: {
+      register(targetKey, run) {
+        const set = scrollListeners.get(targetKey) ?? new Set()
+        set.add(run)
+        scrollListeners.set(targetKey, set)
+
+        return () => {
+          set.delete(run)
+
+          if (set.size === 0) scrollListeners.delete(targetKey)
+        }
+      },
+      run(session, path) {
+        scrollListeners.get(`${session}\n${path}`)?.forEach((fn) => fn())
+      },
     },
     active,
     open,
@@ -453,7 +471,7 @@ const setup: Setup<typeof File> = (ctx) => {
       clickController?.abort()
 
       // A known workspace file (the palette, a file comment) opens at once with every file listed.
-      if (link.exact || link.origin) {
+      if (link.exact || link.origin === "file") {
         const path = files.resolve(link.href)
 
         if (!path) return
@@ -549,7 +567,12 @@ const setup: Setup<typeof File> = (ctx) => {
 
         openResolvedFile(matched ?? direct, parsed.selection)
       })().catch(() => {
-        const fallback = resolve(files, link.href.replace(/:\d+(?::\d+)?$/, ""), link.base)
+        const stripped = link.href
+          .replaceAll("\\", "/")
+          .replace(/#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i, "")
+          .replace(/:\d+(?::\d+)?(?:-\d+(?::\d+)?)?:?$/, "")
+
+        const fallback = resolve(files, stripped, link.base)
 
         if (fallback) openResolvedFile(fallback)
       })
