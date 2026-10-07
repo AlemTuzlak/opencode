@@ -159,6 +159,31 @@ function createScrollSync(input: { get: () => ScrollPos | undefined; set: (pos: 
     })
   }
 
+  const scrollToLine = (line: number) => {
+    if (state.restoreFrame !== undefined) cancelAnimationFrame(state.restoreFrame)
+
+    state.restoreFrame = requestAnimationFrame(() => {
+      state.restoreFrame = undefined
+      const el = state.scroll
+
+      if (!el) return
+
+      const host = el.querySelector("diffs-container")
+      const root = host instanceof HTMLElement ? host.shadowRoot : null
+      const target = root?.querySelector(`[data-line="${line}"], [data-line-number="${line}"]`)
+
+      if (target instanceof HTMLElement) {
+        const y = Math.max(0, Math.round(el.scrollTop + target.getBoundingClientRect().top - el.getBoundingClientRect().top - 72))
+        el.scrollTop = y
+        input.set({ x: code()[0]?.scrollLeft ?? el.scrollLeft, y })
+
+        return
+      }
+
+      restore()
+    })
+  }
+
   const handleScroll = (event: Event & { currentTarget: HTMLDivElement }) => {
     if (code().length === 0) sync()
 
@@ -185,6 +210,7 @@ function createScrollSync(input: { get: () => ScrollPos | undefined; set: (pos: 
   return {
     handleScroll,
     queueRestore,
+    scrollToLine,
     setViewport,
   }
 }
@@ -438,7 +464,16 @@ export function SessionFileView(props: { session: MountedSession; screen: Sessio
       previous.active = next.shown
       previous.reveal = next.reveal
 
-      if (revealed) setNote("selected", null)
+      if (revealed) {
+        setNote("selected", null)
+        const line = selectedLines()?.start
+
+        if (line !== undefined && next.shown && next.loaded) {
+          scrollSync.scrollToLine(line)
+
+          return
+        }
+      }
 
       if (restore) scrollSync.queueRestore()
     },
@@ -467,6 +502,16 @@ export function SessionFileView(props: { session: MountedSession; screen: Sessio
         selectedLines={activeSelection()}
         commentedLines={commentedLines()}
         onRendered={() => {
+          const target = shared.reveal()
+          const p = path()
+          const line = selectedLines()?.start
+
+          if (target && p && target.session === props.session.key && target.path === p && line !== undefined) {
+            scrollSync.scrollToLine(line)
+
+            return
+          }
+
           scrollSync.queueRestore()
         }}
         annotations={commentsUi.annotations()}

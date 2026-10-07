@@ -21,7 +21,7 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
   // The selected side tab when it is a file tab. A gone selection falls back to the first file tab.
   const activeFileTab = createMemo(() => opened().find((id) => shared.active(props.session, id)))
   const [store, setStore] = createStore({ browsing: !activeFileTab() })
-  const browsing = () => store.browsing || !activeFileTab()
+  const browsing = () => store.browsing || !activeFileTab() || !!shared.filter.value()
 
   const active = createMemo(() => {
     const id = activeFileTab()
@@ -33,6 +33,7 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
 
   const open = (path: string) => {
     shared.open(props.session, path)
+    shared.filter.set("")
     setStore("browsing", false)
   }
 

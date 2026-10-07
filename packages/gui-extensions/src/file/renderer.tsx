@@ -39,7 +39,7 @@ import { FileTree, OpenInApp } from "./contract"
 import type File from "./index"
 import { FileVisual } from "./label"
 import { fileTabId, fileTabPath, isFileTab, workspaceFileUrl } from "./path"
-import { parseFileLink, scoreWorkspaceCandidates, type ParsedFileLink } from "./resolve-link"
+import type { ParsedFileLink } from "./resolve-link"
 import tabStyles from "./tabs.css?inline"
 
 const OPEN = "open"
@@ -65,10 +65,13 @@ const setup: Setup<typeof File> = (ctx) => {
 
   const [request, setRequest] = createStore<{
     app?: OpenApp
+    filter: string
+    filterSelection?: LineRange
     reveal?: { readonly session: string; readonly path: string; readonly seq: number }
-  }>({})
+  }>({ filter: "" })
 
   let revealSeq = 0
+  let clickSeq = 0
 
   // Tab objects per session screen, which stays while it routes another session, reused so neither strip updates nor a
   // session switch rebuild a trigger. `close` prunes them.
@@ -97,16 +100,6 @@ const setup: Setup<typeof File> = (ctx) => {
     return state === "active" || state === "visible"
   }
 
-  // Opens on the session screen, whose file model serves the routed session `session` is.
-  const open = (session: MountedSession, path: string, options?: OpenOptions) => {
-    const screen = ctx.screen.current()
-
-    if (!screen) return
-
-    layout.open(key(screen.file, path), session, options)
-    void screen.file.sync(path)
-  }
-
   const applySelection = (session: MountedSession, files: Files, path: string, selection: LineRange | undefined) => {
     if (!selection || artifactKind(path) !== "text") return
 
@@ -118,22 +111,41 @@ const setup: Setup<typeof File> = (ctx) => {
     setRequest("reveal", { session: session.key, path, seq: ++revealSeq })
   }
 
-  const openPicker = (session: MountedSession, query?: string, options?: OpenOptions) => {
-    layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
+  // Opens on the session screen, whose file model serves the routed session `session` is.
+  const open = (session: MountedSession, path: string, options?: OpenOptions) => {
+    const screen = ctx.screen.current()
 
-    if (query !== undefined) {
-      shared.filter.query = query
-      shared.filter.set?.(query)
+    if (!screen) return
+
+    const pendingSelection = request.filterSelection
+
+    if (pendingSelection) {
+      setRequest("filterSelection", undefined)
+      applySelection(session, screen.file, path, pendingSelection)
     }
+
+    layout.open(key(screen.file, path), session, options)
+    void screen.file.sync(path)
+  }
+
+  const openPicker = (
+    session: MountedSession,
+    query?: string,
+    selection?: LineRange,
+    options?: OpenOptions,
+  ) => {
+    batch(() => {
+      if (query !== undefined) setRequest("filter", query)
+
+      setRequest("filterSelection", selection)
+      layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
+
+      if (!options?.background && layout.narrow() && !layout.side.opened(session)) layout.side.toggle(session)
+    })
 
     if (options?.background) return
 
     queueMicrotask(() => {
-      if (shared.filter.query !== undefined && shared.filter.set) {
-        shared.filter.set(shared.filter.query)
-        shared.filter.query = undefined
-      }
-
       const element = shared.filter.element
 
       if (element?.isConnected) return element.focus()
@@ -152,7 +164,12 @@ const setup: Setup<typeof File> = (ctx) => {
           draft.tab = tab
         }),
     },
-    filter: {},
+    filter: {
+      value: () => request.filter,
+      set: (value) => setRequest("filter", value),
+      selection: () => request.filterSelection,
+      setSelection: (selection) => setRequest("filterSelection", selection),
+    },
     installed: new Map(),
     app: preference && {
       current: () => preference.value.app,
@@ -443,9 +460,8 @@ const setup: Setup<typeof File> = (ctx) => {
    * otherwise absolute. Relative links resolve against `base`; ones that climb past the root
    * become absolute too, so a `../../shared/report.pdf` still opens.
    */
-  const resolve = (files: Files, href: string, base?: string) => {
+  const resolve = (files: Files, value: string, base?: string) => {
     const root = files.root.replaceAll("\\", "/").replace(/\/+$/, "")
-    const value = parseFileLink(href).path
 
     if (/^[a-z]:\//i.test(value) || value.startsWith("/")) return files.resolve(value)
 
@@ -464,20 +480,32 @@ const setup: Setup<typeof File> = (ctx) => {
     parsed: ParsedFileLink,
     base: string | undefined,
     screen: SessionScreen,
-    session: MountedSession,
+    sessionKey: string,
   ) => {
+    const { scoreWorkspaceCandidates } = await import("./resolve-link")
+
+    if (ctx.signal.aborted) return { kind: "none" as const }
+
+    const currentSession = sessions.current()
+
+    if (!currentSession || currentSession.key !== sessionKey || ctx.screen.current() !== screen) {
+      return { kind: "none" as const }
+    }
+
     const root = files.root.replaceAll("\\", "/").replace(/\/+$/, "")
     const rootName = getFilename(root)
     const activeId = focused.get(screen)
     const activePath = activeId && isFileTab(activeId) ? fileTabPath(files, activeId) : undefined
 
     const openPaths = layout
-      .stored(session)
+      .stored(currentSession)
       .filter(isFileTab)
       .map((id) => fileTabPath(files, id))
 
     const options = { base, rootName, activePath, openPaths }
-    const primary = await files.search(parsed.strippedPath, { limit: 60 })
+    const primary = await files.search(parsed.strippedPath, { limit: 60, signal: ctx.signal })
+
+    if (ctx.signal.aborted) return { kind: "none" as const }
 
     if (primary.length > 0) {
       const scored = scoreWorkspaceCandidates(parsed.path, primary, options)
@@ -486,10 +514,11 @@ const setup: Setup<typeof File> = (ctx) => {
     }
 
     const stem = parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
-    const fallbackQuery = stem !== parsed.basename ? stem : parsed.basename
 
-    if (fallbackQuery && fallbackQuery !== parsed.strippedPath) {
-      const secondary = await files.search(fallbackQuery, { limit: 100 })
+    if (stem && stem !== parsed.strippedPath) {
+      const secondary = await files.search(stem, { limit: 100, signal: ctx.signal })
+
+      if (ctx.signal.aborted) return { kind: "none" as const }
 
       if (secondary.length > 0) {
         return scoreWorkspaceCandidates(parsed.path, secondary, options)
@@ -524,55 +553,87 @@ const setup: Setup<typeof File> = (ctx) => {
         return
       }
 
-      const parsed = parseFileLink(link.href)
-      const direct = resolve(files, parsed.path, link.base)
+      const currentClick = ++clickSeq
+      const sessionKey = session.key
 
-      if (!direct) return
+      void (async () => {
+        const { parseFileLink } = await import("./resolve-link")
 
-      const openResolvedFile = (targetPath: string) => {
-        // The browser pane shows HTML it can load. While it is pending or off, the file opens as a tab instead.
-        const pane = ctx.uses.browser()
+        if (ctx.signal.aborted || currentClick !== clickSeq) return
 
-        if (artifactKind(targetPath) === "html" && pane.status === "active" && pane.value.canOpen(session, targetPath)) {
-          pane.value.open(session, workspaceFileUrl(files.root, targetPath))
+        const activeSession = sessions.current()
+
+        if (!activeSession || activeSession.key !== sessionKey || ctx.screen.current() !== screen) return
+
+        const parsed = parseFileLink(link.href)
+        const direct = resolve(files, parsed.path, link.base)
+
+        if (!direct) return
+
+        const openResolvedFile = (targetPath: string) => {
+          const routed = sessions.current()
+
+          if (!routed || routed.key !== sessionKey || ctx.screen.current() !== screen || currentClick !== clickSeq) return
+
+          // The browser pane shows HTML it can load. While it is pending or off, the file opens as a tab instead.
+          const pane = ctx.uses.browser()
+
+          if (artifactKind(targetPath) === "html" && pane.status === "active" && pane.value.canOpen(routed, targetPath)) {
+            pane.value.open(routed, workspaceFileUrl(files.root, targetPath))
+
+            return
+          }
+
+          // Inline paths are guessed from text, so confirm the file exists before a tab appears for it.
+          // Always reread: V2 publishes no workspace file change events, so a cached copy can be stale.
+          void files.sync(targetPath, { force: true }).then(() => {
+            const latest = sessions.current()
+
+            if (
+              ctx.signal.aborted ||
+              currentClick !== clickSeq ||
+              !latest ||
+              latest.key !== sessionKey ||
+              ctx.screen.current() !== screen ||
+              !files.get(targetPath)?.loaded
+            )
+              return
+
+            batch(() => {
+              applySelection(latest, files, targetPath, parsed.selection)
+              layout.open(key(files, targetPath), latest, { background: link.background })
+
+              // A tapped link switches the narrow-screen view; the side region still opens for when the window is wide.
+              if (layout.narrow() && !layout.side.opened(latest)) layout.side.toggle(latest)
+            })
+          })
+        }
+
+        const explicitAbsolute =
+          /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/") || /^file:/i.test(link.href.trim())
+
+        if (explicitAbsolute || files.get(direct)?.loaded || (link.base !== undefined && files.absolute(direct))) {
+          openResolvedFile(direct)
 
           return
         }
 
-        // Inline paths are guessed from text, so confirm the file exists before a tab appears for it.
-        // Always reread: V2 publishes no workspace file change events, so a cached copy can be stale.
-        void files.sync(targetPath, { force: true }).then(() => {
-          if (ctx.signal.aborted || !files.get(targetPath)?.loaded) return
+        const outcome = await searchWorkspace(files, parsed, link.base, screen, sessionKey)
 
-          batch(() => {
-            applySelection(session, files, targetPath, parsed.selection)
-            layout.open(key(files, targetPath), session, { background: link.background })
+        if (ctx.signal.aborted || currentClick !== clickSeq) return
 
-            // A tapped link switches the narrow-screen view; the side region still opens for when the window is wide.
-            if (layout.narrow() && !layout.side.opened(session)) layout.side.toggle(session)
-          })
-        })
-      }
+        const latestSession = sessions.current()
 
-      const explicitAbsolute = /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/")
-
-      if ((explicitAbsolute || link.base !== undefined) && files.absolute(direct)) {
-        openResolvedFile(direct)
-
-        return
-      }
-
-      void searchWorkspace(files, parsed, link.base, screen, session).then((outcome) => {
-        if (ctx.signal.aborted) return
+        if (!latestSession || latestSession.key !== sessionKey || ctx.screen.current() !== screen) return
 
         if (outcome.kind === "ambiguous" || outcome.kind === "directory") {
-          openPicker(session, outcome.query, { background: link.background })
+          openPicker(latestSession, outcome.query, parsed.selection, { background: link.background })
 
           return
         }
 
         openResolvedFile(outcome.kind === "match" ? outcome.path : direct)
-      })
+      })()
     },
   })
 

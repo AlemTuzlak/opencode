@@ -440,7 +440,6 @@ const barePathExtensions = new Set([
   "lkml",
   "ll",
   "lockb",
-  "log",
   "logtalk",
   "lookml",
   "lpr",
@@ -1124,10 +1123,8 @@ const barePathExtensions = new Set([
 
 // Single-letter or short source extensions that are valid when qualified with a directory slash (e.g. `src/main.c`, `include/foo.h`).
 const slashedOnlyExtensions = new Set([
-  "c",
   "d",
   "f",
-  "h",
   "l",
   "m",
   "r",
@@ -1299,7 +1296,6 @@ const pathFileNames = new Set([
   "cargo.lock",
   "cargo.toml",
   "cargo.toml.orig",
-  "changelog",
   "citation.cff",
   "claude.md",
   "cmakelists.txt",
@@ -1310,7 +1306,6 @@ const pathFileNames = new Set([
   "configure.ac",
   "containerfile",
   "contents.lr",
-  "copying",
   "cpanfile",
   "crontab",
   "dangerfile",
@@ -1346,7 +1341,6 @@ const pathFileNames = new Set([
   "kbuild",
   "latexmkrc",
   "ld.script",
-  "license",
   "m3makefile",
   "makefile",
   "makefile.am",
@@ -1381,7 +1375,6 @@ const pathFileNames = new Set([
   "puppetfile",
   "pylintrc",
   "rakefile",
-  "readme",
   "readme.1st",
   "rebar.config",
   "rexfile",
@@ -1419,6 +1412,8 @@ const pathFileNames = new Set([
   "yarn.lock",
 ])
 
+const exactCaseFileNames = new Set(["README", "LICENSE", "CHANGELOG", "COPYING", "AUTHORS", "NOTICE"])
+
 const pathFileNamePrefixes = new Set([
   ".env",
   "containerfile",
@@ -1426,13 +1421,23 @@ const pathFileNamePrefixes = new Set([
   "makefile",
 ])
 
+// Extensions that can collide with JS/DOM property or method names on bare `receiver.ext` tokens (e.g. `res.json`, `req.text`, `obj.c`).
+const ambiguousBareExtensions = new Set([
+  "c",
+  "css",
+  "h",
+  "html",
+  "json",
+  "sh",
+  "sql",
+  "txt",
+  "xml",
+])
+
 const bareCodeReceivers = new Set([
-  "array",
   "console",
-  "context",
   "ctx",
   "document",
-  "effect",
   "el",
   "err",
   "error",
@@ -1440,44 +1445,46 @@ const bareCodeReceivers = new Set([
   "form",
   "global",
   "globalthis",
-  "history",
   "input",
   "item",
-  "json",
-  "layer",
-  "localstorage",
-  "location",
-  "map",
   "math",
   "navigator",
   "node",
   "obj",
   "object",
-  "option",
-  "options",
-  "opts",
-  "params",
   "process",
   "promise",
   "props",
-  "reflect",
   "req",
   "request",
   "res",
   "response",
   "result",
   "self",
-  "session",
-  "sessionstorage",
-  "set",
   "state",
   "store",
-  "stream",
-  "symbol",
-  "sync",
   "this",
-  "url",
   "window",
+])
+
+const workspaceDirectoryPrefixes = new Set([
+  ".github",
+  ".opencode",
+  ".vscode",
+  "apps",
+  "cmd",
+  "components",
+  "crates",
+  "docs",
+  "e2e",
+  "internal",
+  "lib",
+  "packages",
+  "script",
+  "scripts",
+  "src",
+  "test",
+  "tests",
 ])
 
 const domainSegment =
@@ -1516,12 +1523,12 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   if (/^\/[a-z][a-z0-9-]*$/i.test(clean)) return
 
-  const anchored = /^\.\.?\//.test(clean) || /^~\//.test(clean) || /^[a-z]:\//i.test(clean)
+  const anchored = /^\.\.?\//.test(clean) || /^~\//.test(clean) || /^[a-z]:\//i.test(clean) || clean.startsWith("/")
   const segments = clean.split("/").filter(Boolean)
 
   if (segments.length === 0) return
 
-  if (!anchored && !clean.startsWith("/") && segments.length > 1 && domainSegment.test(segments[0]!)) return
+  if (!anchored && segments.length > 1 && domainSegment.test(segments[0]!)) return
 
   const basename = segments[segments.length - 1]!
   const slashed = segments.length > 1 || clean.startsWith("/")
@@ -1529,12 +1536,14 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
   if (hasPathFileName(basename)) return "path"
 
   if (hasPathExtension(basename, slashed)) {
-    if (!slashed && isBareCodeIdentifier(basename)) return
+    if (!slashed && isAmbiguousBareCode(basename)) return
 
     return "path"
   }
 
   if (anchored && segments.length > 1) return "path"
+
+  if (segments.length > 1 && workspaceDirectoryPrefixes.has(segments[0]!.toLowerCase())) return "path"
 }
 
 function hasPathExtension(basename: string, slashed: boolean) {
@@ -1552,6 +1561,7 @@ function hasPathExtension(basename: string, slashed: boolean) {
 }
 
 function hasPathFileName(basename: string) {
+  if (exactCaseFileNames.has(basename)) return true
   const value = basename.toLowerCase()
 
   if (pathFileNames.has(value)) return true
@@ -1562,11 +1572,14 @@ function hasPathFileName(basename: string) {
   return pathFileNamePrefixes.has(value.slice(0, index))
 }
 
-function isBareCodeIdentifier(basename: string) {
+function isAmbiguousBareCode(basename: string) {
   if (basename.startsWith(".")) return false
-  const index = basename.indexOf(".")
+  const index = basename.lastIndexOf(".")
 
   if (index <= 0) return false
+  const ext = basename.slice(index + 1).toLowerCase()
+
+  if (!ambiguousBareExtensions.has(ext)) return false
   const stem = basename.slice(0, index).toLowerCase()
 
   return stem.length <= 1 || bareCodeReceivers.has(stem)

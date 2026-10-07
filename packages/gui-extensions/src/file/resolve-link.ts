@@ -107,38 +107,45 @@ function extractLineSelection(input: string) {
 
 function normalizeRelativeSegments(input: string): string {
   const withoutProtocol = input.replace(/^file:\/\/(?:localhost)?/i, "").replace(/^\/([a-z]:\/)/i, "$1")
-  const trimmed = withoutProtocol.replace(/^\.\//, "").replace(/\/+$/, "")
+  const decoded = decodePathSafely(withoutProtocol)
+  const trimmed = decoded.replace(/^\.\//, "").replace(/\/+$/, "")
 
   if (!trimmed) return ""
 
   const leadingSlash = trimmed.startsWith("/") ? "/" : ""
-  const out: string[] = []
 
-  for (const part of trimmed.split("/")) {
-    if (!part || part === ".") continue
+  const out = trimmed.split("/").reduce<string[]>((acc, part) => {
+    if (!part || part === ".") return acc
 
     if (part === "..") {
-      if (out.length > 0 && out[out.length - 1] !== "..") {
-        out.pop()
-        continue
+      if (acc.length > 0 && acc.at(-1) !== "..") {
+        acc.pop()
+
+        return acc
       }
 
-      if (!leadingSlash) out.push("..")
-      continue
+      if (!leadingSlash) acc.push("..")
+
+      return acc
     }
 
-    out.push(part)
-  }
+    acc.push(part)
+
+    return acc
+  }, [])
 
   return `${leadingSlash}${out.join("/")}`
 }
 
-/**
- * Produces normalized workspace-relative path variants for a candidate link, handling relative `base` folders,
- * active-file relative `../` climbs, git-diff `a/` and `b/` prefixes, workspace root folder prefixes, and
- * `@scope/pkg/...` monorepo paths.
- */
-export function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions): ExpandedVariants {
+function decodePathSafely(value: string): string {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions): ExpandedVariants {
   const primary = new Set<string>()
   const gitDiff = new Set<string>()
   const climbedTail = new Set<string>()
@@ -201,7 +208,7 @@ export function expandWorkspaceVariants(path: string, options?: ResolveWorkspace
  * Ranks workspace file candidates deterministically across 4 tiers:
  * 1. Exact workspace path match (or expanded monorepo/base/active-tab variant)
  * 2. Segment-boundary suffix match (`session/timeline/interaction.ts` -> `packages/app/src/session/timeline/interaction.ts`)
- * 3. Ordered directory segment subsequence (`packages/session-ui/markdown.tsx` -> `packages/session-ui/src/components/markdown.tsx`)
+ * 3. Package-anchored segment subsequence (`packages/session-ui/markdown.tsx` -> `packages/session-ui/src/components/markdown.tsx`)
  * 4. Bare basename match (`tool-renderer.tsx`), disambiguated by active/open package context.
  */
 export function scoreWorkspaceCandidates(
@@ -211,7 +218,6 @@ export function scoreWorkspaceCandidates(
 ): WorkspaceLinkResolution {
   const parsed = parseFileLink(rawPath)
   const variants = expandWorkspaceVariants(parsed.path, options)
-
   const normalizedCandidates = [...new Set(candidates.map((item) => item.replaceAll("\\", "/").replace(/\/+$/, "")))]
 
   if (!parsed.basename) {
@@ -220,8 +226,6 @@ export function scoreWorkspaceCandidates(
 
   const queryBase = parsed.basename.toLowerCase()
   const tsStem = stripJsImportExtension(queryBase)
-
-  // Prefer exact basename matches; fall back to .js -> .ts/.tsx ESM import alias when no exact basename exists.
   const exactBasenameMatches = normalizedCandidates.filter((file) => basenameOf(file).toLowerCase() === queryBase)
 
   const matchingPool =
@@ -261,11 +265,11 @@ export function scoreWorkspaceCandidates(
 
   if (!top) return { kind: "none" }
 
-  if (scored.length === 1) {
+  const second = scored[1]
+
+  if (!second) {
     return { kind: "match", path: top.path }
   }
-
-  const second = scored[1]!
 
   if (top.tier === 1 && second.tier > 1) {
     return { kind: "match", path: top.path }
@@ -293,62 +297,65 @@ function scoreTier(
   const fileLower = file.toLowerCase()
   const fileSegments = file.split("/").filter(Boolean)
 
-  for (const variant of variants.primary) {
-    if (fileLower === variant.toLowerCase()) {
-      return { tier: 1, baseScore: 1000 }
+  if (variants.primary.some((variant) => fileLower === variant.toLowerCase())) {
+    return { tier: 1, baseScore: 1000 }
+  }
+
+  const primarySuffix = variants.primary.find((variant) => {
+    const segments = variant.split("/").filter(Boolean)
+
+    return segments.length > 1 && hasTrailingSegmentMatch(segments, fileSegments)
+  })
+
+  if (primarySuffix) {
+    const variantSegments = primarySuffix.split("/").filter(Boolean)
+    const extraDepth = Math.max(0, fileSegments.length - variantSegments.length)
+
+    return {
+      tier: 2,
+      baseScore: 800 + variantSegments.length * 25 - extraDepth * 2,
     }
   }
 
-  for (const variant of variants.primary) {
-    const variantLower = variant.toLowerCase()
-    const variantSegments = variant.split("/").filter(Boolean)
-
-    if (variantSegments.length > 1 && fileLower.endsWith(`/${variantLower}`)) {
-      const extraDepth = Math.max(0, fileSegments.length - variantSegments.length)
-
-      return {
-        tier: 2,
-        baseScore: 800 + variantSegments.length * 25 - extraDepth * 2,
-      }
-    }
-  }
-
-  for (const tail of variants.climbedTail) {
-    const tailLower = tail.toLowerCase()
+  const climbedSuffix = variants.climbedTail.find((tail) => {
     const tailSegments = tail.split("/").filter(Boolean)
 
-    if (tailSegments.length > 1 && fileSegments.length > tailSegments.length && fileLower.endsWith(`/${tailLower}`)) {
-      const extraDepth = fileSegments.length - tailSegments.length
+    return tailSegments.length > 1 && fileSegments.length > tailSegments.length && hasTrailingSegmentMatch(tailSegments, fileSegments)
+  })
 
-      return {
-        tier: 2,
-        baseScore: 800 + tailSegments.length * 25 - extraDepth * 2,
-      }
+  if (climbedSuffix) {
+    const tailSegments = climbedSuffix.split("/").filter(Boolean)
+    const extraDepth = fileSegments.length - tailSegments.length
+
+    return {
+      tier: 2,
+      baseScore: 800 + tailSegments.length * 25 - extraDepth * 2,
     }
   }
 
-  for (const gitVariant of variants.gitDiff) {
-    const gitLower = gitVariant.toLowerCase()
-    const gitSegments = gitVariant.split("/").filter(Boolean)
+  const gitExact = variants.gitDiff.find((variant) => fileLower === variant.toLowerCase())
 
-    if (fileLower === gitLower) {
-      return {
-        tier: 2,
-        baseScore: 780,
-      }
-    }
+  if (gitExact) {
+    return { tier: 2, baseScore: 780 }
+  }
 
-    if (gitSegments.length > 1 && fileLower.endsWith(`/${gitLower}`)) {
-      const extraDepth = Math.max(0, fileSegments.length - gitSegments.length)
+  const gitSuffix = variants.gitDiff.find((variant) => {
+    const segments = variant.split("/").filter(Boolean)
 
-      return {
-        tier: 2,
-        baseScore: 740 + gitSegments.length * 20 - extraDepth * 2,
-      }
+    return segments.length > 1 && fileLower.endsWith(`/${variant.toLowerCase()}`)
+  })
+
+  if (gitSuffix) {
+    const gitSegments = gitSuffix.split("/").filter(Boolean)
+    const extraDepth = Math.max(0, fileSegments.length - gitSegments.length)
+
+    return {
+      tier: 2,
+      baseScore: 740 + gitSegments.length * 20 - extraDepth * 2,
     }
   }
 
-  if (!climbs && querySegments.length > 1 && isSegmentSubsequence(querySegments, fileSegments)) {
+  if (!climbs && querySegments.length > 1 && isAnchoredSubsequence(querySegments, fileSegments)) {
     const trailing = countTrailingMatches(querySegments, fileSegments)
     const extraDepth = Math.max(0, fileSegments.length - querySegments.length)
 
@@ -370,33 +377,28 @@ function scoreTier(
 
 function computeContextBonus(file: string, options?: ResolveWorkspaceOptions): number {
   if (!options) return 0
-  let bonus = 0
   const fileDir = directoryOf(file)
   const filePkg = packageRootOf(file)
 
-  if (options.base) {
-    const base = options.base.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
+  const base = options.base?.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
+  const baseBonus = base ? (fileDir === base ? 55 : file.startsWith(`${base}/`) ? 40 : 0) : 0
 
-    if (base && fileDir === base) bonus += 55
-    else if (base && file.startsWith(`${base}/`)) bonus += 40
-  }
+  const active = options.activePath?.replaceAll("\\", "/")
 
-  if (options.activePath) {
-    const active = options.activePath.replaceAll("\\", "/")
+  const activeBonus = active
+    ? directoryOf(active) === fileDir
+      ? 50
+      : filePkg && packageRootOf(active) === filePkg
+        ? 35
+        : 0
+    : 0
 
-    if (directoryOf(active) === fileDir) bonus += 50
-    else if (filePkg && packageRootOf(active) === filePkg) bonus += 35
-  }
+  const openBonus = options.openPaths?.length
+    ? (options.openPaths.includes(file) ? 15 : 0) +
+      (filePkg && options.openPaths.some((open) => packageRootOf(open.replaceAll("\\", "/")) === filePkg) ? 20 : 0)
+    : 0
 
-  if (options.openPaths?.length) {
-    if (options.openPaths.includes(file)) bonus += 15
-
-    if (filePkg && options.openPaths.some((open) => packageRootOf(open.replaceAll("\\", "/")) === filePkg)) {
-      bonus += 20
-    }
-  }
-
-  return bonus
+  return baseBonus + activeBonus + openBonus
 }
 
 function matchDirectoryCandidates(variants: readonly string[], candidates: readonly string[]): WorkspaceLinkResolution {
@@ -412,32 +414,51 @@ function matchDirectoryCandidates(variants: readonly string[], candidates: reado
   return { kind: "none" }
 }
 
-function isSegmentSubsequence(query: readonly string[], target: readonly string[]): boolean {
-  let qi = 0
+/**
+ * Requires the query's first directory segment to anchor at the candidate's root or package root
+ * (e.g. `packages/session-ui/markdown.tsx` or `session-ui/markdown.tsx`), preventing generic `src/utils.ts`
+ * from matching an unrelated `packages/x/src/deep/nested/utils.ts`.
+ */
+function isAnchoredSubsequence(query: readonly string[], target: readonly string[]): boolean {
+  const firstQuery = query[0]?.toLowerCase()
+  const firstTarget = target[0]?.toLowerCase()
+  const secondTarget = target[1]?.toLowerCase()
 
-  for (const segment of target) {
+  const anchoredAtStart =
+    firstQuery !== undefined &&
+    firstQuery !== "src" &&
+    (firstQuery === firstTarget ||
+      ((firstTarget === "packages" || firstTarget === "apps" || firstTarget === "crates") && firstQuery === secondTarget))
+
+  if (!anchoredAtStart) return false
+
+  const matched = target.reduce((qi, segment) => {
     const current = query[qi]
 
     if (current !== undefined && segmentMatch(current, segment, qi === query.length - 1)) {
-      qi += 1
+      return qi + 1
     }
-  }
 
-  return qi === query.length
+    return qi
+  }, 0)
+
+  return matched === query.length
 }
 
 function countTrailingMatches(query: readonly string[], target: readonly string[]): number {
-  let count = 0
+  const length = Math.min(query.length, target.length)
 
-  for (let i = 1; i <= Math.min(query.length, target.length); i++) {
-    const q = query[query.length - i]!
-    const t = target[target.length - i]!
+  return Array.from({ length }, (_, index) => index + 1).reduce((count, offset) => {
+    if (count !== offset - 1) return count
+    const q = query[query.length - offset]
+    const t = target[target.length - offset]
 
-    if (!segmentMatch(q, t, i === 1)) break
-    count += 1
-  }
+    return q !== undefined && t !== undefined && segmentMatch(q, t, offset === 1) ? count + 1 : count
+  }, 0)
+}
 
-  return count
+function hasTrailingSegmentMatch(query: readonly string[], target: readonly string[]): boolean {
+  return target.length >= query.length && countTrailingMatches(query, target) === query.length
 }
 
 function segmentMatch(querySeg: string, targetSeg: string, isBasename: boolean): boolean {

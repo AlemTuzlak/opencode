@@ -35,16 +35,21 @@ export function SessionFileBrowserTab(props: {
   onSelect: (path: string) => void
   onSelectPermanent: (path: string) => void
   filterRef?: (element: HTMLInputElement) => void
-  onFilterBind?: (set: (value: string) => void) => void
   mobile?: boolean
 }) {
   const ctx = useExtension()
+  const shared = useShared()
   const file = props.screen.file
   const resultsID = `session-file-browser-results-${createUniqueId()}`
-  const [store, setStore] = createStore<{ filter: string; explicitHighlight?: string }>({ filter: "" })
-  const filter = () => store.filter
-  const setFilter = (value: string) => setStore("filter", value)
-  props.onFilterBind?.(setFilter)
+  const [store, setStore] = createStore<{ explicitHighlight?: string }>({})
+  const filter = () => shared.filter.value()
+
+  const setFilter = (value: string) => {
+    shared.filter.set(value)
+
+    if (!value) shared.filter.setSelection(undefined)
+  }
+
   const setExplicitHighlight = (value: string) => setStore("explicitHighlight", value)
   const sidebarOpened = () => props.placeholder || props.state.opened()
   const query = createMemo(() => filter().trim())
@@ -265,19 +270,8 @@ export default function FileBrowser(props: {
       state={panel.sidebar}
       onSelect={(path) => shared.open(props.session, path, { tab: "preview" })}
       onSelectPermanent={(path) => shared.open(props.session, path)}
-      onFilterBind={(set) => {
-        shared.filter.set = set
-        onCleanup(() => {
-          if (shared.filter.set === set) shared.filter.set = undefined
-        })
-      }}
       filterRef={(element) => {
         shared.filter.element = element
-
-        if (shared.filter.query !== undefined) {
-          shared.filter.set?.(shared.filter.query)
-          shared.filter.query = undefined
-        }
 
         if (!shared.filter.pending) return
         shared.filter.pending = false

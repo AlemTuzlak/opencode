@@ -29,7 +29,7 @@ describe("parseFileLink", () => {
     ["foo.ts:0", "foo.ts", undefined],
     ["./a/../b.ts", "b.ts", undefined],
     ["../timeline/interaction.ts:74", "../timeline/interaction.ts", { start: 74, end: 74 }],
-    ["file:///C:/tmp/demo%20file.ts:12", "C:/tmp/demo%20file.ts", { start: 12, end: 12 }],
+    ["file:///C:/tmp/demo%20file.ts:12", "C:/tmp/demo file.ts", { start: 12, end: 12 }],
   ])("parses %s", (href, expectedPath, expectedSelection) => {
     const parsed = parseFileLink(href)
     expect(parsed.path).toBe(expectedPath)
@@ -126,10 +126,17 @@ describe("scoreWorkspaceCandidates", () => {
     })
   })
 
-  test("resolves ordered directory segment subsequences when intermediate folders like src/ are omitted (Tier 3)", () => {
+  test("resolves package-anchored directory segment subsequences when intermediate folders like src/ are omitted (Tier 3)", () => {
     expect(scoreWorkspaceCandidates("packages/session-ui/markdown.tsx", workspaceFiles)).toEqual({
       kind: "match",
       path: "packages/session-ui/src/components/markdown.tsx",
+    })
+    expect(scoreWorkspaceCandidates("session-ui/markdown.tsx", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/session-ui/src/components/markdown.tsx",
+    })
+    expect(scoreWorkspaceCandidates("src/utils.ts", ["packages/x/src/deep/nested/utils.ts"])).toEqual({
+      kind: "none",
     })
   })
 
