@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { API_VERSION, API_VERSION_HEADER } from "../src/api-version"
 import { isSessionNotFoundError, isUnauthorizedError, OpenCode } from "../src/promise/index"
 
 test("exposes every standard HTTP API group", () => {
@@ -1125,3 +1126,19 @@ const modelSwitchedEvent = {
     model: { id: "claude", providerID: "anthropic" },
   },
 }
+
+test("requests send the client's API version alongside configured headers", async () => {
+  let headers: Headers | undefined
+  const client = OpenCode.make({
+    baseUrl: "http://localhost:3000",
+    headers: { authorization: "Basic secret", [API_VERSION_HEADER]: "1" },
+    fetch: async (input, init) => {
+      headers = new Headers(init?.headers)
+      return Response.json({ version: "2.0.0", pid: 1, urls: [], paths: { tmp: "/tmp" } })
+    },
+  })
+
+  await client.server.info()
+  expect(headers?.get(API_VERSION_HEADER)).toBe(String(API_VERSION))
+  expect(headers?.get("authorization")).toBe("Basic secret")
+})

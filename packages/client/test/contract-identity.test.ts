@@ -37,3 +37,9 @@ test("shared DTO schemas construct and decode plain objects", () => {
   expect(Prompt.ast.annotations?.identifier).toBe("Prompt")
   expect(SessionMessage.AssistantText.ast.annotations?.identifier).toBe("Session.Message.Assistant.Text")
 })
+
+test("client API version mirrors the protocol", async () => {
+  const client = await import("../src/api-version")
+  const protocol = await import("@opencode/protocol/api-version")
+  expect(client).toEqual(protocol)
+})

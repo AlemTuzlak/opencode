@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { Context, DateTime, Effect, Stream } from "effect"
 import { HttpClient, HttpClientResponse } from "effect/unstable/http"
+import { API_VERSION, API_VERSION_HEADER } from "../src/api-version"
 import {
   AbsolutePath,
   Agent,
@@ -40,6 +41,25 @@ test("server.info decodes the readiness response", async () => {
     urls: ["http://localhost:3000"],
     paths: { tmp: "/tmp/opencode" },
   })
+})
+
+test("requests send the client's API version", async () => {
+  const headers: Array<string | undefined> = []
+  const httpClient = HttpClient.make((request) => {
+    headers.push(request.headers[API_VERSION_HEADER])
+    return Effect.succeed(
+      HttpClientResponse.fromWeb(
+        request,
+        Response.json({ version: "current", pid: 123, urls: [], paths: { tmp: "/tmp/opencode" } }),
+      ),
+    )
+  })
+  await Effect.gen(function* () {
+    const client = yield* OpenCode.make({ baseUrl: "http://localhost:3000" })
+    yield* client.server.info()
+  }).pipe(Effect.provideService(HttpClient.HttpClient, httpClient), Effect.runPromise)
+
+  expect(headers).toEqual([String(API_VERSION)])
 })
 
 test("vcs.base decodes nullable review-base metadata", async () => {

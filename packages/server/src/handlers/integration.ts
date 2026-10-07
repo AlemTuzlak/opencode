@@ -11,6 +11,7 @@ import {
 } from "@opencode/protocol/errors"
 import { response } from "../location"
 import { WellKnown } from "@opencode/core/wellknown"
+import { ApiVersion } from "../api-version"
 
 const authorize = <A, R>(effect: Effect.Effect<A, Integration.AuthorizationError, R>) =>
   effect.pipe(
@@ -29,10 +30,13 @@ export const IntegrationHandler = HttpApiBuilder.group(Api, "server.integration"
     return handlers
       .handle(
         "integration.list",
-        Effect.fn(function* () {
+        Effect.fn(function* (ctx) {
           yield* Plugin.awaitActivation
           const service = yield* Integration.Service
-          return yield* response(service.list())
+          const version = ApiVersion.requested(ctx.request)
+          return yield* response(
+            service.list().pipe(Effect.map((list) => list.map((item) => ApiVersion.integration(item, version)))),
+          )
         }),
       )
       .handle(
@@ -45,7 +49,7 @@ export const IntegrationHandler = HttpApiBuilder.group(Api, "server.integration"
               integrationID: ctx.params.integrationID,
               message: `Integration not found: ${ctx.params.integrationID}`,
             })
-          return yield* response(Effect.succeed(integration))
+          return yield* response(Effect.succeed(ApiVersion.integration(integration, ApiVersion.requested(ctx.request))))
         }),
       )
       .handle(

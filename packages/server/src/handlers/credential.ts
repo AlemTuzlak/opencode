@@ -3,14 +3,15 @@ import { ConflictError } from "@opencode/protocol/errors"
 import { Effect } from "effect"
 import { HttpApiBuilder, HttpApiSchema } from "effect/unstable/httpapi"
 import { Api } from "../api"
+import { ApiVersion } from "../api-version"
 
 export const CredentialHandler = HttpApiBuilder.group(Api, "server.credential", (handlers) =>
   handlers
     .handle(
       "credential.list",
-      Effect.fn(function* () {
+      Effect.fn(function* (ctx) {
         const credential = yield* Credential.Service
-        return { data: entries(yield* credential.all()) }
+        return { data: ApiVersion.credentials(entries(yield* credential.all()), ApiVersion.requested(ctx.request)) }
       }),
     )
     .handle(

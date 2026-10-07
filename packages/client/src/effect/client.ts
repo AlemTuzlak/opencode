@@ -1,5 +1,6 @@
 export * as OpenCode from "./client.js"
 
+import { API_VERSION, API_VERSION_HEADER } from "../api-version.js"
 import { Cause, Context, Effect, Stream } from "effect"
 import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { SharedEvents } from "../shared-events.js"
@@ -17,9 +18,10 @@ export const make = Effect.fn("OpenCode.make")(function* (options?: { readonly b
     Effect.provideService(
       HttpClient.HttpClient,
       HttpClient.mapRequestEffect(httpClient, (request) =>
-        Effect.map(CurrentHeaders, (headers) =>
-          headers ? HttpClientRequest.setHeaders(request, new Headers(headers)) : request,
-        ),
+        Effect.map(CurrentHeaders, (headers) => {
+          const versioned = HttpClientRequest.setHeader(request, API_VERSION_HEADER, String(API_VERSION))
+          return headers ? HttpClientRequest.setHeaders(versioned, new Headers(headers)) : versioned
+        }),
       ),
     ),
   )
