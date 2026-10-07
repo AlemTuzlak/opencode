@@ -199,6 +199,8 @@ export interface Files {
     options?: {
       /** Reloads even when the content has loaded. Defaults to false. */
       readonly force?: boolean
+      /** Suppresses the error toast when the file cannot be read, e.g. while probing a guessed path. Defaults to false. */
+      readonly silent?: boolean
     },
   ): Promise<void>
   /**

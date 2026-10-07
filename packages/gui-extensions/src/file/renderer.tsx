@@ -62,6 +62,7 @@ const setup: Setup<typeof File> = (ctx) => {
   const [handoff, setHandoff] = storage.memory<Handoff>("handoff", { initial: { sessions: {} } })
   const preference = desktop ? ctx.stores.app : undefined
   const [request, setRequest] = createStore<{ app?: OpenApp }>({})
+  const pendingQueries = new Map<string, string>()
   let clickController: AbortController | undefined
 
   onCleanup(() => clickController?.abort())
@@ -106,42 +107,34 @@ const setup: Setup<typeof File> = (ctx) => {
   const applySelection = (session: MountedSession, files: Files, path: string, selection: LineRange | undefined) => {
     if (!selection || artifactKind(path) !== "text") return
 
-    const tabId = fileTabId(files, path)
-    const tabKey = `file:${tabId}`
+    const tabKey = key(files, path)
     const existing = layout.scroll.get(session, tabKey)
-    const y = Math.max(0, (selection.start - 4) * 24)
 
     files.selection.set(path, selection)
     layout.scroll.set(session, tabKey, {
       x: existing?.x ?? 0,
-      y,
+      y: Math.max(0, (selection.start - 4) * 24),
     })
-
-    if (layout.state(tabKey, session) === "visible") {
-      requestAnimationFrame(() => {
-        const panel = document.getElementById(TABPANEL)
-        const viewport = panel?.querySelector('[data-component="scroll-view-viewport"]')
-
-        if (viewport instanceof HTMLElement) viewport.scrollTop = y
-      })
-    }
   }
 
-  const expandDirectory = (session: MountedSession, files: Files, directory: string, options?: OpenOptions) => {
-    const segments = directory
-      .replaceAll("\\", "/")
-      .replace(/^\/+|\/+$/g, "")
-      .split("/")
-      .filter(Boolean)
+  const openPicker = (session: MountedSession, query: string, options?: OpenOptions) => {
+    if (shared.filter.apply) {
+      pendingQueries.delete(session.key)
+      shared.filter.apply(session.key, query)
+    } else {
+      pendingQueries.set(session.key, query)
+    }
 
-    batch(() => {
-      shared.tree.setTab("all")
-      segments.forEach((_, index) => {
-        files.tree.expand(segments.slice(0, index + 1).join("/"))
-      })
-      layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
+    layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
 
-      if (layout.narrow() && !layout.side.opened(session)) layout.side.toggle(session)
+    if (options?.background) return
+
+    queueMicrotask(() => {
+      const element = shared.filter.element
+
+      if (element?.isConnected) return element.focus()
+
+      shared.filter.pending = true
     })
   }
 
@@ -155,7 +148,14 @@ const setup: Setup<typeof File> = (ctx) => {
           draft.tab = tab
         }),
     },
-    filter: {},
+    filter: {
+      take(sessionKey) {
+        const value = pendingQueries.get(sessionKey)
+        pendingQueries.delete(sessionKey)
+
+        return value
+      },
+    },
     installed: new Map(),
     app: preference && {
       current: () => preference.value.app,
@@ -339,14 +339,7 @@ const setup: Setup<typeof File> = (ctx) => {
 
       if (!session) return
 
-      layout.open(`file:${OPEN}`, session, { tab: "preview" })
-      queueMicrotask(() => {
-        const element = shared.filter.element
-
-        if (element?.isConnected) return element.focus()
-
-        shared.filter.pending = true
-      })
+      openPicker(session, "")
     },
   })
 
@@ -514,11 +507,25 @@ const setup: Setup<typeof File> = (ctx) => {
 
         if (!direct) return
 
-        const openResolvedFile = (targetPath: string) => {
+        const activateResolvedTab = (targetPath: string) => {
+          const latest = sessions.current()
+
+          if (signal.aborted || !latest || latest.key !== sessionKey || ctx.screen.current() !== screen) return
+
+          batch(() => {
+            applySelection(latest, files, targetPath, parsed.selection)
+            layout.open(key(files, targetPath), latest, { background: link.background })
+
+            // A tapped link switches the narrow-screen view; the side region still opens for when the window is wide.
+            if (layout.narrow() && !layout.side.opened(latest)) layout.side.toggle(latest)
+          })
+        }
+
+        const openResolvedFile = (targetPath: string, silent = false) => {
           const routed = sessions.current()
 
           if (!routed || routed.key !== sessionKey || ctx.screen.current() !== screen || signal.aborted) {
-            return
+            return Promise.resolve(false)
           }
 
           // The browser pane shows HTML it can load. While it is pending or off, the file opens as a tab instead.
@@ -531,41 +538,34 @@ const setup: Setup<typeof File> = (ctx) => {
           ) {
             pane.value.open(routed, workspaceFileUrl(files.root, targetPath))
 
-            return
+            return Promise.resolve(true)
           }
 
-          // Inline paths are guessed from text, so confirm the file exists before a tab appears for it.
+          // Confirm the file exists before a tab appears for it.
           // Always reread: V2 publishes no workspace file change events, so a cached copy can be stale.
-          void files.sync(targetPath, { force: true }).then(() => {
-            const latest = sessions.current()
+          return files.sync(targetPath, { force: true, silent }).then(() => {
+            if (signal.aborted || !files.get(targetPath)?.loaded) return false
 
-            if (
-              signal.aborted ||
-              !latest ||
-              latest.key !== sessionKey ||
-              ctx.screen.current() !== screen ||
-              !files.get(targetPath)?.loaded
-            )
-              return
+            activateResolvedTab(targetPath)
 
-            batch(() => {
-              applySelection(latest, files, targetPath, parsed.selection)
-              layout.open(key(files, targetPath), latest, { background: link.background })
-
-              // A tapped link switches the narrow-screen view; the side region still opens for when the window is wide.
-              if (layout.narrow() && !layout.side.opened(latest)) layout.side.toggle(latest)
-            })
+            return true
           })
         }
 
         const explicitAbsolute =
           /^[a-z]:\//i.test(parsed.path) || parsed.path.startsWith("/") || /^file:/i.test(link.href.trim())
 
-        if (explicitAbsolute || link.base !== undefined || files.get(direct)?.loaded) {
-          openResolvedFile(direct)
+        if (explicitAbsolute || link.base !== undefined) {
+          await openResolvedFile(direct)
 
           return
         }
+
+        // Probe the literal workspace path first so exact paths, newly created files, and gitignored files open
+        // without waiting on fuzzy search or risking 60-result truncation.
+        if (await openResolvedFile(direct, true)) return
+
+        if (signal.aborted) return
 
         const activeId = focused.get(screen)
         const activePath = activeId && isFileTab(activeId) ? fileTabPath(files, activeId) : undefined
@@ -589,14 +589,14 @@ const setup: Setup<typeof File> = (ctx) => {
 
         if (!latestSession || latestSession.key !== sessionKey || ctx.screen.current() !== screen) return
 
-        if (outcome.kind === "directory") {
-          expandDirectory(latestSession, files, outcome.query, { background: link.background })
+        if (outcome.kind === "ambiguous" || outcome.kind === "directory") {
+          openPicker(latestSession, outcome.query, { background: link.background })
 
           return
         }
 
-        openResolvedFile(outcome.kind === "match" || outcome.kind === "ambiguous" ? outcome.path : direct)
-      })().catch(() => undefined)
+        await openResolvedFile(outcome.kind === "match" ? outcome.path : direct)
+      })()
     },
   })
 

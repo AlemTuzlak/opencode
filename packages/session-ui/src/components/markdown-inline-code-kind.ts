@@ -182,6 +182,7 @@ const barePathExtensions = new Set([
   "edn",
   "ejs",
   "ejs.t",
+  "el",
   "eliom",
   "eliomi",
   "elm",
@@ -452,6 +453,7 @@ const barePathExtensions = new Set([
   "lvlib",
   "lvproj",
   "ly",
+  "m",
   "m3u",
   "m3u8",
   "m4",
@@ -666,6 +668,7 @@ const barePathExtensions = new Set([
   "pro",
   "proj",
   "prolog",
+  "properties",
   "proto",
   "prw",
   "ps1",
@@ -701,6 +704,7 @@ const barePathExtensions = new Set([
   "qml",
   "qnt",
   "qs",
+  "r",
   "rabl",
   "rake",
   "raku",
@@ -1123,20 +1127,16 @@ const barePathExtensions = new Set([
 const slashedOnlyExtensions = new Set([
   "d",
   "edge",
-  "el",
   "env",
   "f",
   "flex",
   "inc",
   "l",
   "lock",
-  "m",
   "mod",
   "mount",
-  "properties",
   "props",
   "pub",
-  "r",
   "red",
   "s",
   "service",
@@ -1419,39 +1419,57 @@ const pathFileNames = new Set([
   "yarn.lock",
 ])
 
-const exactCaseFileNames = new Set(["README", "LICENSE", "CHANGELOG", "COPYING", "AUTHORS", "NOTICE"])
+const exactCaseFileNames = new Set([
+  "AUTHORS",
+  "BUILD",
+  "CHANGELOG",
+  "COPYING",
+  "LICENSE",
+  "NOTICE",
+  "README",
+  "WORKSPACE",
+])
 
 const pathFileNamePrefixes = new Set([".env", "containerfile", "dockerfile", "makefile"])
 
-// Extensions that can collide with JS/DOM property or method names on bare `receiver.ext` tokens (e.g. `res.json`, `console.log`, `obj.c`).
-const ambiguousBareExtensions = new Set(["c", "css", "go", "h", "html", "json", "log", "sh", "sql", "txt", "xml"])
+// Single-letter or 2-letter extensions where 1-letter stems (`a.c`, `x.h`, `e.m`, `s.r`, `x.el`, `a.b.c`) are code variables.
+const ambiguousBareExtensions = new Set(["c", "el", "h", "m", "r"])
 
-const bareCodeReceivers = new Set([
-  "console",
-  "ctx",
-  "document",
-  "el",
-  "err",
-  "event",
-  "global",
-  "globalthis",
-  "item",
-  "log",
-  "logger",
-  "math",
-  "navigator",
-  "obj",
-  "object",
-  "process",
-  "promise",
-  "props",
-  "req",
-  "res",
-  "router",
-  "self",
-  "store",
-  "this",
-  "window",
+const ambiguousReceiverPairs = new Set([
+  "console.log",
+  "ctx.c",
+  "ctx.h",
+  "ctx.m",
+  "ctx.r",
+  "el.c",
+  "el.h",
+  "history.go",
+  "item.c",
+  "item.h",
+  "log.log",
+  "logger.log",
+  "math.c",
+  "math.h",
+  "math.m",
+  "math.r",
+  "obj.c",
+  "obj.el",
+  "obj.h",
+  "obj.m",
+  "obj.properties",
+  "obj.r",
+  "req.json",
+  "res.json",
+  "router.go",
+  "schema.properties",
+  "self.el",
+  "this.c",
+  "this.el",
+  "this.h",
+  "this.m",
+  "this.properties",
+  "this.r",
+  "window.go",
 ])
 
 const frameworkNames = new Set([
@@ -1528,9 +1546,14 @@ const workspaceDirectoryPrefixes = new Set([
   ".github",
   ".opencode",
   ".vscode",
+  "app",
   "apps",
+  "bin",
+  "cli",
+  "client",
   "cmd",
   "components",
+  "core",
   "crates",
   "docs",
   "e2e",
@@ -1539,9 +1562,13 @@ const workspaceDirectoryPrefixes = new Set([
   "packages",
   "script",
   "scripts",
+  "sdk",
+  "server",
   "src",
   "test",
   "tests",
+  "ui",
+  "web",
 ])
 
 const posixRootPrefixes = new Set([
@@ -1709,15 +1736,18 @@ function hasPathFileName(basename: string) {
 
 function isAmbiguousBareCode(basename: string) {
   if (basename.startsWith(".")) return false
-  const parts = basename.split(".")
+  const lower = basename.toLowerCase()
+
+  if (ambiguousReceiverPairs.has(lower)) return true
+
+  const parts = lower.split(".")
 
   if (parts.length < 2) return false
-  const ext = parts[parts.length - 1]!.toLowerCase()
+  const ext = parts[parts.length - 1]!
+
+  if (!ambiguousBareExtensions.has(ext)) return false
 
   if (parts.length > 2 && parts.slice(0, -1).every((part) => part.length === 1)) return true
 
-  if (!ambiguousBareExtensions.has(ext)) return false
-  const stem = parts[0]!.toLowerCase()
-
-  return (parts.length === 2 && stem.length <= 1) || bareCodeReceivers.has(stem)
+  return parts.length === 2 && parts[0]!.length <= 1
 }

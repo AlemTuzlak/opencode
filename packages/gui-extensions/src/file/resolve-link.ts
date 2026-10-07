@@ -10,7 +10,7 @@ export interface ParsedFileLink {
   readonly selection?: LineRange
 }
 
-export interface ResolveWorkspaceOptions {
+interface ResolveWorkspaceOptions {
   readonly rootName?: string
   readonly activePath?: string
   readonly openPaths?: readonly string[]
@@ -18,7 +18,7 @@ export interface ResolveWorkspaceOptions {
 
 export type WorkspaceLinkResolution =
   | { readonly kind: "match"; readonly path: string }
-  | { readonly kind: "ambiguous"; readonly path: string; readonly query: string }
+  | { readonly kind: "ambiguous"; readonly query: string }
   | { readonly kind: "directory"; readonly query: string }
   | { readonly kind: "none" }
 
@@ -29,6 +29,7 @@ interface ScoredCandidate {
 }
 
 interface ExpandedVariants {
+  readonly literal?: string
   readonly primary: readonly string[]
   readonly gitDiff: readonly string[]
   readonly climbedTail: readonly string[]
@@ -116,23 +117,26 @@ function normalizeRelativeSegments(input: string, decode: boolean): string {
   const driveMatch = trimmed.match(/^([a-z]:)\/(.*)$/i)
   const prefix = driveMatch ? `${driveMatch[1]}/` : trimmed.startsWith("/") ? "/" : ""
   const rest = driveMatch ? (driveMatch[2] ?? "") : prefix ? trimmed.slice(1) : trimmed
-  const out: string[] = []
 
-  for (const part of rest.split("/")) {
-    if (!part || part === ".") continue
+  const out = rest.split("/").reduce<string[]>((acc, part) => {
+    if (!part || part === ".") return acc
 
     if (part === "..") {
-      if (out.length > 0 && out.at(-1) !== "..") {
-        out.pop()
-      } else if (!prefix) {
-        out.push("..")
+      if (acc.length > 0 && acc.at(-1) !== "..") {
+        acc.pop()
+
+        return acc
       }
 
-      continue
+      if (!prefix) acc.push("..")
+
+      return acc
     }
 
-    out.push(part)
-  }
+    acc.push(part)
+
+    return acc
+  }, [])
 
   return `${prefix}${out.join("/")}`
 }
@@ -160,40 +164,39 @@ function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions
     if (resolved) primary.add(resolved)
   }
 
+  const literal = !(path === ".." || path.startsWith("../")) ? clean(path) : undefined
+
   if (path === ".." || path.startsWith("../")) {
     const tail = clean(path.replace(/^(?:\.\.\/)+/, ""))
 
     if (tail) climbedTail.add(tail)
-  } else {
-    const direct = clean(path)
+  } else if (literal) {
+    primary.add(literal)
 
-    if (direct) {
-      primary.add(direct)
+    const rootName = options?.rootName?.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
 
-      const rootName = options?.rootName?.replaceAll("\\", "/").replace(/^\/+|\/+$/g, "")
+    if (rootName && literal.toLowerCase().startsWith(`${rootName.toLowerCase()}/`)) {
+      const withoutRoot = clean(literal.slice(rootName.length + 1))
 
-      if (rootName && direct.toLowerCase().startsWith(`${rootName.toLowerCase()}/`)) {
-        const withoutRoot = clean(direct.slice(rootName.length + 1))
+      if (withoutRoot) primary.add(withoutRoot)
+    }
 
-        if (withoutRoot) primary.add(withoutRoot)
-      }
+    const scoped = literal.match(/^@[^/]+\/([^/]+)\/(.+)$/)
 
-      const scoped = direct.match(/^@[^/]+\/([^/]+)\/(.+)$/)
+    if (scoped) {
+      primary.add(`packages/${scoped[1]}/${scoped[2]}`)
+      primary.add(`${scoped[1]}/${scoped[2]}`)
+    }
 
-      if (scoped) {
-        primary.add(`packages/${scoped[1]}/${scoped[2]}`)
-        primary.add(`${scoped[1]}/${scoped[2]}`)
-      }
+    if (/^[ab]\/.+/.test(literal)) {
+      const withoutGitPrefix = clean(literal.slice(2))
 
-      if (/^[ab]\/.+/.test(direct)) {
-        const withoutGitPrefix = clean(direct.slice(2))
-
-        if (withoutGitPrefix) gitDiff.add(withoutGitPrefix)
-      }
+      if (withoutGitPrefix) gitDiff.add(withoutGitPrefix)
     }
   }
 
   return {
+    literal,
     primary: [...primary],
     gitDiff: [...gitDiff],
     climbedTail: [...climbedTail],
@@ -212,14 +215,7 @@ export function scoreWorkspaceCandidates(
   candidates: readonly string[],
   options?: ResolveWorkspaceOptions,
 ): WorkspaceLinkResolution {
-  return scoreParsedWorkspaceCandidates(parseFileLink(rawPath), candidates, options)
-}
-
-export function scoreParsedWorkspaceCandidates(
-  parsed: ParsedFileLink,
-  candidates: readonly string[],
-  options?: ResolveWorkspaceOptions,
-): WorkspaceLinkResolution {
+  const parsed = parseFileLink(rawPath)
   const variants = expandWorkspaceVariants(parsed.path, options)
   const normalizedCandidates = [...new Set(candidates.map((item) => item.replaceAll("\\", "/").replace(/\/+$/, "")))]
 
@@ -293,7 +289,6 @@ export function scoreParsedWorkspaceCandidates(
 
   return {
     kind: "ambiguous",
-    path: top.path,
     query: ambiguousPickerQuery(parsed, top.path),
   }
 }
@@ -314,27 +309,24 @@ export async function searchWorkspaceCandidates(input: {
     openPaths: input.openPaths,
   }
 
-  const safeSearch = (query: string, limit: number) =>
-    input.files.search(query, { limit, signal: input.signal }).catch(() => [])
-
-  const primary = await safeSearch(input.parsed.strippedPath, 60)
+  const primary = await input.files.search(input.parsed.strippedPath, { limit: 60, signal: input.signal })
 
   if (input.signal.aborted) return { kind: "none" }
 
   if (primary.length > 0) {
-    const scored = scoreParsedWorkspaceCandidates(input.parsed, primary, options)
+    const scored = scoreWorkspaceCandidates(input.parsed.path, primary, options)
 
     if (scored.kind !== "none") return scored
   }
 
   if (/^[ab]\/.+/.test(input.parsed.strippedPath)) {
     const withoutGitPrefix = input.parsed.strippedPath.slice(2)
-    const gitCandidates = await safeSearch(withoutGitPrefix, 60)
+    const gitCandidates = await input.files.search(withoutGitPrefix, { limit: 60, signal: input.signal })
 
     if (input.signal.aborted) return { kind: "none" }
 
     if (gitCandidates.length > 0) {
-      const scored = scoreParsedWorkspaceCandidates(input.parsed, gitCandidates, options)
+      const scored = scoreWorkspaceCandidates(input.parsed.path, gitCandidates, options)
 
       if (scored.kind !== "none") return scored
     }
@@ -343,12 +335,12 @@ export async function searchWorkspaceCandidates(input: {
   const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
 
   if (stem && stem !== input.parsed.strippedPath) {
-    const secondary = await safeSearch(stem, 100)
+    const secondary = await input.files.search(stem, { limit: 100, signal: input.signal })
 
     if (input.signal.aborted) return { kind: "none" }
 
     if (secondary.length > 0) {
-      return scoreParsedWorkspaceCandidates(input.parsed, secondary, options)
+      return scoreWorkspaceCandidates(input.parsed.path, secondary, options)
     }
   }
 
@@ -381,6 +373,10 @@ function scoreTier(
 ): { tier: 1 | 2 | 3 | 4; baseScore: number } | undefined {
   const fileLower = file.toLowerCase()
   const fileSegments = file.split("/").filter(Boolean)
+
+  if (variants.literal && fileLower === variants.literal.toLowerCase()) {
+    return { tier: 1, baseScore: 1005 }
+  }
 
   if (variants.primary.some((variant) => fileLower === variant.toLowerCase())) {
     return { tier: 1, baseScore: 1000 }
@@ -550,16 +546,14 @@ function isAnchoredSubsequence(query: readonly string[], target: readonly string
 function countTrailingMatches(query: readonly string[], target: readonly string[]): number {
   const limit = Math.min(query.length, target.length)
 
-  for (let offset = 1; offset <= limit; offset++) {
+  const mismatchIndex = Array.from({ length: limit }, (_, index) => index + 1).findIndex((offset) => {
     const q = query[query.length - offset]
     const t = target[target.length - offset]
 
-    if (q === undefined || t === undefined || !segmentMatch(q, t, offset === 1)) {
-      return offset - 1
-    }
-  }
+    return q === undefined || t === undefined || !segmentMatch(q, t, offset === 1)
+  })
 
-  return limit
+  return mismatchIndex === -1 ? limit : mismatchIndex
 }
 
 function hasTrailingSegmentMatch(query: readonly string[], target: readonly string[]): boolean {

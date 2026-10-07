@@ -20,7 +20,7 @@ export function localImagePath(source: string) {
   return decodePath(value)
 }
 
-const lineHash = /^(#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?)$/i
+const lineHash = /^#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i
 
 /**
  * A link is local when it names a file on disk instead of a web resource. Fragment-only and
