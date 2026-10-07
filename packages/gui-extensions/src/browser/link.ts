@@ -8,11 +8,14 @@ import type { Files } from "../sdk"
  */
 export function resolveLink(files: Files, href: string, base?: string) {
   // Agents cite locations as path:line, path:line:col, path:start-end, or path#Lstart-Lend; the file is what opens.
-  const withoutHash = href.replaceAll("\\", "/").replace(/#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i, "")
+  const withoutHash =
+    href
+      .replaceAll("\\", "/")
+      .replace(/#[^/]*$/, "")
+      .split("?", 1)[0] ?? ""
 
-  const value = withoutHash.replace(/:\d+(?::\d+)?(?:-\d+(?::\d+)?)?$/, (match, offset) =>
-    offset === 1 && /^[a-z]:/i.test(withoutHash) ? match : "",
-  )
+  const colonMatch = withoutHash.match(/^(.*?):\d+(?::\d+)?(?:-\d+(?::\d+)?)?$/)
+  const value = colonMatch && !/^[a-z]:$/i.test(colonMatch[1] ?? "") ? (colonMatch[1] ?? "") : withoutHash
 
   if (/^[a-z]:\//i.test(value) || value.startsWith("/")) return files.resolve(value)
   const relative = resolvePath(base ?? "", value)

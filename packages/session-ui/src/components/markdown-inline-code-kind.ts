@@ -440,6 +440,7 @@ const barePathExtensions = new Set([
   "lkml",
   "ll",
   "lockb",
+  "log",
   "logtalk",
   "lookml",
   "lpr",
@@ -1310,6 +1311,7 @@ const pathFileNames = new Set([
   "crontab",
   "dangerfile",
   "deliverfile",
+  "deno.lock",
   "dockerfile",
   "dune-project",
   "earthfile",
@@ -1414,25 +1416,10 @@ const pathFileNames = new Set([
 
 const exactCaseFileNames = new Set(["README", "LICENSE", "CHANGELOG", "COPYING", "AUTHORS", "NOTICE"])
 
-const pathFileNamePrefixes = new Set([
-  ".env",
-  "containerfile",
-  "dockerfile",
-  "makefile",
-])
+const pathFileNamePrefixes = new Set([".env", "containerfile", "dockerfile", "makefile"])
 
-// Extensions that can collide with JS/DOM property or method names on bare `receiver.ext` tokens (e.g. `res.json`, `req.text`, `obj.c`).
-const ambiguousBareExtensions = new Set([
-  "c",
-  "css",
-  "h",
-  "html",
-  "json",
-  "sh",
-  "sql",
-  "txt",
-  "xml",
-])
+// Extensions that can collide with JS/DOM property or method names on bare `receiver.ext` tokens (e.g. `res.json`, `console.log`, `obj.c`).
+const ambiguousBareExtensions = new Set(["c", "css", "h", "html", "json", "log", "sh", "sql", "txt", "xml"])
 
 const bareCodeReceivers = new Set([
   "console",
@@ -1447,6 +1434,8 @@ const bareCodeReceivers = new Set([
   "globalthis",
   "input",
   "item",
+  "log",
+  "logger",
   "math",
   "navigator",
   "node",
@@ -1467,6 +1456,76 @@ const bareCodeReceivers = new Set([
   "window",
 ])
 
+const frameworkNames = new Set([
+  "adonis.js",
+  "alpine.js",
+  "astro.js",
+  "auth.js",
+  "babylon.js",
+  "backbone.js",
+  "blitz.js",
+  "bun.js",
+  "cesium.js",
+  "chart.js",
+  "cytoscape.js",
+  "d3.js",
+  "day.js",
+  "deck.js",
+  "deno.js",
+  "ember.js",
+  "express.js",
+  "fastify.js",
+  "feathers.js",
+  "fuse.js",
+  "hapi.js",
+  "hljs.js",
+  "howler.js",
+  "inferno.js",
+  "katex.js",
+  "koa.js",
+  "leaflet.js",
+  "lit.js",
+  "mapbox.js",
+  "marked.js",
+  "marko.js",
+  "mermaid.js",
+  "meteor.js",
+  "mithril.js",
+  "moment.js",
+  "nest.js",
+  "next.js",
+  "node.js",
+  "nuxt.js",
+  "nw.js",
+  "p5.js",
+  "pdf.js",
+  "pg.js",
+  "pixi.js",
+  "plyr.js",
+  "popper.js",
+  "preact.js",
+  "prism.js",
+  "prisma.js",
+  "qwik.js",
+  "react.js",
+  "redwood.js",
+  "riot.js",
+  "sails.js",
+  "shiki.js",
+  "solid.js",
+  "sortable.js",
+  "stencil.js",
+  "swiper.js",
+  "three.js",
+  "tippy.js",
+  "tone.js",
+  "total.js",
+  "turf.js",
+  "video.js",
+  "vue.js",
+  "zone.js",
+])
+
 const workspaceDirectoryPrefixes = new Set([
   ".github",
   ".opencode",
@@ -1485,6 +1544,64 @@ const workspaceDirectoryPrefixes = new Set([
   "src",
   "test",
   "tests",
+])
+
+const posixRootPrefixes = new Set([
+  "applications",
+  "bin",
+  "dev",
+  "etc",
+  "home",
+  "lib",
+  "lib64",
+  "library",
+  "media",
+  "mnt",
+  "opt",
+  "private",
+  "proc",
+  "root",
+  "run",
+  "sbin",
+  "srv",
+  "sys",
+  "system",
+  "tmp",
+  "usr",
+  "var",
+  "volumes",
+  "workspace",
+  "workspaces",
+])
+
+const compoundMiddleExtensions = new Set([
+  "antlers",
+  "blade",
+  "cmake",
+  " cython",
+  "d",
+  "desktop",
+  "dll",
+  "ejs",
+  "erb",
+  "gradle",
+  "h",
+  "html",
+  "js",
+  "json",
+  "pc",
+  "php",
+  "rest",
+  "rs",
+  "sh",
+  "tcl",
+  "tfstate",
+  "toml",
+  "xml",
+  "xsp",
+  "yaml",
+  "yml",
+  "zig",
 ])
 
 const domainSegment =
@@ -1523,15 +1640,25 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   if (/^\/[a-z][a-z0-9-]*$/i.test(clean)) return
 
-  const anchored = /^\.\.?\//.test(clean) || /^~\//.test(clean) || /^[a-z]:\//i.test(clean) || clean.startsWith("/")
   const segments = clean.split("/").filter(Boolean)
 
   if (segments.length === 0) return
+
+  // Route patterns such as `/api/session/:id` have colon-prefixed parameter segments.
+  if (segments.some((segment, index) => index > 0 && segment.startsWith(":"))) return
+
+  const anchored =
+    /^\.\.?\//.test(clean) ||
+    /^~\//.test(clean) ||
+    /^[a-z]:\//i.test(clean) ||
+    (clean.startsWith("/") && posixRootPrefixes.has(segments[0]!.toLowerCase()))
 
   if (!anchored && segments.length > 1 && domainSegment.test(segments[0]!)) return
 
   const basename = segments[segments.length - 1]!
   const slashed = segments.length > 1 || clean.startsWith("/")
+
+  if (!slashed && frameworkNames.has(basename.toLowerCase())) return
 
   if (hasPathFileName(basename)) return "path"
 
@@ -1543,7 +1670,9 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   if (anchored && segments.length > 1) return "path"
 
-  if (segments.length > 1 && workspaceDirectoryPrefixes.has(segments[0]!.toLowerCase())) return "path"
+  if (!clean.startsWith("/") && segments.length > 1 && workspaceDirectoryPrefixes.has(segments[0]!.toLowerCase())) {
+    return "path"
+  }
 }
 
 function hasPathExtension(basename: string, slashed: boolean) {
@@ -1555,9 +1684,15 @@ function hasPathExtension(basename: string, slashed: boolean) {
   if (index <= 0) return false
   const ext = value.slice(index + 1)
 
-  if (barePathExtensions.has(ext)) return true
+  if (barePathExtensions.has(ext) || (slashed && slashedOnlyExtensions.has(ext))) return true
 
-  return slashed && slashedOnlyExtensions.has(ext)
+  const prefix = value.slice(0, index)
+  const prevDot = prefix.lastIndexOf(".")
+
+  if (prevDot <= 0) return false
+  const compound = value.slice(prevDot + 1)
+
+  return barePathExtensions.has(compound) && compoundMiddleExtensions.has(prefix.slice(prevDot + 1))
 }
 
 function hasPathFileName(basename: string) {
@@ -1574,13 +1709,17 @@ function hasPathFileName(basename: string) {
 
 function isAmbiguousBareCode(basename: string) {
   if (basename.startsWith(".")) return false
-  const index = basename.lastIndexOf(".")
+  const parts = basename.split(".")
 
-  if (index <= 0) return false
-  const ext = basename.slice(index + 1).toLowerCase()
+  if (parts.length < 2) return false
+  const ext = parts[parts.length - 1]!.toLowerCase()
+
+  if (parts.length > 2 && parts.slice(0, -1).every((part) => part.length === 1)) return true
 
   if (!ambiguousBareExtensions.has(ext)) return false
-  const stem = basename.slice(0, index).toLowerCase()
+
+  if (parts.length > 2) return true
+  const stem = parts[0]!.toLowerCase()
 
   return stem.length <= 1 || bareCodeReceivers.has(stem)
 }

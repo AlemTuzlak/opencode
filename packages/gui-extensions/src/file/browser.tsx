@@ -34,22 +34,15 @@ export function SessionFileBrowserTab(props: {
   state: PanelSidebar
   onSelect: (path: string) => void
   onSelectPermanent: (path: string) => void
-  filterRef?: (element: HTMLInputElement) => void
+  filterRef?: (element: HTMLInputElement, setFilter: (value: string) => void) => void
   mobile?: boolean
 }) {
   const ctx = useExtension()
-  const shared = useShared()
   const file = props.screen.file
   const resultsID = `session-file-browser-results-${createUniqueId()}`
-  const [store, setStore] = createStore<{ explicitHighlight?: string }>({})
-  const filter = () => shared.filter.value()
-
-  const setFilter = (value: string) => {
-    shared.filter.set(value)
-
-    if (!value) shared.filter.setSelection(undefined)
-  }
-
+  const [store, setStore] = createStore<{ filter: string; explicitHighlight?: string }>({ filter: "" })
+  const filter = () => store.filter
+  const setFilter = (value: string) => setStore("filter", value)
   const setExplicitHighlight = (value: string) => setStore("explicitHighlight", value)
   const sidebarOpened = () => props.placeholder || props.state.opened()
   const query = createMemo(() => filter().trim())
@@ -133,7 +126,7 @@ export function SessionFileBrowserTab(props: {
           onFilterChange={setFilter}
           onFilterKeyDown={onFilterKeyDown}
           filterAutofocus={props.placeholder && !props.mobile}
-          filterRef={(element) => props.filterRef?.(element)}
+          filterRef={(element) => props.filterRef?.(element, setFilter)}
           filterControls={resultsID}
           filterActiveDescendant={highlighted() ? optionID(highlighted()!) : undefined}
           filterExpanded={query().length > 0 && files().length > 0}
@@ -270,8 +263,17 @@ export default function FileBrowser(props: {
       state={panel.sidebar}
       onSelect={(path) => shared.open(props.session, path, { tab: "preview" })}
       onSelectPermanent={(path) => shared.open(props.session, path)}
-      filterRef={(element) => {
+      filterRef={(element, setFilter) => {
         shared.filter.element = element
+        shared.filter.apply = setFilter
+        onCleanup(() => {
+          if (shared.filter.apply === setFilter) shared.filter.apply = undefined
+        })
+
+        if (shared.filter.query !== undefined) {
+          setFilter(shared.filter.query)
+          shared.filter.query = undefined
+        }
 
         if (!shared.filter.pending) return
         shared.filter.pending = false

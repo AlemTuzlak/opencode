@@ -21,7 +21,11 @@ describe("parseFileLink", () => {
   test.each([
     ["packages/app/src/app.tsx", "packages/app/src/app.tsx", undefined],
     ["session/timeline/interaction.ts:74", "session/timeline/interaction.ts", { start: 74, end: 74 }],
-    ["packages/app/src/workspaces/files/model.tsx:164:11", "packages/app/src/workspaces/files/model.tsx", { start: 164, end: 164 }],
+    [
+      "packages/app/src/workspaces/files/model.tsx:164:11",
+      "packages/app/src/workspaces/files/model.tsx",
+      { start: 164, end: 164 },
+    ],
     ["src/components/markdown.tsx:398-410", "src/components/markdown.tsx", { start: 398, end: 410 }],
     ["src/components/markdown.tsx#L398", "src/components/markdown.tsx", { start: 398, end: 398 }],
     ["src/components/markdown.tsx#L398-L410", "src/components/markdown.tsx", { start: 398, end: 410 }],
@@ -29,6 +33,8 @@ describe("parseFileLink", () => {
     ["foo.ts:0", "foo.ts", undefined],
     ["./a/../b.ts", "b.ts", undefined],
     ["../timeline/interaction.ts:74", "../timeline/interaction.ts", { start: 74, end: 74 }],
+    ["src/C#/a.cs", "src/C#/a.cs", undefined],
+    ["a%2520b.ts", "a%2520b.ts", undefined],
     ["file:///C:/tmp/demo%20file.ts:12", "C:/tmp/demo file.ts", { start: 12, end: 12 }],
   ])("parses %s", (href, expectedPath, expectedSelection) => {
     const parsed = parseFileLink(href)
@@ -59,10 +65,27 @@ describe("scoreWorkspaceCandidates", () => {
     })
   })
 
-  test("ranks literal a/src/index.ts suffix match above git-diff stripped src/index.ts", () => {
+  test("enforces strict tier priority so Tier 1 exact matches always beat deep or context-boosted Tier 2 suffix matches", () => {
+    const deep = "a/b/c/d/e/f/g/h/i.ts"
+    expect(scoreWorkspaceCandidates(deep, [deep, `packages/x/${deep}`])).toEqual({
+      kind: "match",
+      path: deep,
+    })
+
+    const target = "packages/app/src/session/timeline/interaction.ts"
     expect(
-      scoreWorkspaceCandidates("a/src/index.ts", ["packages/a/src/index.ts", "src/index.ts"]),
+      scoreWorkspaceCandidates(target, [target, `fixtures/repo/${target}`], {
+        activePath: "fixtures/repo/packages/app/src/session/timeline/screen.ts",
+        openPaths: [`fixtures/repo/${target}`],
+      }),
     ).toEqual({
+      kind: "match",
+      path: target,
+    })
+  })
+
+  test("ranks literal a/src/index.ts suffix match above git-diff stripped src/index.ts", () => {
+    expect(scoreWorkspaceCandidates("a/src/index.ts", ["packages/a/src/index.ts", "src/index.ts"])).toEqual({
       kind: "match",
       path: "packages/a/src/index.ts",
     })
@@ -92,7 +115,7 @@ describe("scoreWorkspaceCandidates", () => {
     })
   })
 
-  test("resolves partial suffix paths and TypeScript .js import aliases (Tier 2)", () => {
+  test("resolves partial suffix paths, TypeScript .js import aliases, and extensionless doc stems", () => {
     expect(scoreWorkspaceCandidates("session/timeline/interaction.ts:74", workspaceFiles)).toEqual({
       kind: "match",
       path: "packages/app/src/session/timeline/interaction.ts",
@@ -105,16 +128,18 @@ describe("scoreWorkspaceCandidates", () => {
       kind: "match",
       path: "packages/core/src/filesystem/search.ts",
     })
+    expect(scoreWorkspaceCandidates("README", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "docs/README.md",
+    })
   })
 
-  test("marks equal-suffix matches at different depths as ambiguous unless context disambiguates them", () => {
+  test("marks equal-suffix matches at different depths as ambiguous unless context or case disambiguates them", () => {
     expect(
       scoreWorkspaceCandidates("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"]),
     ).toEqual({
       kind: "ambiguous",
-      path: "packages/a/src/index.ts",
       query: "src/index.ts",
-      matches: ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"],
     })
     expect(
       scoreWorkspaceCandidates("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"], {
@@ -123,6 +148,10 @@ describe("scoreWorkspaceCandidates", () => {
     ).toEqual({
       kind: "match",
       path: "packages/foo/bar/src/index.ts",
+    })
+    expect(scoreWorkspaceCandidates("app.tsx", ["packages/a/App.tsx", "packages/b/app.tsx"])).toEqual({
+      kind: "match",
+      path: "packages/b/app.tsx",
     })
   })
 
@@ -163,12 +192,14 @@ describe("scoreWorkspaceCandidates", () => {
     })
   })
 
-  test("marks tied duplicate basenames as ambiguous when no context disambiguates them", () => {
+  test("marks tied duplicate basenames as ambiguous and normalizes .js alias picker queries", () => {
     expect(scoreWorkspaceCandidates("index.ts", workspaceFiles)).toEqual({
       kind: "ambiguous",
-      path: "packages/app/src/index.ts",
       query: "index.ts",
-      matches: ["packages/app/src/index.ts", "packages/session-ui/src/index.ts"],
+    })
+    expect(scoreWorkspaceCandidates("util.js", ["packages/a/util.ts", "packages/b/util.ts"])).toEqual({
+      kind: "ambiguous",
+      query: "util.ts",
     })
   })
 
@@ -176,15 +207,10 @@ describe("scoreWorkspaceCandidates", () => {
     expect(scoreWorkspaceCandidates("packages/core/src/filesystem", workspaceFiles)).toEqual({
       kind: "directory",
       query: "packages/core/src/filesystem/",
-      matches: ["packages/core/src/filesystem/search.ts"],
     })
     expect(scoreWorkspaceCandidates("packages/session-ui/src/components", workspaceFiles)).toEqual({
       kind: "directory",
       query: "packages/session-ui/src/components/",
-      matches: [
-        "packages/session-ui/src/components/markdown.tsx",
-        "packages/session-ui/src/components/markdown-inline-code-kind.ts",
-      ],
     })
   })
 

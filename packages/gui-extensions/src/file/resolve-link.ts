@@ -1,4 +1,5 @@
-import type { LineRange } from "../sdk"
+import { getFilename } from "@opencode/util/path"
+import type { Files, LineRange } from "../sdk"
 import { resolveArtifactPath } from "./artifact"
 
 export interface ParsedFileLink {
@@ -18,15 +19,14 @@ export interface ResolveWorkspaceOptions {
 
 export type WorkspaceLinkResolution =
   | { readonly kind: "match"; readonly path: string }
-  | { readonly kind: "ambiguous"; readonly path: string; readonly query: string; readonly matches: readonly string[] }
-  | { readonly kind: "directory"; readonly query: string; readonly matches: readonly string[] }
+  | { readonly kind: "ambiguous"; readonly query: string }
+  | { readonly kind: "directory"; readonly query: string }
   | { readonly kind: "none" }
 
 interface ScoredCandidate {
   readonly path: string
   readonly tier: 1 | 2 | 3 | 4
   readonly score: number
-  readonly contextBonus: number
 }
 
 interface ExpandedVariants {
@@ -35,9 +35,11 @@ interface ExpandedVariants {
   readonly climbedTail: readonly string[]
 }
 
-const hashLinePattern = /^#L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i
+const hashLineSuffix = /^(.*?)#L(\d+)(?:C\d+)?(?:-L?(\d+)(?:C\d+)?)?$/i
 
 const colonLinePattern = /^(.*?):(\d+)(?::\d+)?(?:-(\d+)(?::\d+)?)?$/
+
+const docStemNames = new Set(["readme", "license", "changelog", "copying", "authors", "notice"])
 
 /**
  * Extracts a normalized file path and optional 1-based line range from a markdown link or inline-code token.
@@ -45,8 +47,9 @@ const colonLinePattern = /^(.*?):(\d+)(?::\d+)?(?:-(\d+)(?::\d+)?)?$/
  */
 export function parseFileLink(href: string): ParsedFileLink {
   const raw = href.trim().replaceAll("\\", "/")
+  const isFileUrl = /^file:\/\//i.test(raw)
   const extracted = extractLineSelection(raw)
-  const clean = normalizeRelativeSegments(extracted.path)
+  const clean = normalizeRelativeSegments(extracted.path, isFileUrl)
   const withoutClimb = clean.replace(/^(?:\.\.\/)+/, "")
   const strippedPath = !clean.startsWith("../") && /^[ab]\/.+/.test(withoutClimb) ? withoutClimb.slice(2) : withoutClimb
   const segments = strippedPath.split("/").filter(Boolean)
@@ -62,15 +65,12 @@ export function parseFileLink(href: string): ParsedFileLink {
 }
 
 function extractLineSelection(input: string) {
-  const hashIndex = input.indexOf("#")
-  const beforeHash = hashIndex === -1 ? input : input.slice(0, hashIndex)
-  const hash = hashIndex === -1 ? "" : input.slice(hashIndex)
-  const withoutQuery = beforeHash.split("?", 1)[0] ?? ""
-  const hashMatch = hash.match(hashLinePattern)
+  const hashMatch = input.match(hashLineSuffix)
 
   if (hashMatch) {
-    const first = Number(hashMatch[1])
-    const second = hashMatch[2] ? Number(hashMatch[2]) : first
+    const first = Number(hashMatch[2])
+    const second = hashMatch[3] ? Number(hashMatch[3]) : first
+    const withoutQuery = (hashMatch[1] ?? "").split("?", 1)[0] ?? ""
 
     return {
       path: withoutQuery,
@@ -84,6 +84,9 @@ function extractLineSelection(input: string) {
     }
   }
 
+  // Strip a trailing fragment only when it follows the final slash (preserving directory names such as `src/C#/a.cs`).
+  const withoutFragment = input.replace(/#[^/]*$/, "")
+  const withoutQuery = withoutFragment.split("?", 1)[0] ?? ""
   const colonMatch = withoutQuery.match(colonLinePattern)
 
   if (colonMatch && !/^[a-z]:$/i.test(colonMatch[1] ?? "")) {
@@ -105,9 +108,9 @@ function extractLineSelection(input: string) {
   return { path: withoutQuery, selection: undefined }
 }
 
-function normalizeRelativeSegments(input: string): string {
+function normalizeRelativeSegments(input: string, decode: boolean): string {
   const withoutProtocol = input.replace(/^file:\/\/(?:localhost)?/i, "").replace(/^\/([a-z]:\/)/i, "$1")
-  const decoded = decodePathSafely(withoutProtocol)
+  const decoded = decode ? decodePathSafely(withoutProtocol) : withoutProtocol
   const trimmed = decoded.replace(/^\.\//, "").replace(/\/+$/, "")
 
   if (!trimmed) return ""
@@ -226,6 +229,7 @@ export function scoreWorkspaceCandidates(
 
   const queryBase = parsed.basename.toLowerCase()
   const tsStem = stripJsImportExtension(queryBase)
+  const isDocStem = !queryBase.includes(".") && docStemNames.has(queryBase)
   const exactBasenameMatches = normalizedCandidates.filter((file) => basenameOf(file).toLowerCase() === queryBase)
 
   const matchingPool =
@@ -233,7 +237,9 @@ export function scoreWorkspaceCandidates(
       ? exactBasenameMatches
       : tsStem
         ? normalizedCandidates.filter((file) => isTsAliasMatch(basenameOf(file).toLowerCase(), tsStem))
-        : []
+        : isDocStem
+          ? normalizedCandidates.filter((file) => isDocStemMatch(basenameOf(file).toLowerCase(), queryBase))
+          : []
 
   if (matchingPool.length === 0) {
     return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
@@ -248,18 +254,19 @@ export function scoreWorkspaceCandidates(
       if (!tier) return []
 
       const contextBonus = computeContextBonus(file, options)
-      const caseBonus = basenameOf(file) === parsed.basename ? 4 : 0
+      const caseBonus = basenameOf(file) === parsed.basename ? 16 : 0
 
       return [
         {
           path: file,
           tier: tier.tier,
           score: tier.baseScore + contextBonus + caseBonus,
-          contextBonus,
         },
       ]
     })
-    .toSorted((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path))
+    .toSorted(
+      (a, b) => a.tier - b.tier || b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path),
+    )
 
   const top = scored[0]
 
@@ -267,25 +274,82 @@ export function scoreWorkspaceCandidates(
 
   const second = scored[1]
 
-  if (!second) {
+  if (!second || top.tier < second.tier) {
     return { kind: "match", path: top.path }
   }
 
-  if (top.tier === 1 && second.tier > 1) {
+  if (top.tier === 1 && top.score > second.score) {
     return { kind: "match", path: top.path }
   }
 
-  // Require a meaningful score lead (more matched segments or active-package context, not just path depth).
+  // Require a meaningful score lead (more matched segments, exact case, or active-package context, not just path depth).
   if (top.score - second.score >= 15) {
     return { kind: "match", path: top.path }
   }
 
   return {
     kind: "ambiguous",
-    path: top.path,
-    query: parsed.strippedPath,
-    matches: scored.map((item) => item.path),
+    query: ambiguousPickerQuery(parsed, top.path),
   }
+}
+
+export async function searchWorkspaceCandidates(input: {
+  readonly files: Files
+  readonly parsed: ParsedFileLink
+  readonly base?: string
+  readonly activePath?: string
+  readonly openPaths?: readonly string[]
+  readonly signal: AbortSignal
+}): Promise<WorkspaceLinkResolution> {
+  const root = input.files.root.replaceAll("\\", "/").replace(/\/+$/, "")
+  const rootName = getFilename(root)
+
+  const options: ResolveWorkspaceOptions = {
+    base: input.base,
+    rootName,
+    activePath: input.activePath,
+    openPaths: input.openPaths,
+  }
+
+  const primary = await input.files.search(input.parsed.strippedPath, { limit: 60, signal: input.signal })
+
+  if (input.signal.aborted) return { kind: "none" }
+
+  if (primary.length > 0) {
+    const scored = scoreWorkspaceCandidates(input.parsed.path, primary, options)
+
+    if (scored.kind !== "none") return scored
+  }
+
+  const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
+
+  if (stem && stem !== input.parsed.strippedPath) {
+    const secondary = await input.files.search(stem, { limit: 100, signal: input.signal })
+
+    if (input.signal.aborted) return { kind: "none" }
+
+    if (secondary.length > 0) {
+      return scoreWorkspaceCandidates(input.parsed.path, secondary, options)
+    }
+  }
+
+  return { kind: "none" }
+}
+
+function ambiguousPickerQuery(parsed: ParsedFileLink, topPath: string): string {
+  const topBase = basenameOf(topPath)
+
+  if (topBase.toLowerCase() !== parsed.basename.toLowerCase()) {
+    return topBase
+  }
+
+  if (parsed.strippedPath.startsWith("@")) {
+    const scoped = parsed.strippedPath.match(/^@[^/]+\/([^/]+)\/(.+)$/)
+
+    if (scoped) return `${scoped[1]}/${scoped[2]}`
+  }
+
+  return parsed.strippedPath
 }
 
 function scoreTier(
@@ -320,7 +384,11 @@ function scoreTier(
   const climbedSuffix = variants.climbedTail.find((tail) => {
     const tailSegments = tail.split("/").filter(Boolean)
 
-    return tailSegments.length > 1 && fileSegments.length > tailSegments.length && hasTrailingSegmentMatch(tailSegments, fileSegments)
+    return (
+      tailSegments.length > 1 &&
+      fileSegments.length > tailSegments.length &&
+      hasTrailingSegmentMatch(tailSegments, fileSegments)
+    )
   })
 
   if (climbedSuffix) {
@@ -342,7 +410,7 @@ function scoreTier(
   const gitSuffix = variants.gitDiff.find((variant) => {
     const segments = variant.split("/").filter(Boolean)
 
-    return segments.length > 1 && fileLower.endsWith(`/${variant.toLowerCase()}`)
+    return segments.length > 1 && hasTrailingSegmentMatch(segments, fileSegments)
   })
 
   if (gitSuffix) {
@@ -407,7 +475,7 @@ function matchDirectoryCandidates(variants: readonly string[], candidates: reado
     const matches = candidates.filter((file) => file.toLowerCase().startsWith(prefix))
 
     if (matches.length > 0) {
-      return { kind: "directory", query: `${variant}/`, matches }
+      return { kind: "directory", query: `${variant}/` }
     }
   }
 
@@ -428,7 +496,8 @@ function isAnchoredSubsequence(query: readonly string[], target: readonly string
     firstQuery !== undefined &&
     firstQuery !== "src" &&
     (firstQuery === firstTarget ||
-      ((firstTarget === "packages" || firstTarget === "apps" || firstTarget === "crates") && firstQuery === secondTarget))
+      ((firstTarget === "packages" || firstTarget === "apps" || firstTarget === "crates") &&
+        firstQuery === secondTarget))
 
   if (!anchoredAtStart) return false
 
@@ -470,7 +539,9 @@ function segmentMatch(querySeg: string, targetSeg: string, isBasename: boolean):
   if (!isBasename) return false
   const stem = stripJsImportExtension(q)
 
-  return !!stem && isTsAliasMatch(t, stem)
+  if (stem && isTsAliasMatch(t, stem)) return true
+
+  return !q.includes(".") && docStemNames.has(q) && isDocStemMatch(t, q)
 }
 
 function stripJsImportExtension(basename: string): string | undefined {
@@ -485,6 +556,16 @@ function isTsAliasMatch(candidateBasename: string, stem: string): boolean {
     candidateBasename === `${stem}.tsx` ||
     candidateBasename === `${stem}.mts` ||
     candidateBasename === `${stem}.cts`
+  )
+}
+
+function isDocStemMatch(candidateBasename: string, stem: string): boolean {
+  return (
+    candidateBasename === `${stem}.md` ||
+    candidateBasename === `${stem}.mdx` ||
+    candidateBasename === `${stem}.txt` ||
+    candidateBasename === `${stem}.rst` ||
+    candidateBasename === `${stem}.adoc`
   )
 }
 
