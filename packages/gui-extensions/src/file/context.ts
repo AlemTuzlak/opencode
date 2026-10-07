@@ -22,13 +22,8 @@ export interface FileShared {
     /** The directory whose root listing the tree last refreshed. */
     directory?: string
   }
-  /** The file browser's filter input and per-session filter text. */
-  readonly filter: {
-    element?: HTMLInputElement
-    pending?: boolean
-    get(session: string): string
-    set(session: string, value: string): void
-  }
+  /** The file browser's filter input, focused by the "Open file" menu item even when the browser chunk mounts later. */
+  readonly filter: { element?: HTMLInputElement; pending?: boolean }
   /** Open-in-app availability checks, one per app for the window's lifetime. */
   readonly installed: Map<string, Promise<boolean>>
   /** The open-in-app choice. Desktop only. */
@@ -39,11 +34,6 @@ export interface FileShared {
   readonly handoff: {
     get(session: string, path: string): LineRange | null | undefined
     set(session: string, files: Record<string, LineRange | null>): void
-  }
-  /** Restores scroll on a mounted file view when a link action selects a line range on it. */
-  readonly restoreScroll: {
-    register(session: string, path: string, run: () => void): () => void
-    run(session: string, path: string): void
   }
   /** The tab is the session's selected side tab. */
   active(session: MountedSession, id: string): boolean

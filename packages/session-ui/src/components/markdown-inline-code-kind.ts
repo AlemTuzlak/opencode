@@ -669,7 +669,6 @@ const barePathExtensions = new Set([
   "pro",
   "proj",
   "prolog",
-  "properties",
   "props",
   "proto",
   "prw",
@@ -1147,6 +1146,7 @@ const slashedOnlyExtensions = new Set([
   "mod",
   "mount",
   "move",
+  "properties",
   "pub",
   "red",
   "s",
@@ -1294,6 +1294,7 @@ const pathFileNames = new Set([
   "apache2.conf",
   "apkbuild",
   "app.config",
+  "application.properties",
   "berksfile",
   "brewfile",
   "browserslist",
@@ -1342,6 +1343,7 @@ const pathFileNames = new Set([
   "go.mod",
   "go.sum",
   "go.work",
+  "gradle.properties",
   "gradlew",
   "gtkrc",
   "gtkrc-2.0",
@@ -1441,178 +1443,24 @@ const exactCaseFileNames = new Set([
 
 const pathFileNamePrefixes = new Set([".env", "containerfile", "dockerfile", "makefile"])
 
-// Single-letter or 2-letter extensions where 1-letter stems (`a.c`, `x.h`, `e.m`, `s.r`, `x.el`, `a.b.c`) are code variables.
-const ambiguousBareExtensions = new Set(["c", "el", "h", "m", "r"])
+// Extensions where 1-letter stems (`a.c`, `x.h`, `e.m`, `s.r`, `x.el`, `c.json`, `_.zip`, `a.b.c`) are code variables.
+const shortStemExcludedExtensions = new Set(["c", "db", "el", "h", "json", "log", "m", "r", "sh", "zip"])
 
-const ambiguousReceiverPairs = new Set([
-  "config.properties",
-  "console.log",
-  "ctx.c",
-  "ctx.h",
-  "ctx.m",
-  "ctx.r",
-  "deps.fs",
-  "el.c",
-  "el.h",
-  "item.c",
-  "item.h",
-  "item.spec",
-  "log.log",
-  "logger.log",
-  "obj.c",
-  "obj.el",
-  "obj.h",
-  "obj.log",
-  "obj.m",
-  "obj.properties",
-  "obj.r",
-  "options.fs",
-  "req.json",
-  "res.json",
-  "schema.properties",
-  "self.el",
-  "self.log",
-  "session.diff",
-  "snapshot.diff",
-  "this.c",
-  "this.el",
-  "this.h",
-  "this.log",
-  "this.m",
-  "this.properties",
-  "this.props",
-  "this.r",
-  "vim.cmd",
-])
-
-const frameworkNames = new Set([
-  "Adonis.js",
-  "Alpine.js",
-  "Astro.js",
-  "Auth.js",
-  "Babylon.js",
-  "Backbone.js",
-  "Blitz.js",
-  "Bun.js",
-  "Cesium.js",
-  "Chart.js",
-  "Cytoscape.js",
-  "D3.js",
-  "Day.js",
-  "Deck.js",
-  "Deno.js",
-  "Ember.js",
-  "Express.js",
-  "Fastify.js",
-  "Feathers.js",
-  "Fuse.js",
-  "Hapi.js",
-  "Hljs.js",
-  "Howler.js",
-  "Inferno.js",
-  "KaTeX.js",
-  "Koa.js",
-  "Leaflet.js",
-  "Lit.js",
-  "Mapbox.js",
-  "Marked.js",
-  "Marko.js",
-  "Mermaid.js",
-  "Meteor.js",
-  "Mithril.js",
-  "Moment.js",
-  "Nest.js",
-  "Next.js",
-  "Node.js",
-  "Nuxt.js",
-  "NW.js",
-  "P5.js",
-  "PDF.js",
-  "Pg.js",
-  "Pixi.js",
-  "Plyr.js",
-  "Popper.js",
-  "Preact.js",
-  "Prism.js",
-  "Prisma.js",
-  "Qwik.js",
-  "React.js",
-  "Redwood.js",
-  "Riot.js",
-  "Sails.js",
-  "Shiki.js",
-  "Solid.js",
-  "Sortable.js",
-  "Stencil.js",
-  "Swiper.js",
-  "Three.js",
-  "Tippy.js",
-  "Tone.js",
-  "Total.js",
-  "Turf.js",
-  "Video.js",
-  "Vue.js",
-  "Zone.js",
-])
-
-const twoSegmentDirectoryPrefixes = new Set([".github", ".opencode", ".vscode", "apps", "crates", "packages"])
-
-const workspaceDirectoryPrefixes = new Set([
-  ".github",
-  ".opencode",
-  ".vscode",
-  "app",
-  "apps",
-  "bin",
-  "cli",
-  "client",
-  "cmd",
-  "components",
-  "core",
-  "crates",
-  "docs",
-  "e2e",
-  "internal",
-  "lib",
-  "packages",
-  "script",
-  "scripts",
-  "sdk",
-  "server",
-  "src",
-  "test",
-  "tests",
-  "ui",
-  "web",
-])
-
-const posixRootPrefixes = new Set([
-  "applications",
-  "bin",
-  "dev",
-  "etc",
-  "home",
-  "lib",
-  "lib64",
-  "library",
-  "media",
-  "mnt",
-  "opt",
-  "private",
-  "proc",
-  "root",
-  "run",
-  "sbin",
-  "srv",
-  "sys",
-  "system",
-  "tmp",
-  "users",
-  "usr",
-  "var",
-  "volumes",
-  "workspace",
-  "workspaces",
+// Identifier stems on bare `stem.ext` tokens that are code receivers rather than file names.
+const bareReceiverStems = new Set([
+  "_",
+  "console",
+  "ctx",
+  "deps",
+  "el",
+  "logger",
+  "obj",
+  "options",
+  "req",
+  "res",
+  "self",
+  "this",
+  "vim",
 ])
 
 const compoundMiddleExtensions = new Set([
@@ -1645,14 +1493,16 @@ const compoundMiddleExtensions = new Set([
 ])
 
 const domainSegment =
-  /^(?:localhost(?::\d+)?|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|ai|edu|gov|co|me|gg|tv|xyz|fyi|land|cloud|tech|tools|page|site|online|local|localhost|internal|test|example|invalid)(?::\d+)?)$/
+  /^(?:localhost(?::\d+)?|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|ai|app|sh|rs|edu|gov|co|me|gg|tv|xyz|fyi|land|cloud|tech|tools|page|site|online|local|localhost|internal|test|example|invalid)(?::\d+)?)$/
 
 const lineHashSuffix = /#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/i
+
+const trailingExtensionFragment = /(\.[a-z0-9]+)#[^/.]*$/i
 
 const lineColonSuffix = /:\d+(?::\d+)?(?:-\d+(?::\d+)?)?:?$/
 
 function stripInlineCodeLocation(text: string): string {
-  const withoutHash = text.replace(lineHashSuffix, "")
+  const withoutHash = text.replace(lineHashSuffix, "").replace(trailingExtensionFragment, "$1")
 
   if (!lineColonSuffix.test(withoutHash)) return withoutHash
   const candidate = withoutHash.replace(lineColonSuffix, "")
@@ -1674,54 +1524,44 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   const stripped = stripInlineCodeLocation(text).replaceAll("\\", "/")
 
-  if (!stripped || stripped === "/" || stripped.startsWith("//") || stripped.startsWith("-")) return
+  if (
+    !stripped ||
+    stripped === "/" ||
+    stripped.startsWith("//") ||
+    stripped.startsWith("-") ||
+    stripped.startsWith("~/") ||
+    stripped.endsWith("/")
+  ) {
+    return
+  }
 
-  const trailingSlash = stripped.endsWith("/")
-  const clean = stripped.replace(/\/+$/, "")
+  if (stripped === "." || stripped === "..") return
 
-  if (!clean || clean === "." || clean === "..") return
+  if (/^\/[a-z][a-z0-9-]*$/i.test(stripped)) return
 
-  if (/^\/[a-z][a-z0-9-]*$/i.test(clean)) return
-
-  const segments = clean.split("/").filter(Boolean)
+  const segments = stripped.split("/").filter(Boolean)
 
   if (segments.length === 0) return
 
   // Route patterns such as `/api/session/:id` have colon-prefixed parameter segments.
   if (segments.some((segment, index) => index > 0 && segment.startsWith(":"))) return
 
-  const anchored =
-    /^\.\.?\//.test(clean) ||
-    /^[a-z]:\//i.test(clean) ||
-    (clean.startsWith("/") && posixRootPrefixes.has(segments[0]!.toLowerCase()))
+  const anchored = /^\.\.?\//.test(stripped) || /^[a-z]:\//i.test(stripped)
 
-  if (!anchored && segments.length > 1 && domainSegment.test(segments[0]!)) return
+  if (!anchored && !stripped.startsWith("/") && segments.length > 1 && domainSegment.test(segments[0]!)) return
 
   const basename = segments[segments.length - 1]!
-  const slashed = segments.length > 1 || clean.startsWith("/")
-
-  if (!slashed && frameworkNames.has(basename)) return
+  const slashed = segments.length > 1 || stripped.startsWith("/")
 
   if (hasPathFileName(basename)) return "path"
 
   if (hasPathExtension(basename, slashed)) {
-    if (!slashed && isAmbiguousBareCode(basename)) return
+    if (!slashed && isBareCodeExpression(basename)) return
 
     return "path"
   }
 
   if (anchored && segments.length > 1) return "path"
-
-  const first = segments[0]!.toLowerCase()
-
-  if (
-    !clean.startsWith("/") &&
-    segments.length > 1 &&
-    workspaceDirectoryPrefixes.has(first) &&
-    (trailingSlash || twoSegmentDirectoryPrefixes.has(first))
-  ) {
-    return "path"
-  }
 }
 
 function hasPathExtension(basename: string, slashed: boolean) {
@@ -1756,20 +1596,29 @@ function hasPathFileName(basename: string) {
   return pathFileNamePrefixes.has(value.slice(0, index))
 }
 
-function isAmbiguousBareCode(basename: string) {
+function isBareCodeExpression(basename: string) {
   if (basename.startsWith(".")) return false
+
+  // Capitalized `.js` product names in prose (`Node.js`, `Next.js`, `React.js`, `Vue.js`).
+  if (/^[A-Z][a-z0-9]*\.js$/.test(basename)) return true
+
   const lower = basename.toLowerCase()
-
-  if (ambiguousReceiverPairs.has(lower)) return true
-
   const parts = lower.split(".")
 
   if (parts.length < 2) return false
+  const stem = parts[0]!
   const ext = parts[parts.length - 1]!
 
-  if (!ambiguousBareExtensions.has(ext)) return false
+  if (parts.length === 2 && bareReceiverStems.has(stem) && ext !== "ts" && ext !== "tsx") return true
 
-  if (parts.length > 2 && parts.slice(0, -1).every((part) => part.length === 1)) return true
+  if (!shortStemExcludedExtensions.has(ext)) return false
 
-  return parts.length === 2 && parts[0]!.length <= 1
+  if (parts.length > 2) {
+    return (
+      (ext === "c" || ext === "h" || ext === "m" || ext === "r" || ext === "el") &&
+      parts.slice(0, -1).every((part) => part.length === 1)
+    )
+  }
+
+  return stem.length <= 1
 }
