@@ -4,6 +4,7 @@ import { Global } from "@opencode/util/global"
 import { OPENCODE_VERSION } from "../src/version"
 import { expect, test } from "bun:test"
 import { Deferred, Effect, FileSystem, Schedule, Schema } from "effect"
+import { NetAddress } from "effect/net"
 import { TestClock } from "effect/testing"
 import fs from "node:fs/promises"
 import os from "node:os"
@@ -649,7 +650,7 @@ const registered = Effect.fnUntraced(function* () {
   const file = path.join(yield* fileSystem.makeTempDirectoryScoped(), "service-local.json")
   const stopped = yield* Deferred.make<void>()
   const cleanup = yield* ServiceRegistration.register({
-    address: { _tag: "TcpAddress", hostname: "127.0.0.1", port: 4321 },
+    address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 4321),
     password: "secret",
     id: "owner",
     file,
