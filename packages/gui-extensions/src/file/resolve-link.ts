@@ -2,7 +2,7 @@ import { getFilename, parsePathLineSuffix } from "@opencode/util/path"
 import type { Files, LineRange } from "../sdk"
 import { resolveArtifactPath } from "./artifact"
 
-export interface ParsedFileLink {
+export type ParsedFileLink = {
   readonly path: string
   readonly strippedPath: string
   readonly segments: readonly string[]
@@ -10,10 +10,9 @@ export interface ParsedFileLink {
   readonly selection?: LineRange
 }
 
-interface ResolveWorkspaceOptions {
+type ResolveWorkspaceOptions = {
   readonly rootName?: string
   readonly activePath?: string
-  readonly openPaths?: readonly string[]
 }
 
 export type WorkspaceLinkResolution =
@@ -33,7 +32,7 @@ export function parseFileLink(href: string): ParsedFileLink {
   const isFileUrl = /^file:\/\//i.test(raw)
   const extracted = extractLineSelection(raw, isFileUrl)
   const clean = normalizeRelativeSegments(extracted.path, isFileUrl)
-  const strippedPath = clean.replace(/^(?:\.\.(?:\/|$))+/, "")
+  const strippedPath = clean.replace(/^(?:~\/|(?:\.\.(?:\/|$))+)/, "")
   const segments = strippedPath.split("/").filter(Boolean)
   const basename = segments.at(-1) ?? ""
 
@@ -167,10 +166,14 @@ function expandWorkspaceVariants(path: string, options?: ResolveWorkspaceOptions
 
 /**
  * Ranks workspace file candidates deterministically across 4 tiers:
- * 1. Exact workspace path match (or expanded monorepo/active-tab variant)
+ * 1. Exact workspace path match (or expanded monorepo/active-tab relative variant)
  * 2. Segment-boundary suffix match (`session/timeline/interaction.ts` -> `packages/app/src/session/timeline/interaction.ts`)
  * 3. Package-anchored segment subsequence (`packages/session-ui/markdown.tsx` -> `packages/session-ui/src/components/markdown.tsx`)
- * 4. Bare basename match (`tool-renderer.tsx`), disambiguated by active/open package context.
+ * 4. Unique bare basename match (`tool-renderer.tsx`); duplicate basenames return `ambiguous`.
+ *
+ * Within a tier, a candidate only auto-opens when its score leads the runner-up by at least 15 points
+ * (for example an extra matched segment `+25`, a top-level package anchor `+20`, or an exact case match `+16`).
+ * Depth penalties are capped at `10` (`2` per extra directory level) so path depth alone never breaks a tie.
  */
 function scoreParsed(
   parsed: ParsedFileLink,
@@ -211,7 +214,6 @@ function scoreParsed(
       if (!tier) return []
 
       const fileBase = basenameOf(file)
-      const contextBonus = computeContextBonus(file, options)
       const exactExtBonus = fileBase.toLowerCase() === queryBase ? 8 : 0
       const caseBonus = fileBase === parsed.basename ? 16 : 0
 
@@ -219,7 +221,7 @@ function scoreParsed(
         {
           path: file,
           tier: tier.tier,
-          score: tier.baseScore + contextBonus + exactExtBonus + caseBonus,
+          score: tier.baseScore + exactExtBonus + caseBonus,
         },
       ]
     })
@@ -243,7 +245,6 @@ function scoreParsed(
     return { kind: "match", path: top.path }
   }
 
-  // Require a meaningful score lead (more matched segments, exact case, or active-package context, not path depth).
   if (top.score - second.score >= 15) {
     return { kind: "match", path: top.path }
   }
@@ -258,7 +259,6 @@ export async function searchWorkspaceCandidates(input: {
   readonly files: Pick<Files, "root" | "search">
   readonly parsed: ParsedFileLink
   readonly activePath?: string
-  readonly openPaths?: readonly string[]
   readonly signal: AbortSignal
 }): Promise<WorkspaceLinkResolution> {
   if (!input.parsed.basename) return { kind: "none" }
@@ -269,7 +269,6 @@ export async function searchWorkspaceCandidates(input: {
   const options: ResolveWorkspaceOptions = {
     rootName,
     activePath: input.activePath,
-    openPaths: input.openPaths,
   }
 
   const search = (query: string, limit: number) =>
@@ -454,32 +453,6 @@ function scoreTier(
   return undefined
 }
 
-function computeContextBonus(file: string, options?: ResolveWorkspaceOptions): number {
-  if (!options) return 0
-  const fileDir = directoryOf(file)
-  const filePkg = packageRootOf(file)
-  const active = options.activePath?.replaceAll("\\", "/")
-
-  const activeBonus = active
-    ? directoryOf(active) === fileDir
-      ? 50
-      : filePkg && packageRootOf(active) === filePkg
-        ? 35
-        : 0
-    : 0
-
-  const openTabBonus = options.openPaths?.includes(file) ? 15 : 0
-
-  const openPkgBonus =
-    activeBonus === 0 &&
-    filePkg &&
-    options.openPaths?.some((open) => packageRootOf(open.replaceAll("\\", "/")) === filePkg)
-      ? 20
-      : 0
-
-  return activeBonus + openTabBonus + openPkgBonus
-}
-
 /**
  * Requires the query's first directory segment to anchor at the candidate's root or package root
  * (e.g. `packages/session-ui/markdown.tsx` or `session-ui/markdown.tsx`), preventing generic `src/utils.ts`
@@ -578,14 +551,4 @@ function directoryOf(path: string): string {
   const index = path.lastIndexOf("/")
 
   return index === -1 ? "" : path.slice(0, index)
-}
-
-function packageRootOf(path: string): string | undefined {
-  const segments = path.split("/").filter(Boolean)
-
-  if (segments.length >= 2 && (segments[0] === "packages" || segments[0] === "apps" || segments[0] === "crates")) {
-    return `${segments[0]}/${segments[1]}`
-  }
-
-  return segments.length > 1 ? segments[0] : undefined
 }

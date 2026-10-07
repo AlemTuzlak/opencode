@@ -67,10 +67,9 @@ const setup: Setup<typeof File> = (ctx) => {
   const preference = desktop ? ctx.stores.app : undefined
   const [request, setRequest] = createStore<{ app?: OpenApp }>({})
 
-  const [filters, setFilters] = createStore<Record<string, { text: string; seq: number } | undefined>>({})
+  const [filters, setFilters] = createStore<Record<string, { text: string; browsing: boolean } | undefined>>({})
 
-  const scrollListeners = new Map<string, Set<() => void>>()
-  let filterSeq = 0
+  const revealListeners = new Map<string, Set<() => void>>()
   let clickController: AbortController | undefined
 
   // Tab objects per session screen, which stays while it routes another session, reused so neither strip updates nor a
@@ -100,13 +99,30 @@ const setup: Setup<typeof File> = (ctx) => {
     return state === "active" || state === "visible"
   }
 
+  const updateFilter = (session: string, patch: { text?: string; browsing?: boolean }) => {
+    setFilters(
+      produce((draft) => {
+        const current = draft[session]
+        const text = patch.text ?? current?.text ?? ""
+        const browsing = patch.browsing ?? current?.browsing ?? false
+        delete draft[session]
+
+        if (!text && !browsing) return
+        draft[session] = { text, browsing }
+        const keys = Object.keys(draft)
+
+        keys.slice(0, Math.max(0, keys.length - FILTER_SESSIONS)).forEach((item) => delete draft[item])
+      }),
+    )
+  }
+
   // Opens on the session screen, whose file model serves the routed session `session` is.
   const open = (session: MountedSession, path: string, options?: OpenOptions) => {
     const screen = ctx.screen.current()
 
     if (!screen) return
 
-    setFilters(session.key, undefined)
+    updateFilter(session.key, { browsing: false })
     layout.open(key(screen.file, path), session, options)
     void screen.file.sync(path)
   }
@@ -122,25 +138,12 @@ const setup: Setup<typeof File> = (ctx) => {
       x: existing?.x ?? 0,
       y: Math.max(0, (selection.start - 4) * DEFAULT_LINE_HEIGHT),
     })
-    shared.restoreScroll.run(session.key, path)
-  }
-
-  const updateFilter = (session: string, text: string, bumpSeq: boolean) => {
-    setFilters(
-      produce((draft) => {
-        const previousSeq = draft[session]?.seq ?? 0
-        delete draft[session]
-        draft[session] = { text, seq: bumpSeq ? ++filterSeq : previousSeq }
-        const keys = Object.keys(draft)
-
-        keys.slice(0, Math.max(0, keys.length - FILTER_SESSIONS)).forEach((item) => delete draft[item])
-      }),
-    )
+    shared.reveal.run(session.key, path)
   }
 
   const openPicker = (session: MountedSession, query: string, options?: OpenOptions) => {
     batch(() => {
-      updateFilter(session.key, query, true)
+      updateFilter(session.key, { text: query, browsing: true })
       layout.open(`file:${OPEN}`, session, { tab: "preview", background: options?.background })
 
       if (!options?.background && layout.narrow() && !layout.side.opened(session)) layout.side.toggle(session)
@@ -169,8 +172,9 @@ const setup: Setup<typeof File> = (ctx) => {
     },
     filter: {
       get: (session) => filters[session]?.text ?? "",
-      set: (session, value) => updateFilter(session, value, false),
-      seq: (session) => filters[session]?.seq ?? 0,
+      set: (session, value) => updateFilter(session, { text: value }),
+      browsing: (session) => filters[session]?.browsing ?? false,
+      setBrowsing: (session, value) => updateFilter(session, { browsing: value }),
     },
     installed: new Map(),
     app: preference && {
@@ -195,20 +199,20 @@ const setup: Setup<typeof File> = (ctx) => {
           keys.slice(0, Math.max(0, keys.length - HANDOFF_SESSIONS)).forEach((item) => delete draft.sessions[item])
         }),
     },
-    restoreScroll: {
+    reveal: {
       register(targetKey, run) {
-        const set = scrollListeners.get(targetKey) ?? new Set()
+        const set = revealListeners.get(targetKey) ?? new Set()
         set.add(run)
-        scrollListeners.set(targetKey, set)
+        revealListeners.set(targetKey, set)
 
         return () => {
           set.delete(run)
 
-          if (set.size === 0) scrollListeners.delete(targetKey)
+          if (set.size === 0) revealListeners.delete(targetKey)
         }
       },
       run(session, path) {
-        scrollListeners.get(`${session}\n${path}`)?.forEach((fn) => fn())
+        revealListeners.get(`${session}\n${path}`)?.forEach((fn) => fn())
       },
     },
     active,
@@ -371,7 +375,7 @@ const setup: Setup<typeof File> = (ctx) => {
 
       if (!session) return
 
-      openPicker(session, "")
+      openPicker(session, shared.filter.get(session.key))
     },
   })
 
@@ -537,9 +541,15 @@ const setup: Setup<typeof File> = (ctx) => {
         if (!routed) return Promise.resolve(false)
 
         // The browser pane shows HTML it can load. While it is pending or off, the file opens as a tab instead.
+        // Silent direct probes still verify the path exists first so a guessed `index.html` can resolve to `packages/web/index.html`.
         const pane = ctx.uses.browser()
 
-        if (artifactKind(targetPath) === "html" && pane.status === "active" && pane.value.canOpen(routed, targetPath)) {
+        if (
+          !silent &&
+          artifactKind(targetPath) === "html" &&
+          pane.status === "active" &&
+          pane.value.canOpen(routed, targetPath)
+        ) {
           pane.value.open(routed, workspaceFileUrl(files.root, targetPath))
 
           return Promise.resolve(true)
@@ -552,8 +562,20 @@ const setup: Setup<typeof File> = (ctx) => {
 
           if (!latest || !files.get(targetPath)?.loaded) return false
 
+          const currentPane = ctx.uses.browser()
+
+          if (
+            artifactKind(targetPath) === "html" &&
+            currentPane.status === "active" &&
+            currentPane.value.canOpen(latest, targetPath)
+          ) {
+            currentPane.value.open(latest, workspaceFileUrl(files.root, targetPath))
+
+            return true
+          }
+
           batch(() => {
-            setFilters(latest.key, undefined)
+            updateFilter(latest.key, { browsing: false })
             applySelection(latest, files, targetPath, selection)
             layout.open(key(files, targetPath), latest, { background: link.background })
 
@@ -593,13 +615,11 @@ const setup: Setup<typeof File> = (ctx) => {
         const storedTabs = layout.stored(activeSession).filter(isFileTab)
         const activeId = focused.get(screen)
         const activePath = activeId && storedTabs.includes(activeId) ? fileTabPath(files, activeId) : undefined
-        const openPaths = storedTabs.map((id) => fileTabPath(files, id))
 
         const outcome = await searchWorkspaceCandidates({
           files,
           parsed,
           activePath,
-          openPaths,
           signal,
         })
 

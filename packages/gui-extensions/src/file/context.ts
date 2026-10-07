@@ -22,13 +22,14 @@ export interface FileShared {
     /** The directory whose root listing the tree last refreshed. */
     directory?: string
   }
-  /** The file browser's filter input and per-session filter text. */
+  /** The file browser's filter input and per-session filter state. */
   readonly filter: {
     element?: HTMLInputElement
     pending?: boolean
     get(session: string): string
     set(session: string, value: string): void
-    seq(session: string): number
+    browsing(session: string): boolean
+    setBrowsing(session: string, value: boolean): void
   }
   /** Open-in-app availability checks, one per app for the window's lifetime. */
   readonly installed: Map<string, Promise<boolean>>
@@ -41,8 +42,8 @@ export interface FileShared {
     get(session: string, path: string): LineRange | null | undefined
     set(session: string, files: Record<string, LineRange | null>): void
   }
-  /** Restores scroll on a mounted file view when a link action selects a line range on it. */
-  readonly restoreScroll: {
+  /** Reveals a selected line range on a mounted file view when a link action targets it. */
+  readonly reveal: {
     register(key: string, run: () => void): () => void
     run(session: string, path: string): void
   }

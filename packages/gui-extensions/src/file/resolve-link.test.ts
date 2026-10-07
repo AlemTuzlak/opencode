@@ -29,11 +29,7 @@ function fuzzyMatches(query: string, target: string) {
   return qi === q.length
 }
 
-function resolve(
-  href: string,
-  candidates: readonly string[],
-  options?: { rootName?: string; activePath?: string; openPaths?: readonly string[] },
-) {
+function resolve(href: string, candidates: readonly string[], options?: { rootName?: string; activePath?: string }) {
   return searchWorkspaceCandidates({
     files: {
       root: `/repo/${options?.rootName ?? "workspace"}`,
@@ -41,7 +37,6 @@ function resolve(
     },
     parsed: parseFileLink(href),
     activePath: options?.activePath,
-    openPaths: options?.openPaths,
     signal: new AbortController().signal,
   })
 }
@@ -116,7 +111,7 @@ describe("searchWorkspaceCandidates", () => {
     })
   })
 
-  test("enforces strict tier priority so Tier 1 exact matches always beat deep or context-boosted Tier 2 suffix matches", async () => {
+  test("enforces strict tier priority so Tier 1 exact matches always beat deep Tier 2 suffix matches", async () => {
     const deep = "a/b/c/d/e/f/g/h/i.ts"
     expect(await resolve(deep, [deep, `packages/x/${deep}`])).toEqual({
       kind: "match",
@@ -127,7 +122,6 @@ describe("searchWorkspaceCandidates", () => {
     expect(
       await resolve(target, [target, `fixtures/repo/${target}`], {
         activePath: "fixtures/repo/packages/app/src/session/timeline/screen.ts",
-        openPaths: [`fixtures/repo/${target}`],
       }),
     ).toEqual({
       kind: "match",
@@ -205,7 +199,7 @@ describe("searchWorkspaceCandidates", () => {
     })
   })
 
-  test("marks equal-suffix matches at different depths as ambiguous unless context or case disambiguates them", async () => {
+  test("marks equal-suffix matches at different depths as ambiguous unless case disambiguates them", async () => {
     expect(await resolve("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"])).toEqual({
       kind: "ambiguous",
       query: "src/index.ts",
@@ -215,8 +209,8 @@ describe("searchWorkspaceCandidates", () => {
         activePath: "packages/foo/bar/src/main.ts",
       }),
     ).toEqual({
-      kind: "match",
-      path: "packages/foo/bar/src/index.ts",
+      kind: "ambiguous",
+      query: "src/index.ts",
     })
     expect(await resolve("app.tsx", ["packages/a/App.tsx", "packages/b/app.tsx"])).toEqual({
       kind: "match",
@@ -238,7 +232,7 @@ describe("searchWorkspaceCandidates", () => {
     })
   })
 
-  test("resolves unique bare filenames and disambiguates duplicate basenames via active package context (Tier 4)", async () => {
+  test("resolves unique bare filenames and marks duplicate basenames as ambiguous regardless of active tab (Tier 4)", async () => {
     expect(await resolve("tool-renderer.tsx", workspaceFiles)).toEqual({
       kind: "match",
       path: "packages/session-ui/src/tools/tool-renderer.tsx",
@@ -248,16 +242,16 @@ describe("searchWorkspaceCandidates", () => {
         activePath: "packages/app/src/session/timeline/interaction.ts",
       }),
     ).toEqual({
-      kind: "match",
-      path: "packages/app/src/workspaces/files/path.ts",
+      kind: "ambiguous",
+      query: "path.ts",
     })
     expect(
       await resolve("path.ts", workspaceFiles, {
         activePath: "packages/gui-extensions/src/file/renderer.tsx",
       }),
     ).toEqual({
-      kind: "match",
-      path: "packages/gui-extensions/src/file/path.ts",
+      kind: "ambiguous",
+      query: "path.ts",
     })
   })
 

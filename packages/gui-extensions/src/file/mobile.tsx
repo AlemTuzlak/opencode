@@ -1,5 +1,4 @@
 import { createMemo, For } from "solid-js"
-import { createStore } from "solid-js/store"
 import { Button } from "@opencode/ui/button"
 import { Tabs } from "@opencode/ui/tabs"
 import { getFilename } from "@opencode/util/path"
@@ -20,9 +19,7 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
   const opened = createMemo(() => panel.open().filter(isFileTab))
   // The selected side tab when it is a file tab. A gone selection falls back to the first file tab.
   const activeFileTab = createMemo(() => opened().find((id) => shared.active(props.session, id)))
-  const seq = () => shared.filter.seq(props.session.key)
-  const [store, setStore] = createStore({ browsing: !activeFileTab(), handledSeq: seq() })
-  const browsing = () => store.browsing || !activeFileTab() || seq() > store.handledSeq
+  const browsing = () => shared.filter.browsing(props.session.key) || !activeFileTab()
 
   const active = createMemo(() => {
     const id = activeFileTab()
@@ -34,7 +31,6 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
 
   const open = (path: string) => {
     shared.open(props.session, path)
-    setStore({ browsing: false, handledSeq: seq() })
   }
 
   return (
@@ -44,7 +40,7 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
           size="small"
           variant="ghost"
           class="shrink-0 mx-2"
-          onClick={() => setStore({ browsing: true, handledSeq: seq() })}
+          onClick={() => shared.filter.setBrowsing(props.session.key, true)}
           aria-pressed={browsing()}
         >
           {ctx.t("tree.all")}
@@ -99,7 +95,7 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
             width: () => 240,
             transition: () => false,
             resize: () => undefined,
-            toggle: () => setStore({ browsing: !browsing(), handledSeq: seq() }),
+            toggle: () => shared.filter.setBrowsing(props.session.key, !browsing()),
           }}
           onSelect={open}
           onSelectPermanent={open}

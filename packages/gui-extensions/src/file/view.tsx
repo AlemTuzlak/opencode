@@ -418,7 +418,7 @@ export function SessionFileView(props: { session: MountedSession; screen: Sessio
     },
     (targetKey) =>
       onCleanup(
-        shared.restoreScroll.register(targetKey, () => {
+        shared.reveal.register(targetKey, () => {
           setNote("selected", null)
           scrollSync.queueRestore()
         }),
