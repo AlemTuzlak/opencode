@@ -72,27 +72,44 @@ describe("parseFileLink", () => {
 
 describe("searchWorkspaceCandidates", () => {
   test("resolves exact paths, git diff prefixes, root folder prefixes, and scoped packages (Tier 1 & Tier 2)", async () => {
-    expect(await resolve("packages/app/src/app.tsx", workspaceFiles)).toBe("packages/app/src/app.tsx")
-    expect(await resolve("b/packages/app/src/app.tsx#L42", workspaceFiles)).toBe("packages/app/src/app.tsx")
-    expect(await resolve("quiet-cactus/packages/app/src/app.tsx", workspaceFiles, { rootName: "quiet-cactus" })).toBe(
-      "packages/app/src/app.tsx",
-    )
-    expect(await resolve("x/src/foo.ts", ["packages/x/src/foo.ts", "packages/y/x/src/foo.ts"])).toBe(
-      "packages/x/src/foo.ts",
-    )
+    expect(await resolve("packages/app/src/app.tsx", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/app/src/app.tsx",
+    })
+    expect(await resolve("b/packages/app/src/app.tsx#L42", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/app/src/app.tsx",
+    })
+    expect(
+      await resolve("quiet-cactus/packages/app/src/app.tsx", workspaceFiles, { rootName: "quiet-cactus" }),
+    ).toEqual({
+      kind: "match",
+      path: "packages/app/src/app.tsx",
+    })
+    expect(await resolve("x/src/foo.ts", ["packages/x/src/foo.ts", "packages/y/x/src/foo.ts"])).toEqual({
+      kind: "match",
+      path: "packages/x/src/foo.ts",
+    })
     expect(
       await resolve("quiet-cactus/src/x.ts", ["src/x.ts", "quiet-cactus/src/x.ts"], {
         rootName: "quiet-cactus",
       }),
-    ).toBe("quiet-cactus/src/x.ts")
-    expect(await resolve("@opencode/session-ui/src/components/markdown.tsx", workspaceFiles)).toBe(
-      "packages/session-ui/src/components/markdown.tsx",
-    )
+    ).toEqual({
+      kind: "match",
+      path: "quiet-cactus/src/x.ts",
+    })
+    expect(await resolve("@opencode/session-ui/src/components/markdown.tsx", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/session-ui/src/components/markdown.tsx",
+    })
   })
 
   test("enforces strict tier priority so Tier 1 exact matches always beat deep or context-boosted Tier 2 suffix matches", async () => {
     const deep = "a/b/c/d/e/f/g/h/i.ts"
-    expect(await resolve(deep, [deep, `packages/x/${deep}`])).toBe(deep)
+    expect(await resolve(deep, [deep, `packages/x/${deep}`])).toEqual({
+      kind: "match",
+      path: deep,
+    })
 
     const target = "packages/app/src/session/timeline/interaction.ts"
     expect(
@@ -100,16 +117,26 @@ describe("searchWorkspaceCandidates", () => {
         activePath: "fixtures/repo/packages/app/src/session/timeline/screen.ts",
         openPaths: [`fixtures/repo/${target}`],
       }),
-    ).toBe(target)
+    ).toEqual({
+      kind: "match",
+      path: target,
+    })
   })
 
   test("ranks literal a/src/index.ts suffix match above git-diff stripped src/index.ts", async () => {
-    expect(await resolve("a/src/index.ts", ["packages/a/src/index.ts", "src/index.ts"])).toBe("packages/a/src/index.ts")
+    expect(await resolve("a/src/index.ts", ["packages/a/src/index.ts", "src/index.ts"])).toEqual({
+      kind: "match",
+      path: "packages/a/src/index.ts",
+    })
   })
 
   test("does not match unrelated external or node_modules prefixes via reverse suffix", async () => {
-    expect(await resolve("node_modules/pkg/docs/README.md", ["docs/README.md"])).toBeUndefined()
-    expect(await resolve("../sibling/src/index.ts", ["src/index.ts"])).toBeUndefined()
+    expect(await resolve("node_modules/pkg/docs/README.md", ["docs/README.md"])).toEqual({
+      kind: "none",
+    })
+    expect(await resolve("../sibling/src/index.ts", ["src/index.ts"])).toEqual({
+      kind: "none",
+    })
   })
 
   test("resolves ../ relative paths against activePath or suffix-matches deeper workspace files", async () => {
@@ -117,69 +144,133 @@ describe("searchWorkspaceCandidates", () => {
       await resolve("../timeline/interaction.ts:74", workspaceFiles, {
         activePath: "packages/app/src/session/screen.tsx",
       }),
-    ).toBe("packages/app/src/session/timeline/interaction.ts")
-    expect(await resolve("../timeline/interaction.ts:74", workspaceFiles)).toBe(
-      "packages/app/src/session/timeline/interaction.ts",
-    )
+    ).toEqual({
+      kind: "match",
+      path: "packages/app/src/session/timeline/interaction.ts",
+    })
+    expect(await resolve("../timeline/interaction.ts:74", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/app/src/session/timeline/interaction.ts",
+    })
   })
 
   test("resolves partial suffix paths, TypeScript .js import aliases, and extensionless doc stems", async () => {
-    expect(await resolve("session/timeline/interaction.ts:74", workspaceFiles)).toBe(
-      "packages/app/src/session/timeline/interaction.ts",
-    )
-    expect(await resolve("src/components/markdown.tsx", workspaceFiles)).toBe(
-      "packages/session-ui/src/components/markdown.tsx",
-    )
-    expect(await resolve("src/filesystem/search.js", workspaceFiles)).toBe("packages/core/src/filesystem/search.ts")
-    expect(await resolve("src/foo.js", ["src/foo.ts", "packages/x/src/foo.ts"])).toBe("src/foo.ts")
-    expect(await resolve("src/foo.js", ["scripts/foo.js", "src/foo.ts"])).toBe("src/foo.ts")
-    expect(await resolve("src/foo.js", ["dist/foo.js", "packages/x/src/foo.ts"])).toBe("packages/x/src/foo.ts")
-    expect(await resolve("README", ["README.md", "docs/README.md"])).toBe("README.md")
-    expect(await resolve("README", workspaceFiles)).toBe("docs/README.md")
+    expect(await resolve("session/timeline/interaction.ts:74", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/app/src/session/timeline/interaction.ts",
+    })
+    expect(await resolve("src/components/markdown.tsx", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/session-ui/src/components/markdown.tsx",
+    })
+    expect(await resolve("src/filesystem/search.js", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/core/src/filesystem/search.ts",
+    })
+    expect(await resolve("src/foo.js", ["src/foo.ts", "packages/x/src/foo.ts"])).toEqual({
+      kind: "match",
+      path: "src/foo.ts",
+    })
+    expect(await resolve("src/foo.js", ["scripts/foo.js", "src/foo.ts"])).toEqual({
+      kind: "match",
+      path: "src/foo.ts",
+    })
+    expect(await resolve("src/foo.js", ["dist/foo.js", "packages/x/src/foo.ts"])).toEqual({
+      kind: "match",
+      path: "packages/x/src/foo.ts",
+    })
+    expect(await resolve("README", ["README.md", "docs/README.md"])).toEqual({
+      kind: "match",
+      path: "README.md",
+    })
+    expect(await resolve("README", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "docs/README.md",
+    })
   })
 
-  test("leaves equal-suffix matches at different depths unresolved unless context or case disambiguates them", async () => {
-    expect(await resolve("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"])).toBeUndefined()
+  test("marks equal-suffix matches at different depths as ambiguous unless context or case disambiguates them", async () => {
+    expect(await resolve("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"])).toEqual({
+      kind: "ambiguous",
+      query: "src/index.ts",
+    })
     expect(
       await resolve("src/index.ts", ["packages/a/src/index.ts", "packages/foo/bar/src/index.ts"], {
         activePath: "packages/foo/bar/src/main.ts",
       }),
-    ).toBe("packages/foo/bar/src/index.ts")
-    expect(await resolve("app.tsx", ["packages/a/App.tsx", "packages/b/app.tsx"])).toBe("packages/b/app.tsx")
+    ).toEqual({
+      kind: "match",
+      path: "packages/foo/bar/src/index.ts",
+    })
+    expect(await resolve("app.tsx", ["packages/a/App.tsx", "packages/b/app.tsx"])).toEqual({
+      kind: "match",
+      path: "packages/b/app.tsx",
+    })
   })
 
   test("resolves package-anchored directory segment subsequences when intermediate folders like src/ are omitted (Tier 3)", async () => {
-    expect(await resolve("packages/session-ui/markdown.tsx", workspaceFiles)).toBe(
-      "packages/session-ui/src/components/markdown.tsx",
-    )
-    expect(await resolve("session-ui/markdown.tsx", workspaceFiles)).toBe(
-      "packages/session-ui/src/components/markdown.tsx",
-    )
-    expect(await resolve("src/utils.ts", ["packages/x/src/deep/nested/utils.ts"])).toBeUndefined()
+    expect(await resolve("packages/session-ui/markdown.tsx", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/session-ui/src/components/markdown.tsx",
+    })
+    expect(await resolve("session-ui/markdown.tsx", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/session-ui/src/components/markdown.tsx",
+    })
+    expect(await resolve("src/utils.ts", ["packages/x/src/deep/nested/utils.ts"])).toEqual({
+      kind: "none",
+    })
   })
 
   test("resolves unique bare filenames and disambiguates duplicate basenames via active package context (Tier 4)", async () => {
-    expect(await resolve("tool-renderer.tsx", workspaceFiles)).toBe("packages/session-ui/src/tools/tool-renderer.tsx")
+    expect(await resolve("tool-renderer.tsx", workspaceFiles)).toEqual({
+      kind: "match",
+      path: "packages/session-ui/src/tools/tool-renderer.tsx",
+    })
     expect(
       await resolve("path.ts", workspaceFiles, {
         activePath: "packages/app/src/session/timeline/interaction.ts",
       }),
-    ).toBe("packages/app/src/workspaces/files/path.ts")
+    ).toEqual({
+      kind: "match",
+      path: "packages/app/src/workspaces/files/path.ts",
+    })
     expect(
       await resolve("path.ts", workspaceFiles, {
         activePath: "packages/gui-extensions/src/file/renderer.tsx",
       }),
-    ).toBe("packages/gui-extensions/src/file/path.ts")
+    ).toEqual({
+      kind: "match",
+      path: "packages/gui-extensions/src/file/path.ts",
+    })
   })
 
-  test("leaves tied duplicate basenames unresolved when no context disambiguates them", async () => {
-    expect(await resolve("index.ts", workspaceFiles)).toBeUndefined()
-    expect(await resolve("util.js", ["packages/a/util.ts", "packages/b/util.ts"])).toBeUndefined()
-    expect(await resolve("util.ts", ["p/util.ts", "p/q/r/s/t/u/v/w/x/util.ts"])).toBeUndefined()
+  test("marks tied duplicate basenames as ambiguous and normalizes .js alias picker queries", async () => {
+    expect(await resolve("index.ts", workspaceFiles)).toEqual({
+      kind: "ambiguous",
+      query: "index.ts",
+    })
+    expect(await resolve("util.js", ["packages/a/util.ts", "packages/b/util.ts"])).toEqual({
+      kind: "ambiguous",
+      query: "util.ts",
+    })
+    expect(await resolve("util.ts", ["p/util.ts", "p/q/r/s/t/u/v/w/x/util.ts"])).toEqual({
+      kind: "ambiguous",
+      query: "util.ts",
+    })
   })
 
-  test("returns undefined when no workspace file matches", async () => {
-    expect(await resolve("nonexistent-widget.tsx", workspaceFiles)).toBeUndefined()
+  test("returns directory resolution when the link targets a folder with files", async () => {
+    expect(await resolve("packages/session-ui/src/components", workspaceFiles)).toEqual({
+      kind: "directory",
+      query: "packages/session-ui/src/components/",
+    })
+  })
+
+  test("returns none when no workspace file matches", async () => {
+    expect(await resolve("nonexistent-widget.tsx", workspaceFiles)).toEqual({
+      kind: "none",
+    })
   })
 
   test("falls back across git-diff prefixes and .js import stems, and handles aborted signals", async () => {
@@ -205,7 +296,10 @@ describe("searchWorkspaceCandidates", () => {
       signal: controller.signal,
     })
 
-    expect(resolved).toBe("packages/core/src/filesystem/search.ts")
+    expect(resolved).toEqual({
+      kind: "match",
+      path: "packages/core/src/filesystem/search.ts",
+    })
     expect(queries).toEqual(["src/filesystem/search.js", "search"])
 
     controller.abort()
@@ -216,6 +310,6 @@ describe("searchWorkspaceCandidates", () => {
       signal: controller.signal,
     })
 
-    expect(aborted).toBeUndefined()
+    expect(aborted).toEqual({ kind: "none" })
   })
 })

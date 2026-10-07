@@ -16,6 +16,12 @@ interface ResolveWorkspaceOptions {
   readonly openPaths?: readonly string[]
 }
 
+export type WorkspaceLinkResolution =
+  | { readonly kind: "match"; readonly path: string }
+  | { readonly kind: "ambiguous"; readonly query: string }
+  | { readonly kind: "directory"; readonly query: string }
+  | { readonly kind: "none" }
+
 const docStemPattern = /^(?:readme|license|changelog|copying|authors|notice)$/i
 
 /**
@@ -170,11 +176,14 @@ function scoreParsed(
   parsed: ParsedFileLink,
   candidates: readonly string[],
   options?: ResolveWorkspaceOptions,
-): string | undefined {
-  if (!parsed.basename) return undefined
-
+): WorkspaceLinkResolution {
   const variants = expandWorkspaceVariants(parsed.path, options)
   const normalizedCandidates = [...new Set(candidates.map((item) => item.replaceAll("\\", "/").replace(/\/+$/, "")))]
+
+  if (!parsed.basename) {
+    return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
+  }
+
   const queryBase = parsed.basename.toLowerCase()
   const tsStem = stripJsImportExtension(queryBase)
   const isDocStem = !queryBase.includes(".") && docStemPattern.test(queryBase)
@@ -189,7 +198,9 @@ function scoreParsed(
     return isDocStem && isDocStemMatch(base, queryBase)
   })
 
-  if (matchingPool.length === 0) return undefined
+  if (matchingPool.length === 0) {
+    return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
+  }
 
   const climbs = parsed.path === ".." || parsed.path.startsWith("../")
 
@@ -218,24 +229,29 @@ function scoreParsed(
 
   const top = scored[0]
 
-  if (!top) return undefined
+  if (!top) {
+    return matchDirectoryCandidates([...variants.primary, ...variants.climbedTail], normalizedCandidates)
+  }
 
   const second = scored[1]
 
   if (!second || top.tier < second.tier) {
-    return top.path
+    return { kind: "match", path: top.path }
   }
 
   if (top.tier === 1 && top.score > second.score) {
-    return top.path
+    return { kind: "match", path: top.path }
   }
 
   // Require a meaningful score lead (more matched segments, exact case, or active-package context, not path depth).
   if (top.score - second.score >= 15) {
-    return top.path
+    return { kind: "match", path: top.path }
   }
 
-  return undefined
+  return {
+    kind: "ambiguous",
+    query: ambiguousPickerQuery(parsed, top.path),
+  }
 }
 
 export async function searchWorkspaceCandidates(input: {
@@ -244,8 +260,8 @@ export async function searchWorkspaceCandidates(input: {
   readonly activePath?: string
   readonly openPaths?: readonly string[]
   readonly signal: AbortSignal
-}): Promise<string | undefined> {
-  if (!input.parsed.basename) return undefined
+}): Promise<WorkspaceLinkResolution> {
+  if (!input.parsed.basename) return { kind: "none" }
 
   const root = input.files.root.replaceAll("\\", "/").replace(/\/+$/, "")
   const rootName = getFilename(root)
@@ -266,12 +282,12 @@ export async function searchWorkspaceCandidates(input: {
 
   const primary = await search(primaryQuery, 100)
 
-  if (input.signal.aborted) return undefined
+  if (input.signal.aborted) return { kind: "none" }
 
   if (primary.length > 0) {
-    const matched = scoreParsed(input.parsed, primary, options)
+    const scored = scoreParsed(input.parsed, primary, options)
 
-    if (matched) return matched
+    if (scored.kind !== "none") return scored
   }
 
   const stem = input.parsed.basename.replace(/\.(?:js|jsx|mjs|cjs)$/i, "")
@@ -279,14 +295,42 @@ export async function searchWorkspaceCandidates(input: {
   if (stem && stem !== primaryQuery && primaryQuery.includes("/")) {
     const secondary = await search(stem, 100)
 
-    if (input.signal.aborted) return undefined
+    if (input.signal.aborted) return { kind: "none" }
 
     if (secondary.length > 0) {
       return scoreParsed(input.parsed, secondary, options)
     }
   }
 
-  return undefined
+  return { kind: "none" }
+}
+
+function ambiguousPickerQuery(parsed: ParsedFileLink, topPath: string): string {
+  const topBase = basenameOf(topPath)
+
+  const raw = parsed.strippedPath.startsWith("@")
+    ? parsed.strippedPath.replace(/^@[^/]+\//, "") || parsed.strippedPath
+    : /^[ab]\/.+/.test(parsed.strippedPath)
+      ? parsed.strippedPath.slice(2)
+      : parsed.strippedPath
+
+  if (topBase.toLowerCase() !== parsed.basename.toLowerCase()) {
+    const dir = directoryOf(raw)
+
+    return dir ? `${dir}/${topBase}` : topBase
+  }
+
+  return raw
+}
+
+function matchDirectoryCandidates(variants: readonly string[], candidates: readonly string[]): WorkspaceLinkResolution {
+  const matched = variants.find((variant) => {
+    const prefix = `${variant.toLowerCase()}/`
+
+    return candidates.some((file) => file.toLowerCase().startsWith(prefix))
+  })
+
+  return matched ? { kind: "directory", query: `${matched}/` } : { kind: "none" }
 }
 
 function scoreTier(

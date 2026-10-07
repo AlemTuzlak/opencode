@@ -4,7 +4,7 @@ import { Button } from "@opencode/ui/button"
 import { Tabs } from "@opencode/ui/tabs"
 import { getFilename } from "@opencode/util/path"
 import type { ChangeKind } from "../review/contract"
-import { useExtension, usePanel, type MountedSession, type SessionScreen } from "../sdk"
+import { createKeyed, useExtension, usePanel, type MountedSession, type SessionScreen } from "../sdk"
 import { SessionFileBrowserTab } from "./browser"
 import { useShared } from "./context"
 import { fileTabPath, isFileTab } from "./path"
@@ -22,6 +22,13 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
   const activeFileTab = createMemo(() => opened().find((id) => shared.active(props.session, id)))
   const [store, setStore] = createStore({ browsing: !activeFileTab() })
   const browsing = () => store.browsing || !activeFileTab()
+
+  createKeyed(
+    () => shared.filter.seq(props.session.key),
+    (seq) => {
+      if (seq > 0) setStore("browsing", true)
+    },
+  )
 
   const active = createMemo(() => {
     const id = activeFileTab()
@@ -102,6 +109,13 @@ export default function SessionMobileFiles(props: { session: MountedSession; scr
           }}
           onSelect={open}
           onSelectPermanent={open}
+          filterRef={(element) => {
+            shared.filter.element = element
+
+            if (!shared.filter.pending) return
+            shared.filter.pending = false
+            queueMicrotask(() => element.focus())
+          }}
         />
       </div>
     </div>
