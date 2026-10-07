@@ -47,6 +47,60 @@ const enqueued: OpenCodeEvent = {
   },
 }
 
+test.each([true, false])("preserves pending presentation through acknowledgement (immediate=%s)", async (immediate) => {
+  const gate = Promise.withResolvers<void>()
+  const setup = fixture(async (request) =>
+    request.method === "GET" ? Response.json({ data: [item] }) : Response.json({ data: { id: item.id } }),
+  )
+  try {
+    const sending = setup.data.session.prompt({
+      sessionID: item.sessionID,
+      id: item.id,
+      text: item.payload.text,
+      immediate,
+      gate: gate.promise,
+    })
+    expect(setup.data.session.pending.steer(item.sessionID, item.id)).toBe(!immediate)
+    expect(setup.data.session.input.has(item.sessionID, item.id)).toBe(true)
+    setup.emit(enqueued)
+    expect(setup.data.session.pending.steer(item.sessionID, item.id)).toBe(!immediate)
+    await setup.data.session.pending.sync(item.sessionID)
+    expect(setup.data.session.pending.steer(item.sessionID, item.id)).toBe(!immediate)
+
+    setup.emit({
+      id: "evt_queued",
+      type: "session.inbox.delivery.changed",
+      created: 2,
+      durable: { aggregateID: item.sessionID, seq: 2, version: 1 },
+      data: { sessionID: item.sessionID, inboxID: item.id, delivery: "queue" },
+    })
+    expect(setup.data.session.pending.steer(item.sessionID, item.id)).toBe(false)
+    setup.emit({
+      id: "evt_steered",
+      type: "session.inbox.delivery.changed",
+      created: 3,
+      durable: { aggregateID: item.sessionID, seq: 3, version: 1 },
+      data: { sessionID: item.sessionID, inboxID: item.id, delivery: "steer" },
+    })
+    expect(setup.data.session.pending.steer(item.sessionID, item.id)).toBe(true)
+
+    gate.resolve()
+    await sending
+    setup.emit({
+      id: "evt_delivered",
+      type: "session.inbox.delivered",
+      created: 4,
+      durable: { aggregateID: item.sessionID, seq: 4, version: 1 },
+      data: { sessionID: item.sessionID, inboxID: item.id },
+    })
+    expect(setup.data.session.pending.steer(item.sessionID, item.id)).toBe(false)
+    expect(setup.data.session.message.get(item.sessionID, item.id)?.text).toBe(item.payload.text)
+  } finally {
+    gate.resolve()
+    setup.dispose()
+  }
+})
+
 test.each(["delivered", "cancelled"] as const)(
   "a delayed inbox snapshot cannot resurrect a %s prompt",
   async (action) => {

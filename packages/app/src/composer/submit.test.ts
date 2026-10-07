@@ -215,6 +215,7 @@ describe("Composer submission", () => {
 
     expect(calls).toEqual([...row.calls, "prompt"])
     expect(request.delivery).toBe("steer")
+    expect(request.immediate).toBe(true)
     expect(request.text).toBe("ship it")
     expect(request.id).toMatch(/^msg_/)
     expect(request.metadata).toMatchObject({

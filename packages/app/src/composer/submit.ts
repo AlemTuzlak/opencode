@@ -152,10 +152,16 @@ export function createComposerSubmit(input: ComposerSubmitInput) {
         if (optimisticBusy && input.adapter.kind === "new-session")
           session.data.session.setStatus(session.id, "running")
 
-        const sending = sendPrompt(session, value, input.adapter.controls().model.selection.trackSessionCommit, () => {
-          if (optimisticBusy && input.adapter.kind === "active-session")
-            session.data.session.setStatus(session.id, "running")
-        }).then(
+        const sending = sendPrompt(
+          session,
+          value,
+          input.adapter.controls().model.selection.trackSessionCommit,
+          optimisticBusy,
+          () => {
+            if (optimisticBusy && input.adapter.kind === "active-session")
+              session.data.session.setStatus(session.id, "running")
+          },
+        ).then(
           () => ({ ok: true as const }),
           (error) => ({ ok: false as const, error }),
         )
@@ -485,6 +491,7 @@ async function sendPrompt(
   session: ComposerSession,
   value: ComposerSubmission,
   track: ModelSelection["trackSessionCommit"] | undefined,
+  immediate: boolean,
   onAdmit: () => void,
 ) {
   const request = await buildSubmissionRequest(session, value)
@@ -505,6 +512,7 @@ async function sendPrompt(
 
   const admission = {
     id: value.id,
+    immediate,
     sessionID: session.id,
     delivery: value.delivery,
     text: request.text,

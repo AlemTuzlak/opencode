@@ -261,6 +261,7 @@ export function createData(config: CreateDataInput) {
 
   function removePending(sessionID: string, inboxID?: string) {
     if (!inboxID) return
+    immediate.delete(inboxID)
     pendingUpdates.get(sessionID)?.set(inboxID, undefined)
     if (store.session.pending[sessionID]?.some((item) => item.id === inboxID))
       setStore(
@@ -313,6 +314,7 @@ export function createData(config: CreateDataInput) {
     const item = store.session.pending[sessionID]?.[index]
     pendingUpdates.get(sessionID)?.set(inboxID, item ? { ...item, delivery } : delivery)
     if (index < 0 || !item || item.delivery === delivery) return
+    immediate.delete(inboxID)
     setStore("session", "pending", sessionID, index, { ...item, delivery })
   }
 
@@ -322,6 +324,10 @@ export function createData(config: CreateDataInput) {
   // echo, positive pending read, or rollback; compactions also reconcile the
   // POST's canonical ID.
   const outbox = new Set<string>()
+
+  // Prompts sent while idle start execution rather than steering existing work.
+  // Keep that local presentation distinction until delivery, including after the enqueue echo.
+  const immediate = new Set<string>()
 
   // Session IDs of optimistic create admissions still awaiting acknowledgement
   // (the session.created echo or the create response itself). A failed create
@@ -544,6 +550,9 @@ export function createData(config: CreateDataInput) {
     messageLoads.delete(sessionID)
     // Keep unacknowledged submissions until their echo or rollback settles them.
     const pending = store.session.pending[sessionID]?.filter((item) => outbox.has(item.id)) ?? []
+    store.session.pending[sessionID]?.forEach((item) => {
+      if (!outbox.has(item.id)) immediate.delete(item.id)
+    })
     const messages = store.session.message[sessionID]?.filter((item) => outbox.has(item.id)) ?? []
     messageIndex.delete(sessionID)
     if (messages.length) messageIndex.set(sessionID, new Map(messages.map((item, index) => [item.id, index])))
@@ -562,7 +571,10 @@ export function createData(config: CreateDataInput) {
 
   function removeSession(sessionID: string) {
     activeUpdates?.set(sessionID, undefined)
-    store.session.pending[sessionID]?.forEach((item) => outbox.delete(item.id))
+    store.session.pending[sessionID]?.forEach((item) => {
+      outbox.delete(item.id)
+      immediate.delete(item.id)
+    })
     messageIndex.delete(sessionID)
     sync.invalidate(`session:${sessionID}`)
     sync.invalidate(`session.family:${sessionID}`)
@@ -1400,6 +1412,13 @@ export function createData(config: CreateDataInput) {
         list(sessionID: string) {
           return store.session.pending[sessionID] ?? []
         },
+        steer(sessionID: string, inboxID: string) {
+          return (
+            store.session.pending[sessionID]?.some(
+              (item) => item.id === inboxID && item.type === "user" && item.delivery === "steer",
+            ) === true && !immediate.has(inboxID)
+          )
+        },
         sync(sessionID: string) {
           return sync.run(`session.pending:${sessionID}`, async () => {
             const updates = new Map<string, SessionInboxInfo | SessionInbox.Delivery | undefined>()
@@ -1429,6 +1448,9 @@ export function createData(config: CreateDataInput) {
               // know about yet.
               const inflight = (store.session.pending[sessionID] ?? []).filter((item) => outbox.has(item.id))
               const merged = inflight.length === 0 ? pending : [...pending, ...inflight]
+              store.session.pending[sessionID]?.forEach((item) => {
+                if (!merged.some((entry) => entry.id === item.id)) immediate.delete(item.id)
+              })
               batch(() => {
                 setStore("session", "pending", sessionID, reconcile(merged))
                 merged.forEach(materializeInboxMessage)
@@ -1546,8 +1568,8 @@ export function createData(config: CreateDataInput) {
       // upsert that same ID with the server's payload. Server admission is
       // idempotent per ID, so retrying with the identical payload cannot
       // double-admit.
-      prompt(input: SessionPromptInput & { gate?: Promise<unknown>; prepare?: () => Promise<unknown> }) {
-        const { gate, prepare, ...request } = input
+      prompt(input: SessionPromptInput & { gate?: Promise<unknown>; prepare?: () => Promise<unknown>; immediate?: boolean }) {
+        const { gate, prepare, immediate: startsExecution, ...request } = input
         const id = request.id ?? SessionMessage.ID.create()
         // A retry may reuse an ID that is already rendered — and possibly
         // already durable. Admit optimistically only for new IDs so a failed
@@ -1557,6 +1579,7 @@ export function createData(config: CreateDataInput) {
           !store.session.pending[request.sessionID]?.some((item) => item.id === id)
         if (fresh) {
           outbox.add(id)
+          if (startsExecution && (request.delivery ?? "steer") === "steer") immediate.add(id)
           admitLocal({
             id,
             sessionID: request.sessionID,
