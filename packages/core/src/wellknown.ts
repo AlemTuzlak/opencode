@@ -6,6 +6,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstab
 import { isDeepStrictEqual } from "node:util"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { httpClient } from "@opencode/util/effect/app-node-platform"
+import { Hash } from "@opencode/util/hash"
 import { Bus } from "./bus.js"
 import { KV } from "./kv.js"
 
@@ -48,7 +49,12 @@ export interface Interface {
   readonly refresh: () => Effect.Effect<boolean, Error>
   readonly add: (origin: string) => Effect.Effect<Entry, Error>
   readonly remove: (origin: string) => Effect.Effect<void>
-  readonly resolve: (entry: Entry, variables: Readonly<Record<string, string>>) => Effect.Effect<Config[], Error>
+  readonly resolve: (
+    entry: Entry,
+    variables: Readonly<Record<string, string>>,
+    credentialID?: string,
+    validate?: (configs: readonly Config[]) => Effect.Effect<void, Error>,
+  ) => Effect.Effect<Config[], Error>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/WellKnown") {}
@@ -105,6 +111,14 @@ const layer = Layer.effect(
     const kv = yield* KV.Service
     const bus = yield* Bus.Service
     const cache = yield* Ref.make(new Map<string, Entry>())
+    // Shared across Locations, but never across credential identities or keys.
+    const remote = new Map<
+      string,
+      {
+        origin: string
+        configs: Config[]
+      }
+    >()
     const lock = Semaphore.makeUnsafe(1)
     const loadEntry = Effect.fn("WellKnown.loadEntry")(function* (origin: string) {
       const manifest = yield* inspect(origin).pipe(Effect.provideService(HttpClient.HttpClient, http))
@@ -134,7 +148,7 @@ const layer = Layer.effect(
         const changed = !isDeepStrictEqual(Ref.getUnsafe(cache), next)
         if (!changed) return false
         yield* Ref.set(cache, next)
-        yield* bus.publish(Event.Updated, {})
+        yield* bus.publish(Event.Updated, {}, { global: true })
         return true
       },
       (effect) => lock.withPermit(effect),
@@ -153,7 +167,7 @@ const layer = Layer.effect(
           const origins = Schema.is(Sources)(sources) ? sources : []
           yield* kv.set(sourcesKey, Array.from(new Set([...origins, origin])))
           yield* Ref.update(cache, (current) => new Map(current).set(origin, entry))
-          yield* bus.publish(Event.Updated, {})
+          yield* bus.publish(Event.Updated, {}, { global: true })
           return entry
         },
         (effect, _value) => lock.withPermit(effect),
@@ -172,13 +186,38 @@ const layer = Layer.effect(
             next.delete(origin)
             return next
           })
-          yield* bus.publish(Event.Updated, {})
+          remote.forEach((entry, key) => {
+            if (entry.origin === origin) remote.delete(key)
+          })
+          yield* bus.publish(Event.Updated, {}, { global: true })
         },
         (effect, _value) => lock.withPermit(effect),
       ),
-      resolve: Effect.fn("WellKnown.resolveEntry")((entry, variables) =>
-        resolveEntry(entry, variables).pipe(Effect.provideService(HttpClient.HttpClient, http)),
-      ),
+      resolve: Effect.fn("WellKnown.resolveEntry")((entry, variables, credentialID, validate) => {
+        const key = Hash.sha256(
+          JSON.stringify([
+            entry.origin,
+            credentialID,
+            Object.entries(variables).toSorted(([a], [b]) => a.localeCompare(b)),
+          ]),
+        )
+        return resolveEntry(entry, variables).pipe(
+          Effect.provideService(HttpClient.HttpClient, http),
+          Effect.tap((configs) => (validate ? validate(configs) : Effect.void)),
+          Effect.tap((configs) =>
+            Effect.sync(() => {
+              remote.set(key, { origin: entry.origin, configs })
+            }),
+          ),
+          Effect.catch((error) => {
+            const cached = remote.get(key)
+            if (!cached) return Effect.fail(error)
+            return Effect.logWarning("failed to refresh wellknown config; retaining last-good config", {
+              source: entry.origin,
+            }).pipe(Effect.as(cached.configs))
+          }),
+        )
+      }),
     })
   }),
 )

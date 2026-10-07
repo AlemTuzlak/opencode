@@ -101,7 +101,7 @@ export const layer = (options?: Options) =>
       const updateLock = Semaphore.makeUnsafe(1)
       const decodeOptions = { errors: "all", onExcessProperty: "ignore", propertyOrder: "original" } as const
       const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
-      const parseInfo = Effect.fn("Config.parseInfo")(function* (text: string, source: string) {
+      const parseInfo = Effect.fn("Config.parseInfo")(function* (text: string, source: string, strict = false) {
         const errors: ParseError[] = []
         const input: unknown = parse(text, errors, { allowTrailingComma: true })
         if (errors.length) {
@@ -122,7 +122,11 @@ export const layer = (options?: Options) =>
             action: diagnostic.message,
           }),
         )
-        if (result.type === "rejected") return
+        if (
+          result.type === "rejected" ||
+          (strict && result.diagnostics.some((diagnostic) => diagnostic.kind === "invalid"))
+        )
+          return
         const info = Option.getOrUndefined(decodeInfo(result.encoded))
         if (info) return info
         yield* Effect.logWarning("configuration normalization diagnostic", {
@@ -142,33 +146,45 @@ export const layer = (options?: Options) =>
         return new Document({ type: "document", path: AbsolutePath.make(filepath), info })
       })
 
+      const parseRemote = Effect.fnUntraced(function* (
+        entry: WellKnown.Entry,
+        variables: Record<string, string>,
+        configs: readonly WellKnown.Config[],
+      ) {
+        return yield* Effect.forEach(configs, (config) =>
+          Effect.gen(function* () {
+            const text = yield* ConfigVariable.substitute({
+              type: "virtual",
+              source: entry.origin,
+              dir: entry.origin,
+              text: JSON.stringify(config),
+              env: variables,
+            })
+            const info = yield* parseInfo(text, entry.origin, true)
+            if (!info) return yield* Effect.fail(new Error(`Invalid remote configuration from ${entry.origin}`))
+            return new Document({ type: "document", info })
+          }),
+        ).pipe(Effect.provideService(FSUtil.Service, fs))
+      })
+
       const loadWellknownEntry = Effect.fnUntraced(function* (entry: WellKnown.Entry) {
         const auth = entry.manifest.auth
         if (!auth) return []
         const credential = (yield* credentials.list(entry.integrationID)).at(-1)
         if (!credential || credential.value.type !== "key") return []
         const variables = { [auth.env]: credential.value.key }
-        const configs = yield* wellknown
-          .resolve(entry, variables)
+        return yield* wellknown
+          .resolve(entry, variables, credential.id, (configs) =>
+            parseRemote(entry, variables, configs).pipe(Effect.asVoid),
+          )
           .pipe(
+            Effect.flatMap((configs) => parseRemote(entry, variables, configs)),
             Effect.catch(() =>
               Effect.logWarning("failed to load wellknown config", { source: entry.origin }).pipe(
-                Effect.as([] as const),
+                Effect.as([] as Document[]),
               ),
             ),
           )
-        return yield* Effect.forEach(configs, (config) =>
-          ConfigVariable.substitute({
-            type: "virtual",
-            source: entry.origin,
-            dir: entry.origin,
-            text: JSON.stringify(config),
-            env: variables,
-          }).pipe(
-            Effect.flatMap((text) => parseInfo(text, entry.origin)),
-            Effect.map((info) => (info ? new Document({ type: "document", info }) : undefined)),
-          ),
-        ).pipe(Effect.map((documents) => documents.filter((document) => document !== undefined)))
       })
 
       const loadWellknown = Effect.fn("Config.loadWellknown")(function* () {
@@ -330,7 +346,8 @@ export const layer = (options?: Options) =>
         function* (patch: Patch) {
           const directory = initial.global ?? AbsolutePath.make(globalService.config)
           const candidates = ConfigDiscovery.names.map((name) => path.join(directory, name))
-          const filepath = (yield* Effect.filter(candidates, fs.isFile)).at(-1) ?? path.join(directory, "opencode.jsonc")
+          const filepath =
+            (yield* Effect.filter(candidates, fs.isFile)).at(-1) ?? path.join(directory, "opencode.jsonc")
           const text = (yield* fs.readFileStringSafe(filepath)) ?? "{}\n"
           const updated = yield* Effect.try({
             try: () =>
