@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import { Database as Native } from "bun:sqlite"
-import { Cause, Effect, Exit, Fiber, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Schema } from "effect"
 import { Bus } from "@opencode/core/bus"
 import { Event } from "@opencode/schema/event"
 import { Database } from "@opencode/core/database/database"
 import { StorageRetry } from "@opencode/core/database/storage-retry"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { EventTable } from "@opencode/core/event/sql"
+import { Job } from "@opencode/core/job"
+import { KV } from "@opencode/core/kv"
+import { SessionSchema } from "@opencode/core/session/schema"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
@@ -14,7 +17,7 @@ import { StorageFault } from "./lib/storage-fault"
 
 const disk = StorageFault.make()
 const it = testEffect(
-  AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node]), [
+  AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node, Job.node, KV.node]), [
     Database.node.replace(disk.node),
     Bus.node.replace(Bus.configured({ persist: true })),
   ]),
@@ -102,6 +105,65 @@ describe("StorageRetry", () => {
       expect(Exit.isFailure(exit) && StorageRetry.isTransient(exit.cause)).toBe(true)
       yield* disk.free
       expect(yield* stored("agg_lost")).toEqual([])
+    }),
+  )
+
+  it.effect("a background job settles even when its outcome cannot be persisted", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const release = yield* Deferred.make<void>()
+      const recovery = {
+        kind: "shell" as const,
+        sessionID: SessionSchema.ID.make("ses_disk_full_shell"),
+        shellID: "sh_disk_full",
+        command: "echo done",
+      }
+      yield* jobs.start({
+        id: recovery.shellID,
+        type: "shell",
+        recovery,
+        run: Deferred.await(release).pipe(Effect.as("done")),
+      })
+      yield* jobs.background(recovery.shellID)
+      const waiting = yield* jobs.wait({ id: recovery.shellID }).pipe(Effect.forkScoped)
+
+      yield* disk.fill
+      yield* Deferred.succeed(release, undefined)
+      yield* StorageFault.elapse(40_000)
+      expect((yield* Fiber.join(waiting)).info).toMatchObject({ status: "completed", output: "done" })
+      yield* disk.free
+    }),
+  )
+
+  it.effect("a background job persists its outcome once a briefly full disk frees", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const release = yield* Deferred.make<void>()
+      const recovery = {
+        kind: "shell" as const,
+        sessionID: SessionSchema.ID.make("ses_disk_brief_shell"),
+        shellID: "sh_disk_brief",
+        command: "echo done",
+      }
+      yield* jobs.start({
+        id: recovery.shellID,
+        type: "shell",
+        recovery,
+        run: Deferred.await(release).pipe(Effect.as("done")),
+      })
+      yield* jobs.background(recovery.shellID)
+      const waiting = yield* jobs.wait({ id: recovery.shellID }).pipe(Effect.forkScoped)
+
+      yield* disk.fill
+      yield* Deferred.succeed(release, undefined)
+      yield* StorageFault.elapse(5_000)
+      yield* disk.free
+      yield* StorageFault.elapse(3_000)
+      expect((yield* Fiber.join(waiting)).info).toMatchObject({ status: "completed" })
+      expect((yield* jobs.pendingBackground).find((item) => item.id === recovery.shellID)).toMatchObject({
+        status: "completed",
+        output: "done",
+      })
     }),
   )
 })

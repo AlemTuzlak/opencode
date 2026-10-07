@@ -22,6 +22,7 @@ import { SessionMessage } from "@opencode/core/session/message"
 import { SessionRunner } from "@opencode/core/session/runner/index"
 import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
+import { SubagentJob } from "@opencode/core/session/subagent-job"
 import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Option, Scope, Stream } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
@@ -1319,6 +1320,61 @@ describe("SessionExecution on a full disk", () => {
       expect(closing.pollUnsafe()).toBeDefined()
       yield* disk.free
       expect((yield* claims(database))[sessionID]).toBe(true)
+    }),
+  )
+
+  itFullDisk.effect("a subagent that dies on a full disk reports its failure to the parent", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const parentID = Session.ID.make("ses_disk_full_parent")
+      const childID = Session.ID.make("ses_disk_full_child")
+      yield* seedSessions(database, [parentID])
+      yield* seedSessions(database, [childID], { parent_id: parentID })
+
+      const backgrounded = yield* Deferred.make<void>()
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const context = yield* buildExecution(scope, ({ sessionID }) =>
+        sessionID !== childID
+          ? Effect.void
+          : Effect.gen(function* () {
+              yield* Deferred.await(backgrounded)
+              yield* disk.fill
+              yield* database.db
+                .update(SessionTable)
+                .set({ title: "unsaved" })
+                .where(eq(SessionTable.id, childID))
+                .run()
+                .pipe(Effect.orDie)
+            }),
+      )
+      const sessions = Context.get(context, Session.Service)
+      const execution = Context.get(context, SessionExecution.Service)
+      const subagents = yield* SubagentJob.make.pipe(
+        Effect.provideService(Session.Service, Session.Service.of({ ...sessions, resume: execution.resume })),
+        Effect.provideService(Scope.Scope, scope),
+      )
+      const recovery = {
+        kind: "subagent" as const,
+        parentSessionID: parentID,
+        childSessionID: childID,
+        agent: "general",
+        description: "Child work",
+      }
+      yield* subagents.start(recovery)
+      yield* subagents.background(recovery)
+      yield* Deferred.succeed(backgrounded, undefined)
+
+      yield* StorageFault.elapse(120_000)
+      yield* disk.free
+      yield* StorageFault.elapse(30_000)
+
+      const notices = (yield* SessionInbox.list(database.db, parentID)).filter((item) => item.type === "synthetic")
+      expect(notices).toHaveLength(1)
+      expect(notices[0]).toMatchObject({ payload: { metadata: { childID, state: "error" } } })
+      expect(notices[0]?.type === "synthetic" ? notices[0].payload.text : "").toContain("database or disk is full")
+      expect(yield* jobs.pendingBackground).toEqual([])
     }),
   )
 })
