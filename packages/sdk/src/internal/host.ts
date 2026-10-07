@@ -23,8 +23,11 @@ export interface CreateOptions<R = never> extends Omit<ServerOptions, "hostname"
   readonly log?: LogOptions
   readonly workspaceProviders?: Readonly<Record<string, WorkspaceDriver.Interface>>
   readonly instances?: SdkInstances.Options<R>
-  /** Addresses where the embedder serves `http`, reported by `/api/info` and used for pairing links. */
-  readonly urls?: ReadonlyArray<string>
+  /**
+   * Addresses where the embedder serves `http`, reported by `/api/info` and used for pairing links. Read on
+   * every request, so addresses known only after startup are reported once they exist.
+   */
+  readonly urls?: () => ReadonlyArray<string>
 }
 
 /** Host hooks for embedding opencode on a non-default runtime profile. */
@@ -49,7 +52,7 @@ export const create = Effect.fn("EmbeddedHost.create")(function* <R = never>(
         ? [...(embed.overrides ?? []), WorkspaceDriver.node.replace(WorkspaceDriver.registryNode(workspaceProviders))]
         : embed.overrides,
       selector ? (replacements) => SdkInstances.node(selector, replacements) : undefined,
-      () => urls ?? [],
+      urls,
     ).pipe(Layer.provide(HttpServer.layerServices), Layer.provideMerge(layer(log))),
   )
 

@@ -13,7 +13,14 @@ const auth = { authorization: `Basic ${btoa("opencode:secret")}` }
 
 // Serves the embedded instance as an embedder would: the server is acquired after the instance, so it stops first.
 type Sdk = typeof import("../src/effect")
-type Served = { sdk: Sdk; opencode: OpenCode.Interface; base: string; location: string; directory: string }
+type Served = {
+  sdk: Sdk
+  opencode: OpenCode.Interface
+  base: string
+  location: string
+  directory: string
+  urls: Array<string>
+}
 
 const served = <A, E, R>(f: (input: Served) => Effect.Effect<A, E, R>) =>
   Effect.acquireRelease(
@@ -23,12 +30,13 @@ const served = <A, E, R>(f: (input: Served) => Effect.Effect<A, E, R>) =>
     Effect.flatMap((directory) =>
       Effect.gen(function* () {
         const sdk = yield* Effect.promise(() => import("../src/effect"))
+        const urls: Array<string> = []
         const opencode = yield* sdk.OpenCode.create({
           config: { directory: directory.path, project: false, content: "{}" },
           models: { fetch: false },
           fs: { filewatcher: false },
           password: "secret",
-          urls: ["https://opencode.example"],
+          urls: () => urls,
         })
         const node = createServer()
         const server = yield* NodeHttpServer.make(() => node, { host: "127.0.0.1", port: 0 })
@@ -38,6 +46,7 @@ const served = <A, E, R>(f: (input: Served) => Effect.Effect<A, E, R>) =>
         return yield* f({
           sdk,
           opencode,
+          urls,
           base: HttpServer.formatAddress(server.address),
           location: `directory=${encodeURIComponent(directory.path)}`,
           directory: directory.path,
@@ -48,7 +57,7 @@ const served = <A, E, R>(f: (input: Served) => Effect.Effect<A, E, R>) =>
   )
 
 it.live("serves the embedded instance to external clients", () =>
-  served(({ sdk, opencode, base, location, directory }) =>
+  served(({ sdk, opencode, base, location, directory, urls }) =>
     Effect.gen(function* () {
       // In-process SDK calls still work once the routes require the password.
       const created = yield* opencode.sessions.create({
@@ -60,6 +69,9 @@ it.live("serves the embedded instance to external clients", () =>
       yield* Effect.promise(async () => {
         expect((await fetch(`${base}/api/session?${location}`)).status).toBe(401)
         expect((await fetch(`${base}/api/session?${location}`, { headers: auth })).status).toBe(200)
+        // Addresses known only after startup are reported once they exist.
+        expect((await (await fetch(`${base}/api/info`, { headers: auth })).json()).urls).toEqual([])
+        urls.push("https://opencode.example")
         expect((await (await fetch(`${base}/api/info`, { headers: auth })).json()).urls).toEqual([
           "https://opencode.example",
         ])
