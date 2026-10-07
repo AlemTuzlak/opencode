@@ -1728,9 +1728,8 @@ testEffect(resourceMcpLayer(new ConfigMCP.Local({ type: "local", command: ["unus
               command: [process.execPath, path.join(import.meta.dir, "fixture/mcp-output-schema.ts")],
             })
           })
-          expect((yield* service.servers()).find((server) => server.name === "dynamic")?.status.status).toBe(
-            "connected",
-          )
+          // A newly added server starts in the background.
+          expect((yield* settled(service, "dynamic"))?.status).toBe("connected")
           expect(yield* service.tools()).toHaveLength(2)
 
           yield* service.transform((editor) => editor.update("dynamic", (server) => (server.codemode = false)))
@@ -1757,9 +1756,7 @@ testEffect(resourceMcpLayer(new ConfigMCP.Local({ type: "local", command: ["unus
           expect(yield* service.tools()).toEqual([])
 
           yield* removed.dispose
-          expect((yield* service.servers()).find((server) => server.name === "dynamic")?.status.status).toBe(
-            "connected",
-          )
+          expect((yield* settled(service, "dynamic"))?.status).toBe("connected")
           expect(yield* service.tools()).toHaveLength(2)
         }),
       )
@@ -1864,6 +1861,26 @@ testEffect(Layer.empty).live("batches MCP transforms without connecting intermed
       Effect.provide(resourceMcpLayer(new ConfigMCP.Local({ type: "local", command: ["unused"], disabled: true }))),
     )
   }),
+)
+
+testEffect(Layer.empty).live("does not wait for MCP servers added after the first reconcile to start", () =>
+  Effect.gen(function* () {
+    const service = yield* Mcp.Service
+    // The layer already reconciled its configured server, so this is a later addition (e.g. from a plugin).
+    yield* service
+      .transform((editor) =>
+        editor.set(
+          "hanging",
+          new ConfigMCP.Local({ type: "local", command: [process.execPath, "-e", "setInterval(() => {}, 1000)"] }),
+        ),
+      )
+      .pipe(Effect.timeout("2 seconds"))
+    expect((yield* service.servers()).find((server) => server.name === "hanging")?.status).toEqual({
+      status: "pending",
+    })
+  }).pipe(
+    Effect.provide(resourceMcpLayer(new ConfigMCP.Local({ type: "local", command: ["unused"], disabled: true }))),
+  ),
 )
 
 test("reconciles only changed MCP server config", async () => {

@@ -531,35 +531,30 @@ export const layer = (options?: Options) =>
         yield* bus.publish(McpEvent.StatusChanged, { server: name })
       })
 
+      // New servers connect in the background so one slow server cannot block Location startup or
+      // the plugin activation that triggered this reconcile; readers wait on the startup latch.
+      const addServer = Effect.fnUntraced(function* (name: ServerName, serverConfig: Mcp.ServerConfig) {
+        const entry: ServerEntry = {
+          config: serverConfig,
+          status: { status: "pending" },
+          startup: Latch.makeUnsafe(),
+        }
+        entries.set(name, entry)
+        yield* register(name, entry)
+        if (serverConfig.disabled) {
+          entry.status = { status: "disabled" }
+          entry.startup.openUnsafe()
+          yield* bus.publish(McpEvent.StatusChanged, { server: name })
+          return
+        }
+        fork(startServer(name, entry).pipe(locks.withLock(name)))
+      })
+
       let applied: Map<ServerName, Mcp.ServerConfig> | undefined
       const overrides = new Map<ServerName, Mcp.ServerConfig | false>()
       const reconcileLock = Semaphore.makeUnsafe(1)
       const reconcile = Effect.fnUntraced(function* () {
         const servers = state.get().servers
-        if (!applied && entries.size === 0) {
-          for (const [name, server] of servers) {
-            entries.set(name, {
-              config: server,
-              status: { status: "pending" },
-              startup: Latch.makeUnsafe(),
-            })
-          }
-          yield* Effect.forEach(entries, ([name, entry]) => register(name, entry), { discard: true })
-          applied = servers
-
-          // Initial connections stay asynchronous so one slow server does not block Location startup.
-          for (const [name, entry] of entries) {
-            if (entry.config.disabled) {
-              entry.status = { status: "disabled" }
-              entry.startup.openUnsafe()
-              yield* bus.publish(McpEvent.StatusChanged, { server: name })
-              continue
-            }
-            fork(startServer(name, entry).pipe(locks.withLock(name)))
-          }
-          return
-        }
-
         const names = new Set([...(applied?.keys() ?? []), ...servers.keys()])
         for (const name of names) {
           const previous = applied?.get(name)
@@ -567,6 +562,10 @@ export const layer = (options?: Options) =>
           if (isDeepStrictEqual(previous, updated)) continue
           if (!updated) {
             yield* removeServer(name).pipe(locks.withLock(name))
+            continue
+          }
+          if (!entries.has(name)) {
+            yield* addServer(name, updated).pipe(locks.withLock(name))
             continue
           }
           yield* replaceServer(name, updated).pipe(locks.withLock(name))
@@ -636,6 +635,8 @@ export const layer = (options?: Options) =>
           const name = ServerName.make(server)
           overrides.set(name, config)
           yield* state.reload()
+          // Reconcile starts new servers in the background; an explicit add reports once this one settles.
+          yield* entries.get(name)?.startup.await ?? Effect.void
         }),
         connect: Effect.fn("MCP.connect")(function* (server) {
           const name = ServerName.make(server)
