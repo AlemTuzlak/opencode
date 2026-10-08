@@ -532,8 +532,10 @@ const layer = Layer.effect(
       // files and the spawn fails with ENAMETOOLONG on Windows. `git diff` has no
       // `--pathspec-from-file`, so stage only the selected changes of `to` over `from`
       // in a private index (paths go through stdin) and diff that index against `from`.
-      const selected = new Set<string>(input.paths)
-      const entries = nuls(
+      // Normalize like a pathspec: `./a` and `a//b` mean `a` and `a/b`; a trailing slash keeps
+      // its directory-only meaning.
+      const selected = new Set(input.paths.map((file) => path.posix.normalize(file)))
+      const changes = nuls(
         (yield* repositoryOperation("diff", input.repository, [
           "diff",
           "--raw",
@@ -545,21 +547,30 @@ const layer = Layer.effect(
         ])).text,
       ).flatMap((meta, index, records) => {
         const file = records[index + 1]
-        if (index % 2 !== 0 || !file || !isSelected(selected, file)) return []
+        if (index % 2 !== 0 || !file) return []
         // `:<old mode> <new mode> <old oid> <new oid> <status>`; a deletion has mode 000000.
-        const [, mode, , oid] = meta.slice(1).split(" ")
-        return [`${mode === "000000" ? "0" : mode} ${oid}\t${file}\0`]
+        const [before, mode, , oid] = meta.slice(1).split(" ")
+        if (!isSelected(selected, file, before === "160000" || mode === "160000")) return []
+        return [{ file, entry: `${mode === "000000" ? "0" : mode} ${oid}\t${file}\0` }]
       })
-      if (!entries.length) return []
+      if (!changes.length) return []
+      const chosen = new Set(changes.map((change) => change.file))
       const index = path.join(input.repository.gitDirectory, `opencode-diff-${crypto.randomUUID()}.index`)
       const env = { GIT_INDEX_FILE: index }
       return yield* Effect.gen(function* () {
         yield* repositoryOperation("diff", input.repository, ["read-tree", input.from], { env })
         yield* repositoryOperation("diff", input.repository, ["update-index", "-z", "--index-info"], {
           env,
-          stdin: entries.join(""),
+          stdin: changes.map((change) => change.entry).join(""),
         })
-        return yield* diffFiles(input.repository, ["--cached", "--no-renames", input.from], input.context, env)
+        // Staging a path over a file/directory conflict drops the other side from the index,
+        // so the index diff can include unselected deletions; keep only the selection.
+        return (yield* diffFiles(
+          input.repository,
+          ["--cached", "--no-renames", input.from],
+          input.context,
+          env,
+        )).filter((entry) => chosen.has(entry.file))
       }).pipe(
         Effect.ensuring(
           Effect.forEach([index, `${index}.lock`], (file) => fs.remove(file, { force: true }).pipe(Effect.ignore), {
@@ -795,11 +806,16 @@ function execute(cwd: string, proc: AppProcess.Interface, args: string[]) {
     )
 }
 
-/** Whether `file` or one of its parent directories is in the selection. */
-function isSelected(selected: ReadonlySet<string>, file: string) {
-  if (selected.has(".")) return true
-  for (let end = file.length; end > 0; end = file.lastIndexOf("/", end - 1)) {
-    if (selected.has(file.slice(0, end))) return true
+/**
+ * Whether `file` or one of its parent directories is in the normalized selection. Like a
+ * pathspec, a trailing slash selects only a directory or a submodule (gitlink) entry.
+ */
+function isSelected(selected: ReadonlySet<string>, file: string, gitlink: boolean) {
+  if (selected.has(".") || selected.has("./") || selected.has(file)) return true
+  if (gitlink && selected.has(`${file}/`)) return true
+  for (let end = file.lastIndexOf("/"); end > 0; end = file.lastIndexOf("/", end - 1)) {
+    const directory = file.slice(0, end)
+    if (selected.has(directory) || selected.has(`${directory}/`)) return true
   }
   return false
 }

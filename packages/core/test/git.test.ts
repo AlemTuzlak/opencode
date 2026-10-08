@@ -235,6 +235,47 @@ describe("Git trees", () => {
     }),
   )
 
+  it.live("selects tree diff paths with pathspec semantics", () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+      )
+      yield* Effect.promise(async () => {
+        await initRepo(root.path)
+        await Bun.write(path.join(root.path, "swap"), "file\n")
+        await Bun.write(path.join(root.path, "plain"), "before\n")
+      })
+      const git = yield* Git.Service
+      const repository = yield* git.repo.discover(AbsolutePath.make(root.path))
+      if (!repository) throw new Error("Repository not found")
+      const before = yield* git.tree.capture({ repository, scopes: [RelativePath.make(".")] })
+      yield* Effect.promise(async () => {
+        await fs.rm(path.join(root.path, "swap"))
+        await Bun.write(path.join(root.path, "swap", "child.txt"), "child\n")
+        await Bun.write(path.join(root.path, "plain"), "after\n")
+      })
+      const after = yield* git.tree.capture({ repository, scopes: [RelativePath.make(".")] })
+      const select = (...paths: string[]) =>
+        git.tree
+          .diff({ repository, from: before, to: after, paths: paths.map((file) => RelativePath.make(file)) })
+          .pipe(Effect.map((diffs) => diffs.map((item) => [item.file, item.status])))
+
+      // Staging the child over the replaced file must not report the unselected file deletion.
+      expect(yield* select("swap/child.txt")).toEqual([["swap/child.txt", "added"]])
+      expect(yield* select("./swap//child.txt", "plain")).toEqual([
+        ["plain", "modified"],
+        ["swap/child.txt", "added"],
+      ])
+      // A trailing slash selects directories only, not the file that was replaced.
+      expect(yield* select("swap/", "plain/")).toEqual([["swap/child.txt", "added"]])
+      expect(yield* select("swap")).toEqual([
+        ["swap", "deleted"],
+        ["swap/child.txt", "added"],
+      ])
+    }),
+  )
+
   it.live("diffs a path selection longer than any platform command line", () =>
     Effect.gen(function* () {
       const root = yield* Effect.acquireRelease(
@@ -282,7 +323,11 @@ describe("Git trees", () => {
       expect(diffs[4]?.patch).toContain("-removed\n")
       expect(yield* git.tree.diff({ repository, from: before, to: after, paths: missing })).toEqual([])
       // The private index is removed and the repository's own index is untouched.
-      expect((yield* Effect.promise(() => fs.readdir(repository.gitDirectory))).filter((file) => file.startsWith("opencode-diff-"))).toEqual([])
+      expect(
+        (yield* Effect.promise(() => fs.readdir(repository.gitDirectory))).filter((file) =>
+          file.startsWith("opencode-diff-"),
+        ),
+      ).toEqual([])
       expect(yield* git.tree.write(repository)).toBe(after)
     }),
   )
