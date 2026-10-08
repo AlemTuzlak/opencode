@@ -27,6 +27,10 @@ export default Runtime.handler(
     const links = urls.map((url) => new URL(`/auth/connect/${pairing.code}`, url).href)
     // Loopback URLs are useless to the scanning device, so the QR code only carries reachable addresses.
     const remote = urls.filter((url) => !isLoopback(new URL(url).hostname))
+    // --remote pairs through one public https address, so its QR code carries the link itself: a phone's camera
+    // opens it in the OpenCode app when installed (universal link) and in the web app otherwise. Every other QR
+    // code may list several addresses, which needs {"code","urls"} JSON that only the app scanners read.
+    const qr = input.remote ? links[0] : JSON.stringify({ code: pairing.code, urls: remote })
     process.stdout.write(
       [
         "",
@@ -37,7 +41,7 @@ export default Runtime.handler(
           ? [
               "",
               // uqr separates rows with "\n" on every platform, so splitting on EOL ("\r\n" on Windows) indents only the first row.
-              renderUnicodeCompact(JSON.stringify({ code: pairing.code, urls: remote }), {
+              renderUnicodeCompact(qr, {
                 border: 2,
               })
                 .split("\n")
