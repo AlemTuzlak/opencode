@@ -81,9 +81,8 @@ describe("findFileLink", () => {
 })
 
 describe("checkFileLinkExists", () => {
-  test("confirms indexed, ignored, and absolute files without reading them", async () => {
-    // `.env` is ignored, so the search index skips it; only a directory listing finds it.
-    const onDisk = new Set(["C:/tmp/out.html", ".env"])
+  test("confirms indexed and absolute files without reading them", async () => {
+    const onDisk = new Set(["C:/tmp/out.html"])
     const signal = new AbortController().signal
 
     const check = (href: string) =>
@@ -103,7 +102,7 @@ describe("checkFileLinkExists", () => {
 
     expect(await check("interaction.ts:74")).toBe(true)
     expect(await check("index.ts")).toBe(true)
-    expect(await check(".env")).toBe(true)
+    expect(await check("Interaction.ts")).toBe(false)
     expect(await check("C:/tmp/out.html")).toBe(true)
     expect(await check("C:/tmp/missing.html")).toBe(false)
     expect(await check("~/README.md")).toBe(false)

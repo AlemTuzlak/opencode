@@ -41,16 +41,9 @@ export async function findFileLink(input: {
 
   if (!query) return
 
-  const wanted = query.toLowerCase()
   const results = await input.files.search(query, { limit: 200, signal: input.signal }).catch(() => [])
-
-  const matches = [...new Set(results)].filter((file) => {
-    const candidate = file.toLowerCase()
-
-    return candidate === wanted || candidate.endsWith(`/${wanted}`)
-  })
-
-  const literal = matches.find((file) => file.toLowerCase() === wanted)
+  const matches = [...new Set(results)].filter((file) => file === query || file.endsWith(`/${query}`))
+  const literal = matches.find((file) => file === query)
 
   if (literal) return { kind: "file", path: literal }
 
@@ -60,9 +53,8 @@ export async function findFileLink(input: {
 }
 
 /**
- * Whether a path named in a message opens something, without reading any file. Absolute paths list their directory;
- * relative paths ask the search index, then list the literal path's directory for files the index skips (ignored
- * files such as `.env`).
+ * Whether a path named in a message is a file, without reading it: absolute paths by listing their directory,
+ * workspace paths by the search index.
  */
 export async function checkFileLinkExists(input: {
   readonly files: Pick<Files, "search" | "resolve" | "exists">
@@ -77,9 +69,7 @@ export async function checkFileLinkExists(input: {
 
   if (isAbsoluteLink(parsed.path)) return input.files.exists(input.files.resolve(parsed.path))
 
-  if (await findFileLink({ files: input.files, path: parsed.path, signal: input.signal })) return true
-
-  return !input.signal.aborted && input.files.exists(parsed.path)
+  return !!(await findFileLink({ files: input.files, path: parsed.path, signal: input.signal }))
 }
 
 function extractLineSelection(input: string, isFileUrl: boolean) {

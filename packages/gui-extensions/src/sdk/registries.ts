@@ -521,12 +521,12 @@ export interface LinkHandler {
    */
   open(link: Link): void
   /**
-   * Whether the link's target exists. `Links.exists` asks the highest-priority matching handler that defines it; omit
-   * it to leave the answer to a lower-priority handler. Must never read file contents or show an error: it runs for
-   * every candidate path a message renders. Resolve false on failure.
+   * Whether the link's target exists. Omit it and `Links.exists` answers false, so text never looks like a link this
+   * handler opens. Must never read file contents or show an error: it runs for every candidate path a message renders.
+   * Resolve false on failure.
    *
    * @param link - A link `match` accepted.
-   * @returns A boolean when the answer is cached, else a promise.
+   * @returns Whether the target exists, now or once checked.
    */
   exists?(link: Link): boolean | Promise<boolean>
 }

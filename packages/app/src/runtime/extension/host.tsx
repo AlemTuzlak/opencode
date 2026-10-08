@@ -36,6 +36,7 @@ import {
   type Contract,
   type Definition,
   type Dialogs,
+  type Link,
   type Links,
   type Messages,
   type Persisted,
@@ -297,9 +298,9 @@ function createHost(input: HostInput) {
 
   const list = <T,>(registry: Registry<T>) => items(registry).map((item) => item.value)
 
-  const pickLinkHandler = (link: Parameters<Links["open"]>[0], accept: (item: LinkHandler) => boolean) =>
+  const pickLinkHandler = (link: Link) =>
     list(LinkHandler)
-      .filter((item) => accept(item) && item.match(link))
+      .filter((item) => item.match(link))
       .reduce<LinkHandler | undefined>(
         (best, item) => (!best || (item.priority ?? 0) > (best.priority ?? 0) ? item : best),
         undefined,
@@ -307,7 +308,7 @@ function createHost(input: HostInput) {
 
   const links: Links = {
     open(link) {
-      const handler = untrack(() => pickLinkHandler(link, () => true))
+      const handler = untrack(() => pickLinkHandler(link))
 
       if (!handler) return false
 
@@ -316,12 +317,7 @@ function createHost(input: HostInput) {
       return true
     },
     // Markdown asks from inside its render effect; untracked so a session or screen switch never reruns it.
-    exists: (link) =>
-      untrack(() => {
-        const handler = pickLinkHandler(link, (item) => !!item.exists)
-
-        return handler?.exists?.(link) ?? false
-      }),
+    exists: (link) => untrack(() => pickLinkHandler(link)?.exists?.(link) ?? false),
   }
 
   const dialog = useDialog()

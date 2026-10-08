@@ -11,6 +11,8 @@ test.each([
   ["src/app.ts?plain=1", "src/app.ts"],
   ["app.tsx:42", "app.tsx#L42"],
   ["app.tsx:42-50", "app.tsx#L42-L50"],
+  ["foo.ts:0", "foo.ts"],
+  ["src\\Makefile:10", "src/Makefile#L10"],
 ])("recognizes local link %s", (href, path) => {
   expect(localLinkPath(href)).toBe(path)
 })

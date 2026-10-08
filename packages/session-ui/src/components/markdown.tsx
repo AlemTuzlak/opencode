@@ -380,47 +380,32 @@ function setupExternalLinkFavicons(root: HTMLDivElement) {
   return () => root.removeEventListener("load", loaded, true)
 }
 
-// A path becomes a link only once `localFileExists` confirms it. A streaming block skips the check: its last code span
-// may still be half written, and the block renders again under a new key once it completes.
+// A path becomes a link once `localFileExists` says the file exists. A streaming block skips the check: its last code
+// span may still be half written, and the block renders again once it completes.
 function markInlineCode(
   source: HTMLDivElement,
   target: HTMLDivElement,
   live: boolean,
   localFileExists?: MarkdownLocalFileExists,
 ) {
-  const codeNodes = Array.from(source.querySelectorAll(":not(pre) > code"))
-  const pending = new Set<string>()
+  const checked = new Set<string>()
 
-  for (const code of codeNodes) {
-    if (!(code instanceof HTMLElement)) continue
+  for (const code of source.querySelectorAll<HTMLElement>(":not(pre) > code")) {
     delete code.dataset.inlineCodeKind
     const text = (code.textContent ?? "").trim()
     const kind = inlineCodeKind(text)
 
-    if (!kind) continue
+    if (kind === "url") code.dataset.inlineCodeKind = kind
 
-    if (kind === "url" || !localFileExists) {
-      code.dataset.inlineCodeKind = kind
-      continue
-    }
+    // Code inside a link already goes where the link does.
+    if (kind !== "path" || live || !localFileExists || code.closest("a") || checked.has(text)) continue
 
-    if (live) continue
-
-    const result = localFileExists(text)
-
-    if (!(result instanceof Promise)) {
-      if (result) code.dataset.inlineCodeKind = "path"
-      continue
-    }
-
-    if (pending.has(text)) continue
-    pending.add(text)
-    void result
+    checked.add(text)
+    void Promise.resolve(localFileExists(text))
       .then((exists) => {
-        // Also marks a detached block, e.g. a cached timeline, so it shows the link when it returns.
         if (!exists) return
         target.querySelectorAll<HTMLElement>(":not(pre) > code").forEach((node) => {
-          if ((node.textContent ?? "").trim() === text) node.dataset.inlineCodeKind = "path"
+          if (!node.closest("a") && (node.textContent ?? "").trim() === text) node.dataset.inlineCodeKind = "path"
         })
       })
       .catch(() => undefined)
@@ -907,8 +892,15 @@ function updateBlock(
       ? current
       : undefined
 
-  // A block that finishes streaming keeps its hash but renders again, so its file paths get checked.
-  if (existing?.dataset.markdownHash === block.hash && existing.dataset.markdownMode === block.mode) return
+  if (existing?.dataset.markdownHash === block.hash) {
+    // A block that finishes streaming keeps its DOM and the user's selection; only its file paths get checked now.
+    if (existing.dataset.markdownMode === "live" && block.mode !== "live") {
+      existing.dataset.markdownMode = block.mode
+      markInlineCode(existing, existing, false, localFileExists)
+    }
+
+    return
+  }
 
   const next = existing ?? document.createElement("div")
   next.dataset.markdownBlock = ""

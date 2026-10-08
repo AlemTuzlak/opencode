@@ -1,5 +1,21 @@
 import { parsePathLineSuffix } from "@opencode/util/path"
 
+// Common files with no extension. Anything else needs a `.` or `/` to look like a file.
+const fileNames = new Set([
+  "CHANGELOG",
+  "CODEOWNERS",
+  "Containerfile",
+  "Dockerfile",
+  "Gemfile",
+  "Justfile",
+  "LICENSE",
+  "Makefile",
+  "Procfile",
+  "README",
+  "Rakefile",
+  "Vagrantfile",
+])
+
 /**
  * `url` for an http(s) URL, `path` for anything that could name a file. A `path` only becomes a link once the host
  * confirms the file exists, so this stays a cheap syntax check.
@@ -17,5 +33,7 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
 
   const path = parsePathLineSuffix(text).path
 
-  if (/[./\\]/.test(path) && /[a-z0-9]/i.test(path)) return "path"
+  if (fileNames.has(path)) return "path"
+
+  if (/[./\\]/.test(path) && /[a-z]/i.test(path)) return "path"
 }

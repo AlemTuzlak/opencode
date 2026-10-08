@@ -11,13 +11,17 @@ describe("inlineCodeKind", () => {
     "/etc/hosts",
     "app/(auth)/[id]/page.tsx",
     "console.log",
+    "Dockerfile",
+    "Makefile:12",
   ])("treats %s as a possible path", (text) => {
     expect(inlineCodeKind(text)).toBe("path")
   })
 
   test.each([
     "value",
-    "README",
+    "readme",
+    "1.2.3",
+    "127.0.0.1:8080",
     "foo(bar)",
     "a = b",
     "<App />",

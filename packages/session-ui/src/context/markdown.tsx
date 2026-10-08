@@ -6,8 +6,8 @@ export type ReadMarkdownImage = (path: string, signal: AbortSignal) => Promise<B
 export type OpenMarkdownLocalFile = (path: string) => void
 
 /**
- * Whether an inline-code path names a file that opens, checked before the path is styled as a link. Returns a boolean
- * when the answer is known now. Without it, every path-like inline code is styled as a link.
+ * Whether an inline-code path names a file that exists. Inline code is styled as a file link only when this says yes;
+ * without it, inline code stays plain.
  */
 export type MarkdownLocalFileExists = (path: string) => boolean | Promise<boolean>
 
