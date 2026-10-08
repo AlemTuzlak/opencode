@@ -72,6 +72,16 @@ export function SessionContextUsage(props: {
     return usd().format(info()?.cost ?? 0)
   })
 
+  const showCost = createMemo(() => {
+    if ((info()?.cost ?? 0) > 0) return true
+    const ref = info()?.model ?? messages().findLast((item) => item.type === "assistant")?.model
+    const model = ref ? catalogModel(props.session, ref)?.model : undefined
+
+    if (!model) return true
+
+    return model.cost.some((cost) => cost.input > 0 || cost.output > 0 || cost.cache.read > 0 || cost.cache.write > 0)
+  })
+
   const openContext = () => {
     if (!props.session.id) return
     layout.toggle(`${ctx.id}:main`, props.session)
@@ -101,7 +111,9 @@ export function SessionContextUsage(props: {
 
   const tooltipValue = () => (
     <div class="flex w-[120px] flex-col gap-2">
-      <ContextTooltipRow name={ctx.t("usage.cost")} value={cost()} />
+      <Show when={showCost()}>
+        <ContextTooltipRow name={ctx.t("usage.cost")} value={cost()} />
+      </Show>
       <ContextTooltipRow name={ctx.t("usage.usage")} value={`${context()?.usage ?? 0}%`} />
       <ContextTooltipRow name={ctx.t("usage.tokens")} value={context()?.total.toLocaleString(i18n.locale()) ?? "0"} />
     </div>
@@ -128,10 +140,12 @@ export function SessionContextUsage(props: {
               <span class="flex items-center gap-2 whitespace-nowrap group-active:text-v2-text-text-muted">
                 {compactCircle()}
                 <span>{tokens()}</span>
-                <span aria-hidden="true" class="flex w-1.5 shrink-0 items-center justify-center">
-                  ·
-                </span>
-                <span>{cost()}</span>
+                <Show when={showCost()}>
+                  <span aria-hidden="true" class="flex w-1.5 shrink-0 items-center justify-center">
+                    ·
+                  </span>
+                  <span>{cost()}</span>
+                </Show>
               </span>
             </Button>
           }
