@@ -167,12 +167,12 @@ export const password = Effect.fn("cli.service-config.password")(function* (valu
   return next
 })
 
-// Turns remote access on and returns its route: 128 random bits as hex, a valid DNS label, created once and kept
+// Turns remote access on and returns its route: 64 random bits as 16 hex characters, a valid DNS label, created once and kept
 // so the remote URL survives restarts.
 export const remote = Effect.fn("cli.service-config.remote")(function* () {
   const existing = yield* read()
   if (existing.remote?.route) return existing.remote.route
-  const route = randomBytes(16).toString("hex")
+  const route = randomBytes(8).toString("hex")
   yield* write({ ...existing, remote: { route } })
   return route
 })

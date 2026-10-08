@@ -73,7 +73,7 @@ test("remote access route is random, stable once created, hidden, and forgotten 
     const route = await run(ServiceConfig.remote())
     // The SDK rejects invalid route names, which would keep the service from ever attaching.
     expect(() => validateRoutes({ [route]: "127.0.0.1:4096" })).not.toThrow()
-    expect(route).toMatch(/^[0-9a-f]{32}$/)
+    expect(route).toMatch(/^[0-9a-f]{16}$/)
     expect(await run(ServiceConfig.read())).toEqual({ remote: { route } })
     expect(await run(ServiceConfig.remote())).toBe(route)
     expect(await run(ServiceConfig.get("remote"))).toBe("true")
