@@ -298,6 +298,9 @@ const layer = Layer.effect(
       yield* operation("reset", repository.worktree, ["reset", "--hard", revision])
     })
 
+    // Never pass an unbounded path list as arguments: Windows caps a command line at
+    // 32,767 characters (ENAMETOOLONG). Feed paths through stdin instead, e.g.
+    // `--pathspec-from-file=- --pathspec-file-nul`, `--stdin`, or `update-index --index-info`.
     const repositoryArgs = (repository: Repository, args: string[]) => [
       "--git-dir",
       repository.gitDirectory,
@@ -513,6 +516,7 @@ const layer = Layer.effect(
     /**
      * Three batched invocations over the tree pair instead of three per file. An
      * explicit empty selection diffs nothing; an absent one diffs every changed path.
+     * A selected path also selects everything beneath it, like a literal pathspec.
      * Patch output is capped like VCS diffs: files past the cap get an empty patch.
      */
     const treeDiff = Effect.fn("Git.tree.diff")(function* (input: {
@@ -523,17 +527,64 @@ const layer = Layer.effect(
       paths?: readonly RelativePath[]
     }) {
       if (input.paths?.length === 0) return []
-      const args = ["--no-renames", input.from, input.to, "--", ...(input.paths ?? [])]
+      if (!input.paths) return yield* diffFiles(input.repository, ["--no-renames", input.from, input.to], input.context)
+      // Never put the selection on the command line: a large revert selects thousands of
+      // files and the spawn fails with ENAMETOOLONG on Windows. `git diff` has no
+      // `--pathspec-from-file`, so stage only the selected changes of `to` over `from`
+      // in a private index (paths go through stdin) and diff that index against `from`.
+      const selected = new Set<string>(input.paths)
+      const entries = nuls(
+        (yield* repositoryOperation("diff", input.repository, [
+          "diff",
+          "--raw",
+          "-z",
+          "--no-abbrev",
+          "--no-renames",
+          input.from,
+          input.to,
+        ])).text,
+      ).flatMap((meta, index, records) => {
+        const file = records[index + 1]
+        if (index % 2 !== 0 || !file || !isSelected(selected, file)) return []
+        // `:<old mode> <new mode> <old oid> <new oid> <status>`; a deletion has mode 000000.
+        const [, mode, , oid] = meta.slice(1).split(" ")
+        return [`${mode === "000000" ? "0" : mode} ${oid}\t${file}\0`]
+      })
+      if (!entries.length) return []
+      const index = path.join(input.repository.gitDirectory, `opencode-diff-${crypto.randomUUID()}.index`)
+      const env = { GIT_INDEX_FILE: index }
+      return yield* Effect.gen(function* () {
+        yield* repositoryOperation("diff", input.repository, ["read-tree", input.from], { env })
+        yield* repositoryOperation("diff", input.repository, ["update-index", "-z", "--index-info"], {
+          env,
+          stdin: entries.join(""),
+        })
+        return yield* diffFiles(input.repository, ["--cached", "--no-renames", input.from], input.context, env)
+      }).pipe(
+        Effect.ensuring(
+          Effect.forEach([index, `${index}.lock`], (file) => fs.remove(file, { force: true }).pipe(Effect.ignore), {
+            discard: true,
+          }),
+        ),
+      )
+    })
+
+    const diffFiles = Effect.fnUntraced(function* (
+      repository: Repository,
+      args: string[],
+      context = 3,
+      env?: Record<string, string>,
+    ) {
       // Patch headers have no -z form: unquoted paths keep chunksByFile matching non-ASCII names.
       const [names, numbers, patch] = yield* Effect.all(
         [
-          repositoryOperation("diff", input.repository, ["diff", "--name-status", "-z", ...args]),
-          repositoryOperation("diff", input.repository, ["diff", "--numstat", "-z", ...args]),
+          repositoryOperation("diff", repository, ["diff", "--name-status", "-z", ...args], { env }),
+          repositoryOperation("diff", repository, ["diff", "--numstat", "-z", ...args], { env }),
           repositoryOperation(
             "diff",
-            input.repository,
-            ["-c", "core.quotepath=false", "diff", "--no-ext-diff", `--unified=${input.context ?? 3}`, ...args],
-            { maxOutputBytes: VcsPatch.MAX_TOTAL_PATCH_BYTES },
+            repository,
+            ["-c", "core.quotepath=false", "diff", "--no-ext-diff", `--unified=${context}`, ...args],
+            { env, maxOutputBytes: VcsPatch.MAX_TOTAL_PATCH_BYTES },
           ),
         ],
         { concurrency: 3 },
@@ -742,6 +793,15 @@ function execute(cwd: string, proc: AppProcess.Interface, args: string[]) {
           }) satisfies Result,
       ),
     )
+}
+
+/** Whether `file` or one of its parent directories is in the selection. */
+function isSelected(selected: ReadonlySet<string>, file: string) {
+  if (selected.has(".")) return true
+  for (let end = file.length; end > 0; end = file.lastIndexOf("/", end - 1)) {
+    if (selected.has(file.slice(0, end))) return true
+  }
+  return false
 }
 
 /** Split NUL-terminated git output into its records. */
