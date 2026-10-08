@@ -1,5 +1,6 @@
 export * as AISDKNative from "./aisdk-native.js"
 
+import { OpenResponsesOptions } from "@opencode/ai/protocols/utils/open-responses-options"
 import { Effect, Option, Schema, Struct } from "effect"
 import { Provider } from "./provider.js"
 
@@ -162,19 +163,40 @@ type Overlay = {
 
 function options(replacement: string, modelID: string | undefined, settings: Legacy): Overlay {
   const converse = replacement === "@opencode/ai/providers/amazon-bedrock" && modelID !== undefined
-  const kept = Struct.omit(settings, ["headers", "extraBody", "useCompletionUrls", ...OPENROUTER_KEYS])
+  const remaining = Struct.omit(settings, ["headers", "extraBody", "useCompletionUrls", ...OPENROUTER_KEYS])
+  // The AI SDK OpenAI-compatible package this replaces sent request options it did not recognize as body
+  // fields, which proxies such as LiteLLM rely on (`allowed_openai_params`). Its provider-level options were
+  // constructor options instead, so only model and variant settings, which carry a model ID, are forwarded.
+  const forwarded =
+    replacement === "@opencode/ai/providers/openai-compatible" && modelID !== undefined
+      ? Struct.omit(Provider.nativeSettings(remaining), COMPATIBLE_KEYS)
+      : {}
+  const kept = Struct.omit(remaining, Object.keys(forwarded))
   const thinking = converse ? bedrockThinking(modelID, settings) : undefined
+  const body = Object.keys(forwarded).length === 0 ? settings.extraBody : { ...forwarded, ...settings.extraBody }
   return {
     settings: {
       ...(replacement.startsWith("@opencode/ai/providers/amazon-bedrock") ? bedrockSettings(kept, converse) : kept),
       ...(thinking === undefined ? {} : { thinking }),
     },
     ...(settings.headers === undefined ? {} : { headers: settings.headers }),
-    ...(settings.extraBody === undefined ? {} : { body: settings.extraBody }),
+    ...(body === undefined ? {} : { body }),
     ...(converse ? bedrockRequest(modelID, settings) : {}),
     ...(replacement === "@opencode/ai/providers/openrouter" ? openRouterRequest(settings) : {}),
   }
 }
+
+// Settings the native OpenAI-compatible package reads, plus AI SDK chat options it never sent as body fields.
+const COMPATIBLE_KEYS = [
+  "apiKey",
+  "baseURL",
+  "body",
+  "provider",
+  "contextManagement",
+  ...Object.keys(OpenResponsesOptions.Options.fields),
+  "user",
+  "strictJsonSchema",
+]
 
 // AI SDK spellings the native Bedrock packages do not read.
 const BEDROCK_KEYS = [

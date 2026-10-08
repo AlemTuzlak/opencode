@@ -562,6 +562,49 @@ describe("AISDKNative", () => {
     })
   })
 
+  test("forwards unrecognized OpenAI-compatible model and variant settings as body fields", () => {
+    const model: Parameters<typeof AISDKNative.rewrite>[0] = {
+      package: "aisdk:@ai-sdk/openai-compatible",
+      settings: {
+        baseURL: "https://litellm.example/v1",
+        reasoningEffort: "high",
+        user: "someone",
+        timeout: 60_000,
+        allowed_openai_params: ["reasoning_effort"],
+        extraBody: { metadata: { tag: "extra" } },
+      },
+      body: { metadata: { tag: "config" } },
+      variants: [{ id: "thinking", settings: { reasoningEffort: "max", enable_thinking: true } }],
+    }
+    AISDKNative.rewrite(model, {
+      specifier: "aisdk:@ai-sdk/openai-compatible",
+      providerID: "litellm",
+      modelID: "glm-5.3-flashx",
+    })
+    expect(model).toEqual({
+      package: "@opencode/ai/providers/openai-compatible",
+      settings: {
+        baseURL: "https://litellm.example/v1",
+        reasoningEffort: "high",
+        user: "someone",
+        timeout: 60_000,
+        provider: "litellm",
+      },
+      body: { allowed_openai_params: ["reasoning_effort"], metadata: { tag: "config" } },
+      variants: [{ id: "thinking", settings: { reasoningEffort: "max" }, body: { enable_thinking: true } }],
+    })
+
+    const provider: Parameters<typeof AISDKNative.rewrite>[0] = {
+      package: "aisdk:@ai-sdk/openai-compatible",
+      settings: { baseURL: "https://litellm.example/v1", includeUsage: true },
+    }
+    AISDKNative.rewrite(provider, { specifier: "aisdk:@ai-sdk/openai-compatible", providerID: "litellm" })
+    expect(provider).toEqual({
+      package: "@opencode/ai/providers/openai-compatible",
+      settings: { baseURL: "https://litellm.example/v1", includeUsage: true, provider: "litellm" },
+    })
+  })
+
   test("maps supported xAI settings", () => {
     expect(
       map("@ai-sdk/xai", {
