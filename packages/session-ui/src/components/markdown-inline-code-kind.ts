@@ -12,6 +12,9 @@ export function inlineCodeKind(text: string): "path" | "url" | undefined {
   // Code, globs and markup, not paths.
   if (/[{}<>"'`;=|&*,]/.test(text)) return
 
+  // A network share (`\\host\share`) would make the server connect to the host just to check it.
+  if (/^[\\/]{2}/.test(text)) return
+
   const path = parsePathLineSuffix(text).path
 
   if (/[./\\]/.test(path) && /[a-z0-9]/i.test(path)) return "path"

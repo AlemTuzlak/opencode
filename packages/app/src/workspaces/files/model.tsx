@@ -141,7 +141,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       )
     }
 
-    const setLoadError = (file: string, message: string, notFound = false, silent = false) => {
+    const setLoadError = (file: string, message: string, notFound = false) => {
       if (notFound) removeFileContentBytes(file)
       setStore(
         "file",
@@ -156,8 +156,6 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
           draft.content = undefined
         }),
       )
-
-      if (silent) return
       showToast({
         variant: "error",
         title: language.t("toast.file.loadFailed.title"),
@@ -165,7 +163,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       })
     }
 
-    const load = (input: string, options?: { force?: boolean; silent?: boolean }) => {
+    const load = (input: string, options?: { force?: boolean }) => {
       const file = path.normalize(input)
 
       if (!file) return Promise.resolve()
@@ -205,7 +203,6 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
             file,
             formatServerError(e, language.t, language.t("error.chain.unknown")),
             isFileNotFoundError(e),
-            options?.silent,
           )
         })
         .finally(() => {
@@ -227,7 +224,7 @@ export const { use: useFile, provider: FileProvider } = createSimpleContext({
       if (store.file[file]?.loaded) return Promise.resolve(true)
 
       const directory = scope()
-      const parent = file.includes("/") ? getDirectory(file) : ""
+      const parent = /[\\/]/.test(file) ? getDirectory(file) : ""
       const key = `${directory}\n${parent}`
       const now = Date.now()
       const cached = listings.get(key)

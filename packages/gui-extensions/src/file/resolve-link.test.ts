@@ -88,7 +88,15 @@ describe("checkFileLinkExists", () => {
 
     const check = (href: string) =>
       checkFileLinkExists({
-        files: { ...files, exists: async (path: string) => onDisk.has(path), resolve: (path: string) => path },
+        files: {
+          ...files,
+          exists: async (path: string) => {
+            if (path.startsWith("//")) throw new Error(`checked a network share: ${path}`)
+
+            return onDisk.has(path)
+          },
+          resolve: (path: string) => path,
+        },
         href,
         signal,
       })
@@ -99,6 +107,7 @@ describe("checkFileLinkExists", () => {
     expect(await check("C:/tmp/out.html")).toBe(true)
     expect(await check("C:/tmp/missing.html")).toBe(false)
     expect(await check("~/README.md")).toBe(false)
+    expect(await check("\\\\host\\share\\x.ts")).toBe(false)
     expect(await check("console.log")).toBe(false)
   })
 })

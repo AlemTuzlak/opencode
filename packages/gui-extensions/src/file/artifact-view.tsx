@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, Match, onCleanup, Show, Switch, type JSX } from "solid-js"
+import { createMemo, createSignal, For, Match, onCleanup, Show, Switch, untrack, type JSX } from "solid-js"
 import { createStore } from "solid-js/store"
 import { createResizeObserver } from "@solid-primitives/resize-observer"
 import { Button } from "@opencode/ui/button"
@@ -403,6 +403,7 @@ function ArtifactMarkdown(props: { session: MountedSession; path: string; text: 
     <MarkdownProvider
       readImage={(src, signal) => parent?.readImage?.(resolve(src), signal) ?? Promise.resolve(undefined)}
       openLocalFile={(href) => void links.open({ href, base: dir(), session: props.session })}
+      localFileExists={(href) => untrack(() => links.exists({ href, base: dir(), session: props.session }))}
     >
       <div class="mx-auto w-full max-w-3xl px-8 py-6">
         <Markdown text={props.text} cacheKey={props.cacheKey} class="select-text" />

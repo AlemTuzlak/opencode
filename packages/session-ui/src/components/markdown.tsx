@@ -380,7 +380,14 @@ function setupExternalLinkFavicons(root: HTMLDivElement) {
   return () => root.removeEventListener("load", loaded, true)
 }
 
-function markInlineCode(source: HTMLDivElement, target: HTMLDivElement, localFileExists?: MarkdownLocalFileExists) {
+// A path becomes a link only once `localFileExists` confirms it. A streaming block skips the check: its last code span
+// may still be half written, and the block renders again under a new key once it completes.
+function markInlineCode(
+  source: HTMLDivElement,
+  target: HTMLDivElement,
+  live: boolean,
+  localFileExists?: MarkdownLocalFileExists,
+) {
   const codeNodes = Array.from(source.querySelectorAll(":not(pre) > code"))
   const pending = new Set<string>()
 
@@ -397,6 +404,8 @@ function markInlineCode(source: HTMLDivElement, target: HTMLDivElement, localFil
       continue
     }
 
+    if (live) continue
+
     const result = localFileExists(text)
 
     if (!(result instanceof Promise)) {
@@ -408,7 +417,8 @@ function markInlineCode(source: HTMLDivElement, target: HTMLDivElement, localFil
     pending.add(text)
     void result
       .then((exists) => {
-        if (!exists || !target.isConnected) return
+        // Also marks a detached block, e.g. a cached timeline, so it shows the link when it returns.
+        if (!exists) return
         target.querySelectorAll<HTMLElement>(":not(pre) > code").forEach((node) => {
           if ((node.textContent ?? "").trim() === text) node.dataset.inlineCodeKind = "path"
         })
@@ -897,12 +907,14 @@ function updateBlock(
       ? current
       : undefined
 
-  if (existing?.dataset.markdownHash === block.hash) return
+  // A block that finishes streaming keeps its hash but renders again, so its file paths get checked.
+  if (existing?.dataset.markdownHash === block.hash && existing.dataset.markdownMode === block.mode) return
 
   const next = existing ?? document.createElement("div")
   next.dataset.markdownBlock = ""
   next.dataset.markdownKey = block.key
   next.dataset.markdownHash = block.hash
+  next.dataset.markdownMode = block.mode
   next.style.display = "contents"
   const rendered = renderedMarkdown.get(next)
   // Keep live renderers in control of their DOM, including after completion.
@@ -910,7 +922,7 @@ function updateBlock(
 
   if (source === next) disposeCopyButtons(next)
   source.innerHTML = block.html
-  markInlineCode(source, next, localFileExists)
+  markInlineCode(source, next, block.mode === "live", localFileExists)
   markCodeLinks(source)
 
   if (sessionLinks) markSessionLinks(source)

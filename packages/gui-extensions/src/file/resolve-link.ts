@@ -71,8 +71,9 @@ export async function checkFileLinkExists(input: {
 }): Promise<boolean> {
   const parsed = parseFileLink(input.href)
 
-  // `~` is the server's home folder, which the app cannot expand.
-  if (!parsed.path || parsed.path.startsWith("~")) return false
+  // `~` is the server's home folder, which the app cannot expand. A network share (`//host/share`) would make the
+  // server connect to the host just to answer.
+  if (!parsed.path || parsed.path.startsWith("~") || parsed.path.startsWith("//")) return false
 
   if (isAbsoluteLink(parsed.path)) return input.files.exists(input.files.resolve(parsed.path))
 

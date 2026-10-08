@@ -24,6 +24,7 @@ import {
   usePanel,
   type Files,
   type LineRange,
+  type Link,
   type OpenOptions,
   type PanelTab,
   type MountedSession,
@@ -73,6 +74,7 @@ const setup: Setup<typeof File> = (ctx) => {
   const known = new Map<string, { exists: boolean; expires: number }>()
   const checking = new Map<string, Promise<boolean>>()
   const waiting: (() => void)[] = []
+  const parked = new Map<string, (() => void)[]>()
   let running = 0
   let clickController: AbortController | undefined
 
@@ -504,68 +506,105 @@ const setup: Setup<typeof File> = (ctx) => {
     return files.resolve(resolveArtifactPath(dir, value) ?? value)
   }
 
+  // Messages style a path as a link only when this confirms it. Answers are cached so a streaming re-render links the
+  // same path in the same frame; at most 4 checks run at once.
+  const linkExists = (link: Link): boolean | Promise<boolean> => {
+    if (ctx.signal.aborted) return false
+
+    const session = sessions.current()
+    const screen = ctx.screen.current()
+    const files = screen?.file
+
+    // Not on screen yet, e.g. a cached timeline of another session: answer once its session is routed.
+    if (!session || !screen || !files || (link.session && link.session.key !== session.key)) {
+      const key = link.session?.key ?? ""
+
+      return new Promise((resolve) => {
+        const retries = parked.get(key) ?? []
+        retries.push(() => resolve(linkExists(link)))
+        parked.set(key, retries.slice(-500))
+      })
+    }
+
+    const root = files.root
+    const cacheKey = `${root}\n${link.base ?? ""}\n${parsePathLineSuffix(link.href.trim().replaceAll("\\", "/")).path}`
+    const hit = known.get(cacheKey)
+
+    if (hit && Date.now() < hit.expires) {
+      known.delete(cacheKey)
+      known.set(cacheKey, hit)
+
+      return hit.exists
+    }
+
+    const pending = checking.get(cacheKey)
+
+    if (pending) return pending
+
+    // Undefined when the screen moved to another workspace before the check ran: the answer is not cached.
+    const check = () =>
+      import("./resolve-link").then(({ checkFileLinkExists, parseFileLink }) => {
+        if (ctx.signal.aborted || ctx.screen.current() !== screen || files.root !== root) return undefined
+
+        if (link.base === undefined) return checkFileLinkExists({ files, href: link.href, signal: ctx.signal })
+
+        // A link in a previewed document opens relative to it, so only that path counts.
+        const path = parseFileLink(link.href).path
+        const direct = path.startsWith("//") || path.startsWith("~") ? undefined : resolve(files, path, link.base)
+
+        return direct ? files.exists(direct) : false
+      })
+
+    const promise = new Promise<boolean | undefined>((settle) => {
+      const run = () => {
+        running += 1
+        check()
+          .catch(() => false)
+          .then(settle)
+          .finally(() => {
+            running -= 1
+            waiting.shift()?.()
+          })
+      }
+
+      if (running < 4) return run()
+
+      waiting.push(run)
+    }).then((value) => {
+      checking.delete(cacheKey)
+
+      if (value === undefined) return false
+
+      known.delete(cacheKey)
+      known.set(cacheKey, { exists: value, expires: Date.now() + (value ? 60_000 : 5_000) })
+      Array.from(known.keys())
+        .slice(0, Math.max(0, known.size - 250))
+        .forEach((item) => known.delete(item))
+
+      return value
+    })
+
+    checking.set(cacheKey, promise)
+
+    return promise
+  }
+
+  // Wakes the checks parked while their session was not on screen.
+  createKeyed(
+    () => (ctx.screen.current() ? sessions.current()?.key : undefined),
+    (key) => {
+      const retries = [...(parked.get(key) ?? []), ...(parked.get("") ?? [])]
+      parked.delete(key)
+      parked.delete("")
+      retries.forEach((retry) => retry())
+    },
+  )
+
   // Opens files the agent references as side panel tabs, inside or outside the workspace, or as
   // a browser tab for HTML when the desktop can load the file directly.
   ctx.add(LinkHandler, {
     match: () => true,
-    // Messages style a path as a link only when this confirms it. Answers are cached so a streaming re-render links the
-    // same path in the same frame; at most 4 checks run at once.
-    exists(link) {
-      const session = sessions.current()
-      const screen = ctx.screen.current()
-      const files = screen?.file
-
-      if (!session || !screen || !files || (link.session && link.session.key !== session.key)) return false
-
-      const cacheKey = `${files.root}\n${parsePathLineSuffix(link.href.trim().replaceAll("\\", "/")).path}`
-      const hit = known.get(cacheKey)
-
-      if (hit && Date.now() < hit.expires) {
-        known.delete(cacheKey)
-        known.set(cacheKey, hit)
-
-        return hit.exists
-      }
-
-      const pending = checking.get(cacheKey)
-
-      if (pending) return pending
-
-      const check = () =>
-        import("./resolve-link").then(({ checkFileLinkExists }) =>
-          ctx.signal.aborted ? false : checkFileLinkExists({ files, href: link.href, signal: ctx.signal }),
-        )
-
-      const promise = new Promise<boolean>((resolve) => {
-        const run = () => {
-          running += 1
-          check()
-            .catch(() => false)
-            .then(resolve)
-            .finally(() => {
-              running -= 1
-              waiting.shift()?.()
-            })
-        }
-
-        if (running < 4) return run()
-
-        waiting.push(run)
-      }).then((value) => {
-        checking.delete(cacheKey)
-        known.delete(cacheKey)
-        known.set(cacheKey, { exists: value, expires: Date.now() + (value ? 60_000 : 5_000) })
-        Array.from(known.keys())
-          .slice(0, Math.max(0, known.size - 250))
-          .forEach((item) => known.delete(item))
-
-        return value
-      })
-
-      checking.set(cacheKey, promise)
-
-      return promise
-    },
+    exists: linkExists,
     open(link) {
       const session = sessions.current()
       const screen = ctx.screen.current()
@@ -600,44 +639,26 @@ const setup: Setup<typeof File> = (ctx) => {
         return !signal.aborted && current?.key === sessionKey && ctx.screen.current() === screen ? current : undefined
       }
 
-      const openResolvedFile = (targetPath: string, selection?: LineRange, silent = false) => {
+      const openResolvedFile = (targetPath: string, selection?: LineRange) => {
         const routed = stillCurrent()
 
-        if (!routed) return Promise.resolve(false)
+        if (!routed) return Promise.resolve()
 
         // The browser pane shows HTML it can load. While it is pending or off, the file opens as a tab instead.
-        // Silent direct probes still verify the path exists first so a guessed `index.html` can resolve to `packages/web/index.html`.
         const pane = ctx.uses.browser()
 
-        if (
-          !silent &&
-          artifactKind(targetPath) === "html" &&
-          pane.status === "active" &&
-          pane.value.canOpen(routed, targetPath)
-        ) {
+        if (artifactKind(targetPath) === "html" && pane.status === "active" && pane.value.canOpen(routed, targetPath)) {
           pane.value.open(routed, workspaceFileUrl(files.root, targetPath))
 
-          return Promise.resolve(true)
+          return Promise.resolve()
         }
 
-        // Confirm the file exists before a tab appears for it.
-        // Always reread: V2 publishes no workspace file change events, so a cached copy can be stale.
-        return files.sync(targetPath, { force: true, silent }).then(() => {
+        // Confirm the file exists before a tab appears for it; a file deleted since its link rendered shows the load
+        // error. Always reread: a cached copy can be stale.
+        return files.sync(targetPath, { force: true }).then(() => {
           const latest = stillCurrent()
 
-          if (!latest || !files.get(targetPath)?.loaded) return false
-
-          const currentPane = ctx.uses.browser()
-
-          if (
-            artifactKind(targetPath) === "html" &&
-            currentPane.status === "active" &&
-            currentPane.value.canOpen(latest, targetPath)
-          ) {
-            currentPane.value.open(latest, workspaceFileUrl(files.root, targetPath))
-
-            return true
-          }
+          if (!latest || !files.get(targetPath)?.loaded) return
 
           batch(() => {
             applySelection(latest, files, targetPath, selection)
@@ -648,15 +669,25 @@ const setup: Setup<typeof File> = (ctx) => {
           })
           // After the batch, as in `open`: the mobile tab strip registers the tab before it leaves the browser.
           updateFilter(latest.key, { browsing: false })
-
-          return true
         })
       }
 
       void (async () => {
-        const { findFileLink, isAbsoluteLink, parseFileLink } = await import("./resolve-link")
+        const module = await import("./resolve-link").catch(() => undefined)
 
         if (!stillCurrent()) return
+
+        // The resolver chunk failed to load: open the literal path.
+        if (!module) {
+          const fallback = parsePathLineSuffix(link.href.trim().replaceAll("\\", "/"))
+          const direct = resolve(files, fallback.path, link.base)
+
+          if (direct) await openResolvedFile(direct, fallback.selection)
+
+          return
+        }
+
+        const { findFileLink, isAbsoluteLink, parseFileLink } = module
 
         const parsed = parseFileLink(link.href)
         const direct = resolve(files, parsed.path, link.base)
@@ -682,13 +713,8 @@ const setup: Setup<typeof File> = (ctx) => {
         }
 
         // With no match, the literal path still covers files the search index skips, such as an ignored `.env`.
-        await openResolvedFile(target?.path ?? direct, parsed.selection, !target)
-      })().catch(() => {
-        const fallbackParsed = parsePathLineSuffix(link.href.replaceAll("\\", "/"))
-        const fallback = resolve(files, fallbackParsed.path, link.base)
-
-        if (fallback) void openResolvedFile(fallback, fallbackParsed.selection)
-      })
+        await openResolvedFile(target?.path ?? direct, parsed.selection)
+      })()
     },
   })
 

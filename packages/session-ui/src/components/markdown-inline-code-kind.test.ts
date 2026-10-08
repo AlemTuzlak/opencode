@@ -15,12 +15,21 @@ describe("inlineCodeKind", () => {
     expect(inlineCodeKind(text)).toBe("path")
   })
 
-  test.each(["value", "README", "foo(bar)", "a = b", "<App />", "src/**/*.ts", "{ a: 1 }", "...", "ftp://x/y"])(
-    "leaves %s as code",
-    (text) => {
-      expect(inlineCodeKind(text)).toBeUndefined()
-    },
-  )
+  test.each([
+    "value",
+    "README",
+    "foo(bar)",
+    "a = b",
+    "<App />",
+    "src/**/*.ts",
+    "{ a: 1 }",
+    "...",
+    "ftp://x/y",
+    "\\\\host\\share\\x.ts",
+    "//host/share/x.ts",
+  ])("leaves %s as code", (text) => {
+    expect(inlineCodeKind(text)).toBeUndefined()
+  })
 
   test("detects http urls", () => {
     expect(inlineCodeKind("https://opencode.ai/docs")).toBe("url")

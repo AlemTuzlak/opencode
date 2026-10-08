@@ -1,4 +1,4 @@
-import { isLineRangeHash } from "@opencode/util/path"
+import { isLineRangeHash, parsePathLineSuffix } from "@opencode/util/path"
 import type { ReadMarkdownImage } from "../context/markdown"
 
 export function localImagePath(source: string) {
@@ -33,12 +33,21 @@ export function localLinkPath(href: string) {
 
   const hashIndex = value.indexOf("#")
   const hash = hashIndex === -1 ? "" : value.slice(hashIndex)
-  const suffix = isLineRangeHash(hash) ? hash : ""
-  const base = localImagePath(value.split(/[?#]/, 1)[0] ?? "")
+  const target = value.split(/[?#]/, 1)[0] ?? ""
+  // `app.tsx:42` is a file and line, not a URL scheme. The `.` or `/` keeps `tel:5551234` external.
+  const cited = parsePathLineSuffix(target)
+  const line = cited.selection && /[./]/.test(cited.path) ? cited : undefined
+  const base = localImagePath(line?.path ?? target)
 
   if (!base) return
 
-  return `${base}${suffix}`
+  if (line?.selection) {
+    const range = line.selection.end === line.selection.start ? "" : `-L${line.selection.end}`
+
+    return `${base}#L${line.selection.start}${range}`
+  }
+
+  return `${base}${isLineRangeHash(hash) ? hash : ""}`
 }
 
 function decodePath(value: string) {
