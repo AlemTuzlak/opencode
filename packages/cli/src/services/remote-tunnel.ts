@@ -1,6 +1,6 @@
 export * as RemoteTunnel from "./remote-tunnel"
 
-import type { OpenTunnelError } from "@opentunnel/client/effect"
+import type { OpenTunnelError, OpenTunnelProvisionStage } from "@opentunnel/client/effect"
 import { Cause, Effect, Schedule } from "effect"
 import { EOL } from "os"
 
@@ -46,13 +46,14 @@ export const run = Effect.fnUntraced(function* (input: {
 
 // A device without a tunnel creates its shared one here, in the foreground, because issuing the certificate
 // takes a while; the service then only attaches its route on start. An interrupted issuance resumes next time.
-export const ensure = Effect.fnUntraced(function* () {
+// `onProgress` takes over reporting a first-time setup (pairing animates it) from the plain notice.
+export const ensure = Effect.fnUntraced(function* (onProgress?: (stage: OpenTunnelProvisionStage) => void) {
   const { OpenTunnelClient } = yield* Effect.promise(() => import("@opentunnel/client/effect"))
   return yield* Effect.gen(function* () {
     const client = yield* OpenTunnelClient
-    if ((yield* client.tunnel.get()) === undefined)
-      process.stderr.write("Setting up remote access; this can take a minute..." + EOL)
-    return (yield* client.tunnel.ensure()).hostname
+    if ((yield* client.tunnel.get()) !== undefined) return (yield* client.tunnel.ensure()).hostname
+    if (!onProgress) process.stderr.write("Setting up remote access; this can take a minute..." + EOL)
+    return (yield* client.tunnel.create({ onProgress })).hostname
   }).pipe(
     Effect.provide(OpenTunnelClient.layer()),
     Effect.timeoutOrElse({
@@ -60,6 +61,12 @@ export const ensure = Effect.fnUntraced(function* () {
       orElse: () => Effect.fail(new Error("Timed out creating the remote access tunnel; run the command again to resume")),
     }),
   )
+})
+
+// Whether this device has its tunnel yet: the identity is persisted once the certificate is ready.
+export const created = Effect.fnUntraced(function* () {
+  const { OpenTunnelStorage } = yield* Effect.promise(() => import("@opentunnel/client/effect"))
+  return (yield* OpenTunnelStorage.xdg().load("default")) !== undefined
 })
 
 // The tunnel hostname is persisted once the certificate is ready, so this is undefined until then.

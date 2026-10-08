@@ -7,6 +7,7 @@ import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
 import { RemoteTunnel } from "../../services/remote-tunnel"
 import { ServiceConfig } from "../../services/service-config"
+import { QrBuild } from "../../ui/qr-build"
 
 export default Runtime.handler(
   Commands.commands.pair,
@@ -18,12 +19,27 @@ export default Runtime.handler(
       )
     if (input.remote && Option.isSome(input.url))
       return yield* Effect.fail(new Error("--remote cannot be combined with --url"))
-    // Changing the setting restarts the service, and the ensure below starts it again with the tunnel.
-    if (input.remote && config.remote === undefined) yield* ServiceConfig.set("remote", "true")
-    const endpoint = yield* Service.ensure(yield* ServiceConfig.options())
-    const client = OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) })
-    const urls = yield* pairingURLs(client, input)
-    const pairing = yield* Effect.tryPromise(() => client.server.pair())
+    // A device's first tunnel takes about half a minute (its certificate). In a terminal, the QR code is built
+    // where it will be printed while that runs; the link's length is known, so the code's shape is too.
+    const build =
+      input.remote && config.remote === undefined && QrBuild.enabled() && !(yield* RemoteTunnel.created())
+        ? // The route is 16 random hex characters, the tunnel ID 12, the pairing code 22.
+          QrBuild.start(`https://${"x".repeat(16)}.${"x".repeat(12)}.opentunnel.xyz/auth/connect/${"x".repeat(22)}`)
+        : undefined
+    const setup = Effect.gen(function* () {
+      if (build) {
+        yield* RemoteTunnel.ensure((stage) => build.stage(QrBuild.stageOf(stage)))
+        build.stage("connecting")
+      }
+      // Changing the setting restarts the service, and the ensure below starts it again with the tunnel.
+      if (input.remote && config.remote === undefined) yield* ServiceConfig.set("remote", "true")
+      const endpoint = yield* Service.ensure(yield* ServiceConfig.options())
+      const client = OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) })
+      const urls = yield* pairingURLs(client, input)
+      const pairing = yield* Effect.tryPromise(() => client.server.pair())
+      return { endpoint, urls, pairing }
+    })
+    const { endpoint, urls, pairing } = yield* build ? setup.pipe(Effect.onError(() => Effect.sync(build.clear))) : setup
     const links = urls.map((url) => new URL(`/auth/connect/${pairing.code}`, url).href)
     // Loopback URLs are useless to the scanning device, so the QR code only carries reachable addresses.
     const remote = urls.filter((url) => !isLoopback(new URL(url).hostname))
@@ -31,7 +47,7 @@ export default Runtime.handler(
     // opens it in the OpenCode app when installed (universal link) and in the web app otherwise. Every other QR
     // code may list several addresses, which needs {"code","urls"} JSON that only the app scanners read.
     const qr = input.remote ? links[0] : JSON.stringify({ code: pairing.code, urls: remote })
-    process.stdout.write(
+    const output =
       [
         "",
         `  Open a link to connect. Links work once and expire in ${Math.round(pairing.expires_in / 60)} minutes.`,
@@ -50,8 +66,13 @@ export default Runtime.handler(
             ]
           : []),
         "",
-      ].join(EOL) + EOL,
-    )
+      ].join(EOL) + EOL
+    // The animation finishes on the real code, then the output takes its place line for line.
+    if (build && remote.length) yield* Effect.promise(() => build.finish(qr, output))
+    else {
+      build?.clear()
+      process.stdout.write(output)
+    }
 
     if (input.remote || Option.isSome(input.url)) return
     const url = new URL(endpoint.url)
