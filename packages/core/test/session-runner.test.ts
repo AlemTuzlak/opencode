@@ -6046,14 +6046,19 @@ describe("SessionRunnerLLM", () => {
 
     expect(s.requests).toHaveLength(2)
     expect(s.executions).toEqual([])
-    expect(requireAssistant(yield* s.context).content).toMatchObject([
+    const assistant = requireAssistant(yield* s.context)
+    expect(assistant.content).toMatchObject([
       {
         type: "tool",
         id: "call-incomplete",
         executed: false,
-        state: { status: "error", error: { type: "tool.input-incomplete" } },
+        time: { completed: expect.anything() },
+        state: { status: "error", input: {}, error: { type: "tool.input-incomplete" } },
       },
     ])
+    expect(yield* s.messages).toEqual(expect.arrayContaining([assistant]))
+    yield* replaySessionProjection(sessionID)
+    expect(requireAssistant(yield* s.context)).toEqual(assistant)
   })
 
   scenario("continues after malformed local tool input without exposing raw arguments", function* (s) {
