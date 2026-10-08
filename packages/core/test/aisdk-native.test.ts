@@ -605,6 +605,27 @@ describe("AISDKNative", () => {
     })
   })
 
+  test("lets a later model update override an earlier forwarded OpenAI-compatible setting", () => {
+    const model: Parameters<typeof AISDKNative.rewrite>[0] = {
+      package: "aisdk:@ai-sdk/openai-compatible",
+      settings: { baseURL: "https://litellm.example/v1", foo: "from-file" },
+    }
+    AISDKNative.rewrite(model, { specifier: "aisdk:@ai-sdk/openai-compatible", providerID: "litellm", modelID: "glm" })
+    model.settings = { ...model.settings, reasoningEffort: "medium", foo: "from-content" }
+    AISDKNative.rewrite(model, {
+      specifier: "@opencode/ai/providers/openai-compatible",
+      providerID: "litellm",
+      modelID: "glm",
+    })
+
+    expect(model.settings).toEqual({
+      baseURL: "https://litellm.example/v1",
+      provider: "litellm",
+      reasoningEffort: "medium",
+    })
+    expect(model.body).toEqual({ foo: "from-content" })
+  })
+
   test("maps supported xAI settings", () => {
     expect(
       map("@ai-sdk/xai", {

@@ -43,11 +43,13 @@ export function rewrite<ID extends string>(
             : {}),
         }
   target.headers = Provider.mergeHeaders(translated.headers, target.headers)
-  target.body = Provider.mergeOverlay(translated.body, target.body)
+  // Forwarded settings were just merged into `settings`, so they are newer than any body field an earlier
+  // update forwarded; applying them last lets a later config layer override an earlier one.
+  target.body = Provider.mergeOverlay(Provider.mergeOverlay(translated.body, target.body), translated.forwarded)
   target.variants = target.variants?.map((variant) => {
     const overlay = options(replacement, input.modelID, decode(variant.settings ?? {}))
     const headers = Provider.mergeHeaders(overlay.headers, variant.headers)
-    const body = Provider.mergeOverlay(overlay.body, variant.body)
+    const body = Provider.mergeOverlay(Provider.mergeOverlay(overlay.body, variant.body), overlay.forwarded)
     return {
       id: variant.id,
       ...(variant.settings === undefined ? {} : { settings: overlay.settings }),
@@ -159,6 +161,8 @@ type Overlay = {
   readonly settings: Provider.Settings
   readonly headers?: Readonly<Record<string, string>>
   readonly body?: Readonly<Record<string, unknown>>
+  /** Settings sent as request body fields; they override existing body values. */
+  readonly forwarded?: Readonly<Record<string, unknown>>
 }
 
 function options(replacement: string, modelID: string | undefined, settings: Legacy): Overlay {
@@ -173,14 +177,14 @@ function options(replacement: string, modelID: string | undefined, settings: Leg
       : {}
   const kept = Struct.omit(remaining, Object.keys(forwarded))
   const thinking = converse ? bedrockThinking(modelID, settings) : undefined
-  const body = Object.keys(forwarded).length === 0 ? settings.extraBody : { ...forwarded, ...settings.extraBody }
   return {
     settings: {
       ...(replacement.startsWith("@opencode/ai/providers/amazon-bedrock") ? bedrockSettings(kept, converse) : kept),
       ...(thinking === undefined ? {} : { thinking }),
     },
     ...(settings.headers === undefined ? {} : { headers: settings.headers }),
-    ...(body === undefined ? {} : { body }),
+    ...(settings.extraBody === undefined ? {} : { body: settings.extraBody }),
+    ...(Object.keys(forwarded).length === 0 ? {} : { forwarded }),
     ...(converse ? bedrockRequest(modelID, settings) : {}),
     ...(replacement === "@opencode/ai/providers/openrouter" ? openRouterRequest(settings) : {}),
   }
