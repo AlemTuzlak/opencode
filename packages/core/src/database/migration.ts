@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { supportsForeignKeyToggle } from "#sqlite"
 import type { EffectDrizzleSqlite } from "./drizzle.js"
+import { prefixedIdentifier } from "./drizzle.js"
 import { migrations } from "./migration.gen.js"
 import schema from "./schema.gen.js"
 import { Global } from "@opencode/util/global"
@@ -11,14 +12,17 @@ import { Global } from "@opencode/util/global"
 type Database = EffectDrizzleSqlite.EffectSQLiteDatabase
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0]
 
+const journal = prefixedIdentifier("migration")
+
 export type Migration = {
   id: string
   foreignKeys?: boolean
   /**
-   * Drizzle queries on `tx` are prefixed by its dialect. Raw SQL must name
-   * tables and indexes as `${prefix}name`; the generator does this for DDL.
+   * `tx` renders table declarations and `prefixedIdentifier` names under the
+   * database's table prefix. Raw SQL must name tables and indexes through
+   * them rather than as literal text; generated migrations already do.
    */
-  up: (tx: Transaction, prefix: string) => Effect.Effect<void, unknown, Global.Service>
+  up: (tx: Transaction) => Effect.Effect<void, unknown, Global.Service>
 }
 
 // Not serialized here: the Database layer holds a lock scoped to the database
@@ -39,14 +43,10 @@ export function apply(db: Database, prefix = "") {
     yield* Effect.logInfo("database schema bootstrap started", { migrations: migrations.length })
     yield* db.transaction((tx) =>
       Effect.gen(function* () {
-        yield* schema.up(tx, prefix)
-        yield* tx.run(
-          sql`CREATE TABLE ${sql.identifier(prefix + "migration")} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`,
-        )
+        yield* schema.up(tx)
+        yield* tx.run(sql`CREATE TABLE ${journal} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`)
         yield* Effect.forEach(migrations, (migration) =>
-          tx.run(
-            sql`INSERT INTO ${sql.identifier(prefix + "migration")} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`,
-          ),
+          tx.run(sql`INSERT INTO ${journal} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`),
         )
       }),
     )
@@ -59,7 +59,6 @@ export function apply(db: Database, prefix = "") {
 
 export function applyOnly(db: Database, input: Migration[], prefix = "") {
   return Effect.gen(function* () {
-    const journal = sql.identifier(prefix + "migration")
     yield* db.run(sql`CREATE TABLE IF NOT EXISTS ${journal} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`)
     let completed = new Set((yield* db.all<{ id: string }>(sql`SELECT id FROM ${journal}`)).map((row) => row.id))
     if (completed.size === 0 && prefix === "") {
@@ -112,7 +111,7 @@ export function applyOnly(db: Database, input: Migration[], prefix = "") {
       yield* Effect.logInfo("database migration started", { migration: migration.id })
       const apply = db.transaction((tx) =>
         Effect.gen(function* () {
-          yield* migration.up(tx, prefix)
+          yield* migration.up(tx)
           yield* tx.run(sql`INSERT INTO ${journal} (id, time_completed) VALUES (${migration.id}, ${Date.now()})`)
         }),
       )

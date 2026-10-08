@@ -14,7 +14,30 @@ type CollectSQL = (this: SQL, chunks: ReadonlyArray<unknown>, config: BuildQuery
 const collectSQL = (SQL.prototype as unknown as { collectSQL: CollectSQL }).collectSQL
 
 /**
- * A SQLite dialect that stores every table as `<prefix><name>`, so OpenCode can
+ * A name OpenCode owns that has no table declaration, such as an index or the
+ * migration journal. `PrefixedSQLiteDialect` renders it under the prefix; any
+ * other dialect renders it like `sql.identifier`.
+ */
+export class PrefixedIdentifier {
+  static readonly [entityKind]: string = "PrefixedIdentifier"
+
+  constructor(readonly value: string) {}
+
+  getSQL() {
+    return new SQL([new Name(this.value)])
+  }
+
+  shouldOmitSQLParens() {
+    return true
+  }
+}
+
+export function prefixedIdentifier(value: string) {
+  return new PrefixedIdentifier(value)
+}
+
+/**
+ * A SQLite dialect that stores every table and index as `<prefix><name>`, so OpenCode can
  * share a database with tables it does not own. Table definitions stay
  * unprefixed and shared; the prefix is applied when a query is rendered.
  *
@@ -71,6 +94,7 @@ export class PrefixedSQLiteDialect extends SQLiteDialect {
 }
 
 function prefixed(chunk: unknown, prefix: string, columns: boolean) {
+  if (chunk instanceof PrefixedIdentifier) return new Name(prefix + chunk.value)
   if (is(chunk, Table) && !isAlias(chunk)) return new Name(prefix + getTableName(chunk))
   if (!columns || !is(chunk, Column) || chunk.isAlias || isAlias(getColumnTable(chunk))) return chunk
   return new SQL([new Name(prefix + getTableName(getColumnTable(chunk))), new StringChunk("."), new Name(chunk.name)])
