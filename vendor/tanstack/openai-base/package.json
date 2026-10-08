@@ -1,0 +1,52 @@
+{
+  "name": "@tanstack/openai-base",
+  "version": "0.12.4",
+  "description": "Shared OpenAI SDK base adapters for TanStack AI providers using Chat Completions and Responses APIs.",
+  "author": "Tanner Linsley",
+  "license": "MIT",
+  "homepage": "https://tanstack.com/ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TanStack/ai.git",
+    "directory": "packages/openai-base"
+  },
+  "bugs": {
+    "url": "https://github.com/TanStack/ai/issues"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/tannerlinsley"
+  },
+  "type": "module",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "ai",
+    "ai-sdk",
+    "typescript",
+    "tanstack",
+    "openai",
+    "adapter",
+    "provider-adapter",
+    "chat-completions",
+    "responses-api",
+    "structured-outputs"
+  ],
+  "dependencies": {
+    "@tanstack/ai-utils": "workspace:*",
+    "openai": "^7.30.0"
+  },
+  "peerDependencies": {
+    "@tanstack/ai": "^0.65.1"
+  }
+}

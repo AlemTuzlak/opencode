@@ -1,0 +1,1 @@
+{"version":3,"file":"byok.js","names":[],"sources":["../../src/byok.ts"],"sourcesContent":["import { defineByokProvider } from '@tanstack/ai/byok'\n\nexport const mistralByok = defineByokProvider({\n  id: 'mistral',\n  label: 'Mistral',\n  env: 'MISTRAL_API_KEY',\n})\n"],"mappings":";;AAEA,IAAa,cAAc,mBAAmB;CAC5C,IAAI;CACJ,OAAO;CACP,KAAK;AACP,CAAC"}

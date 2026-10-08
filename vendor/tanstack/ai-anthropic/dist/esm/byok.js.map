@@ -1,0 +1,1 @@
+{"version":3,"file":"byok.js","names":[],"sources":["../../src/byok.ts"],"sourcesContent":["import { defineByokProvider } from '@tanstack/ai/byok'\n\nexport const anthropicByok = defineByokProvider({\n  id: 'anthropic',\n  label: 'Anthropic',\n  env: 'ANTHROPIC_API_KEY',\n})\n"],"mappings":";;AAEA,IAAa,gBAAgB,mBAAmB;CAC9C,IAAI;CACJ,OAAO;CACP,KAAK;AACP,CAAC"}
