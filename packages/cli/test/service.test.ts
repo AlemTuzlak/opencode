@@ -55,7 +55,7 @@ test("service remote accepts only booleans and persists across set and unset", a
     await expect(run(ServiceConfig.set("remote", "on"))).rejects.toThrow("Remote must be true or false")
     expect(await run(ServiceConfig.read())).toEqual({})
     await run(ServiceConfig.set("remote", "false"))
-    expect(await run(ServiceConfig.read())).toEqual({ remote: false })
+    expect(await run(ServiceConfig.read())).toEqual({})
     expect(await run(ServiceConfig.get("remote"))).toBe("false")
     await run(ServiceConfig.unset("remote"))
     expect(await run(ServiceConfig.read())).toEqual({})
@@ -70,20 +70,43 @@ test("remote access route is random, stable once created, hidden, and forgotten 
   const run = <A, E>(effect: Effect.Effect<A, E, Global.Service | FileSystem.FileSystem>) =>
     Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.provide(NodeFileSystem.layer)))
   try {
-    const route = await run(ServiceConfig.remoteRoute())
+    const route = await run(ServiceConfig.remote())
     // The SDK rejects invalid route names, which would keep the service from ever attaching.
     expect(() => validateRoutes({ [route]: "127.0.0.1:4096" })).not.toThrow()
     expect(route).toMatch(/^[0-9a-f]{32}$/)
-    expect(await run(ServiceConfig.remoteRoute())).toBe(route)
+    expect(await run(ServiceConfig.read())).toEqual({ remote: { route } })
+    expect(await run(ServiceConfig.remote())).toBe(route)
+    expect(await run(ServiceConfig.get("remote"))).toBe("true")
     expect(await run(ServiceConfig.get())).not.toContain(route)
 
     await run(ServiceConfig.set("remote", "false"))
-    expect(await run(ServiceConfig.read())).toEqual({ remote: false })
-    const next = await run(ServiceConfig.remoteRoute())
-    expect(next).not.toBe(route)
+    expect(await run(ServiceConfig.read())).toEqual({})
+    expect(await run(ServiceConfig.get("remote"))).toBe("false")
+    expect(await run(ServiceConfig.remote())).not.toBe(route)
 
     await run(ServiceConfig.unset("remote"))
     expect(await run(ServiceConfig.read())).toEqual({})
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
+test("remote access stored as a boolean by earlier builds keeps the rest of the config and gains a route", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-remote-legacy-"))
+  const layer = Global.layerWith({ config: path.join(root, "config"), state: path.join(root, "state") })
+  const run = <A, E>(effect: Effect.Effect<A, E, Global.Service | FileSystem.FileSystem>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.provide(NodeFileSystem.layer)))
+  const file = path.join(root, "config", ServiceConfig.filename())
+  try {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await Bun.write(file, JSON.stringify({ remote: true, password: "kept" }))
+    expect(await run(ServiceConfig.read())).toEqual({ remote: {}, password: "kept" })
+    const route = await run(ServiceConfig.remote())
+    expect(await Bun.file(file).json()).toEqual({ remote: { route }, password: "kept" })
+
+    await Bun.write(file, JSON.stringify({ remote: false, password: "kept" }))
+    expect(await run(ServiceConfig.get("remote"))).toBe("false")
+    expect((await run(ServiceConfig.read())).password).toBe("kept")
   } finally {
     await fs.rm(root, { recursive: true, force: true })
   }

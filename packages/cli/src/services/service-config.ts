@@ -2,7 +2,7 @@ import { Global } from "@opencode/util/global"
 import { OPENCODE_CHANNEL, OPENCODE_VERSION } from "../version"
 import { Hash } from "@opencode/util/hash"
 import { Service } from "@opencode/client/effect/service"
-import { Effect, FileSystem, Option, Schema } from "effect"
+import { Effect, FileSystem, Option, Schema, SchemaGetter } from "effect"
 import { randomBytes } from "crypto"
 import path from "path"
 import { selfCommand } from "../util/process"
@@ -12,11 +12,21 @@ import { RemoteTunnel } from "./remote-tunnel"
 // points the client package's service operations at this CLI: which
 // registration file (by channel), which version, and how to spawn opencode.
 
+// Present when remote access is on. The route is generated, never user-set: the secret subdomain the service is
+// served on, missing only until a service started by an older build generates it.
+const Remote = Schema.Struct({ route: Schema.optional(Schema.String) })
+
 export const Info = Schema.Struct({
   disabled: Schema.optional(Schema.Boolean),
-  remote: Schema.optional(Schema.Boolean),
-  // Generated, not user-settable: the secret subdomain remote access is served on.
-  remoteRoute: Schema.optional(Schema.String),
+  // Earlier builds stored remote access as a boolean.
+  remote: Schema.optional(
+    Schema.Union([Schema.Boolean, Remote]).pipe(
+      Schema.decodeTo(Schema.UndefinedOr(Remote), {
+        decode: SchemaGetter.transform((value) => (value === true ? {} : value === false ? undefined : value)),
+        encode: SchemaGetter.passthrough({ strict: false }),
+      }),
+    ),
+  ),
   hostname: Schema.optional(Schema.String),
   port: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(65_535))),
   password: Schema.optional(Schema.String),
@@ -157,19 +167,21 @@ export const password = Effect.fn("cli.service-config.password")(function* (valu
   return next
 })
 
-// 128 random bits as hex, a valid DNS label, created once and kept so the remote URL survives restarts.
-export const remoteRoute = Effect.fn("cli.service-config.remote-route")(function* () {
+// Turns remote access on and returns its route: 128 random bits as hex, a valid DNS label, created once and kept
+// so the remote URL survives restarts.
+export const remote = Effect.fn("cli.service-config.remote")(function* () {
   const existing = yield* read()
-  if (existing.remoteRoute) return existing.remoteRoute
+  if (existing.remote?.route) return existing.remote.route
   const route = randomBytes(16).toString("hex")
-  yield* write({ ...existing, remoteRoute: route })
+  yield* write({ ...existing, remote: { route } })
   return route
 })
 
 export const get = Effect.fn("cli.service-config.get")(function* (key?: string, name?: string) {
   if (key === undefined) {
-    const { password: _password, remoteRoute: _remoteRoute, ...safe } = yield* read()
-    return JSON.stringify(safe, null, 2)
+    const { password: _password, ...safe } = yield* read()
+    // The route is as sensitive as the password: it is the unguessable half of the remote address.
+    return JSON.stringify(safe.remote === undefined ? safe : { ...safe, remote: {} }, null, 2)
   }
   const selected = configKey(key)
   if (selected !== "env" && name !== undefined) throw new Error(`Usage: opencode service get ${selected}`)
@@ -178,7 +190,7 @@ export const get = Effect.fn("cli.service-config.get")(function* (key?: string, 
       return String((yield* read()).disabled ?? false)
     }
     case "remote": {
-      return String((yield* read()).remote ?? false)
+      return String((yield* read()).remote !== undefined)
     }
     case "hostname": {
       return (yield* read()).hostname ?? ""
@@ -218,13 +230,12 @@ export const set = Effect.fn("cli.service-config.set")(function* (key: string, v
       if (value === "true") yield* RemoteTunnel.ensure()
       yield* Service.stop(yield* options())
       if (value === "true") {
-        yield* remoteRoute()
-        yield* write({ ...(yield* read()), remote: true })
+        yield* remote()
         return
       }
       // Disabling forgets the address, so enabling again issues a new unguessable one.
-      const { remoteRoute: _remoteRoute, ...next } = yield* read()
-      yield* write({ ...next, remote: false })
+      const { remote: _remote, ...next } = yield* read()
+      yield* write(next)
       return
     }
     case "hostname": {
@@ -278,7 +289,7 @@ export const unset = Effect.fn("cli.service-config.unset")(function* (key: strin
     }
     case "remote": {
       yield* Service.stop(yield* options())
-      const { remote: _remote, remoteRoute: _remoteRoute, ...next } = yield* read()
+      const { remote: _remote, ...next } = yield* read()
       yield* write(next)
       return
     }
