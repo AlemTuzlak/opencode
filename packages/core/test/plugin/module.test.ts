@@ -358,8 +358,9 @@ it.live("discovers exported specifiers from the resolved tree even when dist/ ex
     hostDiscovered.set("effect/schema/SchemaJITCompiler/enable", path.join(jitFixtureDir, "enable.js"))
     expect(pluginRuntimeLoaderCode("effect/Option", hostDiscovered)).toBe('() => require("effect")["Option"]')
     expect(pluginRuntimeLoaderCode("effect/testing", hostDiscovered)).toBe('() => require("effect/testing")')
-    expect(pluginRuntimeLoaderCode("effect/unstable/http/MultipartParser/HeadersParser", hostDiscovered)).toBe(
-      '() => require("effect/unstable/http/MultipartParser/HeadersParser")',
+    expect(hostDiscovered.has("effect/http/MultipartParser/HeadersParser")).toBe(true)
+    expect(pluginRuntimeLoaderCode("effect/http/MultipartParser/HeadersParser", hostDiscovered)).toBe(
+      '() => require("effect/http/MultipartParser/HeadersParser")',
     )
     expect(pluginRuntimeLoaderCode("effect/schema/SchemaJITCompiler/enable", hostDiscovered)).toBe(
       '() => require("effect/schema/SchemaJITCompiler/enable")',
