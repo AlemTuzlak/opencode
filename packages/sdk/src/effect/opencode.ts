@@ -35,7 +35,7 @@ export type Interface = Omit<OpenCodeClient, "plugin" | "workspace"> & {
    * This instance's HTTP API for external opencode clients, with CORS but without response compression.
    * Serve it with an Effect `HttpServer`; a fetch handler cannot accept PTY WebSockets. Stop that server
    * before closing this instance. Node's server waits for open SSE streams, so call `closeAllConnections()`
-   * when stopping it.
+   * when stopping it. Bun closes requests idle for 10 seconds and SSE heartbeats every 15, so set `idleTimeout: 0`.
    */
   readonly http: EmbeddedHost.Interface["http"]
 }
