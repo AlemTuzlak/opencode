@@ -91,7 +91,7 @@ test("remote access route is random, stable once created, hidden, and forgotten 
   }
 })
 
-test("remote access stored as a boolean by earlier builds keeps the rest of the config and gains a route", async () => {
+test("reading a config with remote access stored as a boolean repairs it in place and keeps other settings", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-remote-legacy-"))
   const layer = Global.layerWith({ config: path.join(root, "config"), state: path.join(root, "state") })
   const run = <A, E>(effect: Effect.Effect<A, E, Global.Service | FileSystem.FileSystem>) =>
@@ -99,14 +99,23 @@ test("remote access stored as a boolean by earlier builds keeps the rest of the 
   const file = path.join(root, "config", ServiceConfig.filename())
   try {
     await fs.mkdir(path.dirname(file), { recursive: true })
-    await Bun.write(file, JSON.stringify({ remote: true, password: "kept" }))
-    expect(await run(ServiceConfig.read())).toEqual({ remote: {}, password: "kept" })
-    const route = await run(ServiceConfig.remote())
-    expect(await Bun.file(file).json()).toEqual({ remote: { route }, password: "kept" })
+
+    await Bun.write(file, JSON.stringify({ remote: true, password: "kept", env: { A: "1" } }))
+    const enabled = await run(ServiceConfig.read())
+    const route = enabled.remote?.route ?? ""
+    expect(route).toMatch(/^[0-9a-f]{16}$/)
+    expect(enabled).toEqual({ remote: { route }, password: "kept", env: { A: "1" } })
+    expect(await Bun.file(file).json()).toEqual(enabled)
+    expect(await run(ServiceConfig.read())).toEqual(enabled)
 
     await Bun.write(file, JSON.stringify({ remote: false, password: "kept" }))
-    expect(await run(ServiceConfig.get("remote"))).toBe("false")
-    expect((await run(ServiceConfig.read())).password).toBe("kept")
+    expect(await run(ServiceConfig.read())).toEqual({ password: "kept" })
+    expect(await Bun.file(file).json()).toEqual({ password: "kept" })
+
+    const current = JSON.stringify({ remote: { route: "0123456789abcdef" }, password: "kept" })
+    await Bun.write(file, current)
+    expect(await run(ServiceConfig.read())).toEqual({ remote: { route: "0123456789abcdef" }, password: "kept" })
+    expect(await Bun.file(file).text()).toBe(current)
   } finally {
     await fs.rm(root, { recursive: true, force: true })
   }
