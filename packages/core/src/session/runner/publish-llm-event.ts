@@ -43,6 +43,7 @@ export interface StepRecord {
     readonly tokens: ReturnType<typeof SessionUsage.tokens>
   }
   readonly needsContinuation: boolean
+  readonly hasTools: boolean
 }
 
 /** Derives canonical model content from a provider-hosted tool result. */
@@ -612,6 +613,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
       providerFailed,
       failure: stepFailure,
       finish: stepSettlement,
+      hasTools: tools.size > 0,
       needsContinuation: Iterable.some(
         tools.values(),
         (tool) => !tool.providerExecuted && (tool.called || tool.settled),

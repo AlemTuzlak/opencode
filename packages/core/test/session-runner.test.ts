@@ -5541,6 +5541,71 @@ describe("SessionRunnerLLM", () => {
     expect(s.requests).toHaveLength(2)
   })
 
+  for (const type of ["text", "reasoning"] as const) {
+    scenario(`continues ${type} after an output token limit`, function* (s) {
+      const nudge =
+        "Your last response reached the output token limit. Continue where you left off. Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces."
+      yield* s.llm.push(
+        TestLLM.complete(
+          { reason: { normalized: "length" } },
+          type === "text" ? LLMEvent.textStart({ id: "partial" }) : LLMEvent.reasoningStart({ id: "partial" }),
+          type === "text"
+            ? LLMEvent.textDelta({ id: "partial", text: "Partial" })
+            : LLMEvent.reasoningDelta({ id: "partial", text: "Partial" }),
+          type === "text" ? LLMEvent.textEnd({ id: "partial" }) : LLMEvent.reasoningEnd({ id: "partial" }),
+        ),
+        TestLLM.text("Finished", "finished"),
+      )
+
+      yield* s.runPrompt("Complete the response")
+
+      expect(s.requests).toHaveLength(2)
+      expect(s.requests[1]?.messages.at(-2)).toMatchObject({
+        role: "assistant",
+        content: [expect.objectContaining({ text: "Partial" })],
+      })
+      expect(s.requests[1]?.messages.at(-1)).toMatchObject({
+        role: "user",
+        content: [{ type: "text", text: nudge }],
+      })
+      expect(yield* s.context).toMatchObject([
+        { type: "user" },
+        Expected.assistant({ finish: "length" }, [
+          type === "text" ? Expected.text("Partial") : Expected.reasoning("Partial"),
+        ]),
+        { type: "synthetic", text: nudge, metadata: { outputLimitContinuation: true } },
+        Expected.assistant({ finish: "stop" }, [Expected.text("Finished")]),
+      ])
+      expect(yield* recordedEventTypes(sessionID)).not.toContain("session.retry.scheduled.1")
+    })
+  }
+
+  scenario("caps output token limit continuations durably and resets for new input", function* (s) {
+    const truncated = () =>
+      TestLLM.complete(
+        { reason: { normalized: "length" } },
+        LLMEvent.textStart({ id: "partial" }),
+        LLMEvent.textDelta({ id: "partial", text: "Partial" }),
+        LLMEvent.textEnd({ id: "partial" }),
+      )
+    yield* s.llm.push(...Array.from({ length: 4 }, truncated))
+
+    expect(yield* s.runPrompt("Keep going").pipe(Effect.flip)).toMatchObject({ error: { type: "output-limit" } })
+    expect(s.requests).toHaveLength(4)
+    expect((yield* s.context).filter((message) => message.type === "synthetic")).toHaveLength(3)
+
+    yield* replaySessionProjection(sessionID)
+    yield* s.llm.push(truncated())
+    expect(yield* s.resume.pipe(Effect.flip)).toMatchObject({ error: { type: "output-limit" } })
+    expect(s.requests).toHaveLength(5)
+    expect((yield* s.context).filter((message) => message.type === "synthetic")).toHaveLength(3)
+
+    yield* s.llm.push(truncated(), TestLLM.text("Finished", "finished"))
+    yield* s.runPrompt("Try a new response")
+    expect(s.requests).toHaveLength(7)
+    expect((yield* s.context).filter((message) => message.type === "synthetic")).toHaveLength(4)
+  })
+
   scenario("continues an incomplete stream after observable text", function* (s) {
     const failure = incompleteStream()
     yield* s.admit("Continue partial output")
@@ -6046,6 +6111,7 @@ describe("SessionRunnerLLM", () => {
 
     expect(s.requests).toHaveLength(2)
     expect(s.executions).toEqual([])
+    expect((yield* s.context).some((message) => message.type === "synthetic")).toBe(false)
     expect(requireAssistant(yield* s.context).content).toMatchObject([
       {
         type: "tool",

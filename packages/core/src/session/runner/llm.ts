@@ -35,6 +35,9 @@ import { MAX_STEPS_PROMPT } from "./max-steps.js"
 const CONTINUE_AFTER_INCOMPLETE_STREAM =
   "The previous response was interrupted. Continue from where you left off without repeating completed content."
 
+const CONTINUE_AFTER_OUTPUT_LIMIT =
+  "Your last response reached the output token limit. Continue where you left off. Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces."
+
 const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -284,6 +287,21 @@ const layer = Layer.effect(
             yield* bus.publish(SessionEvent.Synthetic, { sessionID, text: CONTINUE_AFTER_INCOMPLETE_STREAM })
             assistantMessageID = SessionMessage.ID.create()
           }),
+          OutputLimit: Effect.fnUntraced(function* () {
+            if ((yield* outputLimitNudges(sessionID)) >= 3)
+              return yield* new StepFailedError({
+                error: {
+                  type: "output-limit",
+                  message: "Response still truncated after three output token limit continuations",
+                },
+              })
+            yield* bus.publish(SessionEvent.Synthetic, {
+              sessionID,
+              text: CONTINUE_AFTER_OUTPUT_LIMIT,
+              metadata: { outputLimitContinuation: true },
+            })
+            assistantMessageID = SessionMessage.ID.create()
+          }),
           Compacted: Effect.fnUntraced(function* () {
             recoverOverflow = false
             assistantMessageID = SessionMessage.ID.create()
@@ -294,6 +312,35 @@ const layer = Layer.effect(
         })
         if (completed !== undefined) return completed
       }
+    })
+
+    const outputLimitNudges = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
+      // Read durable history, not the compacted model context, so compaction and restart retain the cap.
+      const rows = yield* db
+        .select()
+        .from(SessionMessageTable)
+        .where(eq(SessionMessageTable.session_id, sessionID))
+        .orderBy(desc(SessionMessageTable.seq))
+        .all()
+        .pipe(Effect.orDie)
+      let count = 0
+      for (const row of rows) {
+        const message = yield* SessionHistory.decodeMessageRow(row)
+        if (message.type === "user") break
+        if (
+          message.type === "assistant" &&
+          (message.finish === "stop" || message.content.some((part) => part.type === "tool"))
+        )
+          break
+        if (message.type !== "synthetic") continue
+        if (message.metadata?.outputLimitContinuation === true) {
+          count++
+          if (count === 3) break
+          continue
+        }
+        if (message.text !== CONTINUE_AFTER_INCOMPLETE_STREAM) break
+      }
+      return count
     })
 
     const settleStaleCompactions = Effect.fn("SessionRunner.settleStaleCompactions")(function* (
