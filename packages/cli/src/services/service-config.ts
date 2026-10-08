@@ -15,6 +15,8 @@ import { RemoteTunnel } from "./remote-tunnel"
 export const Info = Schema.Struct({
   disabled: Schema.optional(Schema.Boolean),
   remote: Schema.optional(Schema.Boolean),
+  // Generated, not user-settable: the secret subdomain remote access is served on.
+  remoteRoute: Schema.optional(Schema.String),
   hostname: Schema.optional(Schema.String),
   port: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(65_535))),
   password: Schema.optional(Schema.String),
@@ -155,9 +157,18 @@ export const password = Effect.fn("cli.service-config.password")(function* (valu
   return next
 })
 
+// 128 random bits as hex, a valid DNS label, created once and kept so the remote URL survives restarts.
+export const remoteRoute = Effect.fn("cli.service-config.remote-route")(function* () {
+  const existing = yield* read()
+  if (existing.remoteRoute) return existing.remoteRoute
+  const route = randomBytes(16).toString("hex")
+  yield* write({ ...existing, remoteRoute: route })
+  return route
+})
+
 export const get = Effect.fn("cli.service-config.get")(function* (key?: string, name?: string) {
   if (key === undefined) {
-    const { password: _password, ...safe } = yield* read()
+    const { password: _password, remoteRoute: _remoteRoute, ...safe } = yield* read()
     return JSON.stringify(safe, null, 2)
   }
   const selected = configKey(key)
@@ -206,7 +217,14 @@ export const set = Effect.fn("cli.service-config.set")(function* (key: string, v
       // A tunnel that cannot be created leaves remote access off instead of a service that keeps retrying.
       if (value === "true") yield* RemoteTunnel.ensure()
       yield* Service.stop(yield* options())
-      yield* write({ ...(yield* read()), remote: value === "true" })
+      if (value === "true") {
+        yield* remoteRoute()
+        yield* write({ ...(yield* read()), remote: true })
+        return
+      }
+      // Disabling forgets the address, so enabling again issues a new unguessable one.
+      const { remoteRoute: _remoteRoute, ...next } = yield* read()
+      yield* write({ ...next, remote: false })
       return
     }
     case "hostname": {
@@ -260,7 +278,7 @@ export const unset = Effect.fn("cli.service-config.unset")(function* (key: strin
     }
     case "remote": {
       yield* Service.stop(yield* options())
-      const { remote: _remote, ...next } = yield* read()
+      const { remote: _remote, remoteRoute: _remoteRoute, ...next } = yield* read()
       yield* write(next)
       return
     }

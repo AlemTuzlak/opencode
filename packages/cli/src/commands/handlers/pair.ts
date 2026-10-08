@@ -77,7 +77,8 @@ const pairingURLs = Effect.fnUntraced(function* (
 // The service attaches the tunnel in the background, so wait for its URL to appear in server info.
 const remoteURL = Effect.fnUntraced(function* (client: ReturnType<typeof OpenCode.make>) {
   const tunnelURL = Effect.gen(function* () {
-    const hostname = yield* RemoteTunnel.hostname()
+    const route = (yield* ServiceConfig.read()).remoteRoute
+    const hostname = route === undefined ? undefined : yield* RemoteTunnel.hostname(route)
     const info = yield* Effect.tryPromise(() => client.server.info())
     const url = info.urls.find((candidate) => hostname !== undefined && new URL(candidate).hostname === hostname)
     if (url === undefined) return yield* Effect.fail(new Error("Remote tunnel is not ready"))

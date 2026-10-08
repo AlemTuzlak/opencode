@@ -1,4 +1,5 @@
 import { NodeFileSystem } from "@effect/platform-node"
+import { validateRoutes } from "@opentunnel/client/effect"
 import { Service, type Info } from "@opencode/client/effect/service"
 import { Global } from "@opencode/util/global"
 import { OPENCODE_VERSION } from "../src/version"
@@ -56,6 +57,31 @@ test("service remote accepts only booleans and persists across set and unset", a
     await run(ServiceConfig.set("remote", "false"))
     expect(await run(ServiceConfig.read())).toEqual({ remote: false })
     expect(await run(ServiceConfig.get("remote"))).toBe("false")
+    await run(ServiceConfig.unset("remote"))
+    expect(await run(ServiceConfig.read())).toEqual({})
+  } finally {
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
+
+test("remote access route is random, stable once created, hidden, and forgotten when remote is turned off", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-service-remote-route-"))
+  const layer = Global.layerWith({ config: path.join(root, "config"), state: path.join(root, "state") })
+  const run = <A, E>(effect: Effect.Effect<A, E, Global.Service | FileSystem.FileSystem>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.provide(NodeFileSystem.layer)))
+  try {
+    const route = await run(ServiceConfig.remoteRoute())
+    // The SDK rejects invalid route names, which would keep the service from ever attaching.
+    expect(() => validateRoutes({ [route]: "127.0.0.1:4096" })).not.toThrow()
+    expect(route).toMatch(/^[0-9a-f]{32}$/)
+    expect(await run(ServiceConfig.remoteRoute())).toBe(route)
+    expect(await run(ServiceConfig.get())).not.toContain(route)
+
+    await run(ServiceConfig.set("remote", "false"))
+    expect(await run(ServiceConfig.read())).toEqual({ remote: false })
+    const next = await run(ServiceConfig.remoteRoute())
+    expect(next).not.toBe(route)
+
     await run(ServiceConfig.unset("remote"))
     expect(await run(ServiceConfig.read())).toEqual({})
   } finally {
