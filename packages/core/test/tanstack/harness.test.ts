@@ -125,6 +125,19 @@ describe("TanStackHarness", () => {
   )
 
   it.live(
+    "compacts with the default model when the compaction agent has no model",
+    () =>
+      Effect.gen(function* () {
+        const context = yield* setup
+
+        expect(context.built.compaction?.model).toEqual(
+          Model.Ref.make({ providerID: Provider.ID.make("local"), id: Model.ID.make("coder") }),
+        )
+      }),
+    60_000,
+  )
+
+  it.live(
     "fails the turn overrides of a model that the catalog does not have",
     () =>
       Effect.gen(function* () {
