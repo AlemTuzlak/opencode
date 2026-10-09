@@ -9,7 +9,7 @@ import { toolDefinition } from "@tanstack/ai"
 import type { AnyTool, ChatMiddleware, ContentPart } from "@tanstack/ai"
 import { codeMode } from "@tanstack/ai-code-mode/harness"
 import { conversationSummarizer, summarizeOldest, withCompaction } from "@tanstack/ai-compaction"
-import { defineHarness, definePlugin, retryTransientErrors } from "@tanstack/ai-harness"
+import { defineHarness, definePlugin } from "@tanstack/ai-harness"
 import {
   agents,
   boundToolOutput,
@@ -27,7 +27,6 @@ import { skills } from "@tanstack/ai-skills/harness"
 import { Effect, Option, Result, Schema } from "effect"
 import type { JsonSchema } from "effect"
 import { Agent } from "../agent.js"
-import { App } from "../app.js"
 import { Config } from "../config.js"
 import { InstructionDiscovery } from "../instruction-discovery.js"
 import { Integration } from "../integration.js"
@@ -35,14 +34,15 @@ import { Location } from "../location.js"
 import { Mcp } from "../mcp/index.js"
 import { Model } from "../model.js"
 import { Plugin } from "../plugin.js"
+import { PluginHooks } from "../plugin/hooks.js"
 import { Provider } from "../provider.js"
 import { Session } from "../session.js"
-import { SessionAffinity } from "../session/affinity.js"
 import { Skill } from "../skill.js"
 import { ToolOutput } from "../tool-output.js"
 import { McpTool } from "../tool/mcp.js"
 import { TanStackAdapters } from "./adapters.js"
 import { TanStackOpencodeTools } from "./opencode-tools.js"
+import { TanStackPluginCompat } from "./plugin-compat.js"
 import { TanStackRules } from "./rules.js"
 
 /** The model is not in the model catalog of the location. */
@@ -99,6 +99,8 @@ type Resolved = Effect.Success<ReturnType<typeof TanStackAdapters.adapterFor>> &
   readonly ref: Model.Ref
   readonly info: Model.Info
   readonly compaction: Provider.Compaction | undefined
+  /** The base URL of the model's requests, when the provider or the model sets one. */
+  readonly baseURL: string | undefined
 }
 
 /**
@@ -115,6 +117,7 @@ type Resolved = Effect.Success<ReturnType<typeof TanStackAdapters.adapterFor>> &
  * - opencode's MCP tools and the `opencode_*` tools, in Code Mode.
  * - compaction that keeps 15,000 tokens, natively when the model has native compaction, and
  *   `retryTransientErrors()` for model errors.
+ * - opencode's plugin hooks, from `TanStackPluginCompat`.
  *
  * The thread id of each harness session must be its opencode session id: the `opencode_*` tools and the MCP
  * tools use it. Give the host `projectCompaction` from `@tanstack/ai-compaction`, because the compaction is
@@ -140,6 +143,7 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
   const providers = yield* Provider.Service
   const integrations = yield* Integration.Service
   const mcp = yield* Mcp.Service
+  const hooks = yield* PluginHooks.Service
   const run = Effect.runPromiseWith(
     yield* Effect.context<Session.Service | Provider.Service | Model.Service | Mcp.Service>(),
   )
@@ -147,6 +151,16 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
   // The model of each resolved adapter, by `provider/model#variant` and by the adapter's model id.
   const resolved = new Map<string, Resolved>()
   const failed = new Map<string, string>()
+  const opencodeAgents = yield* agentService.list()
+  const selected = yield* agentService.select()
+  const defaultInfo = yield* models.default()
+  const defaultRef = defaultInfo && Model.Ref.make({ providerID: defaultInfo.providerID, id: defaultInfo.id })
+  const compat = yield* TanStackPluginCompat.make({
+    root: location.directory,
+    agent: selected.id,
+    model: defaultRef,
+    resolve: (model) => resolved.get(model),
+  })
 
   const resolve = Effect.fn("TanStackHarness.resolve")(function* (ref: Model.Ref) {
     const info = yield* models.get(ref.providerID, ref.id)
@@ -156,8 +170,22 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
       provider?.integrationID ?? Integration.ID.make(info.providerID),
     )
     const credential = connection ? yield* integrations.connection.resolve(connection) : undefined
-    const adapter = yield* TanStackAdapters.adapterFor({ model: info, variant: ref.variant, provider, credential })
-    const entry = { ...adapter, ref, info, compaction: info.settings?.compaction ?? provider?.settings?.compaction }
+    const adapter = yield* TanStackAdapters.adapterFor({
+      model: info,
+      variant: ref.variant,
+      provider,
+      credential,
+      // The `session.http.*` hooks see each request as it goes out, after the opencode request wiring.
+      fetch: compat.network,
+    })
+    const settings = Provider.mergeOverlay(provider?.settings, Provider.modelSettings(info.settings))
+    const entry = {
+      ...adapter,
+      ref,
+      info,
+      compaction: info.settings?.compaction ?? provider?.settings?.compaction,
+      baseURL: typeof settings?.baseURL === "string" ? settings.baseURL : undefined,
+    }
     resolved.set(refKey(ref), entry)
     resolved.set(adapter.adapter.model, entry)
     return entry
@@ -176,12 +204,7 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     return undefined
   })
 
-  const defaultInfo = yield* models.default()
-  const fallback = yield* tryResolve(
-    defaultInfo && Model.Ref.make({ providerID: defaultInfo.providerID, id: defaultInfo.id }),
-  )
-  const opencodeAgents = yield* agentService.list()
-  const selected = yield* agentService.select()
+  const fallback = yield* tryResolve(defaultRef)
   const titleAgent = opencodeAgents.find((agent) => agent.id === "title")
   const compactionAgent = opencodeAgents.find((agent) => agent.id === "compaction")
   const smallInfo = defaultInfo && (yield* models.small(defaultInfo.providerID))
@@ -254,35 +277,6 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     setup: () => ({ middleware: [wrapFetch], agentMiddleware: [wrapFetch] }),
   })
 
-  const app = yield* App.Metadata
-  // The headers that the opencode runtime sends with each model request (`session/model-request.ts`). OpenCode
-  // Zen and Go route on them, and providers use the affinity for their prompt cache.
-  // ponytail: a subagent's requests carry its parent session's headers, because its child session is made later.
-  const sessionHeaders = definePlugin({
-    name: "opencode/session-headers",
-    setup: async (ctx) => {
-      const session = await run(Session.Service.use((service) => service.get(Session.ID.make(ctx.session.threadId))))
-      const affinity = SessionAffinity.get(session)
-      const headers: Record<string, string> = {
-        "x-opencode-session-id": session.id,
-        ...(session.parentID ? { "x-opencode-parent-session-id": session.parentID } : {}),
-        "x-session-affinity": affinity,
-        "X-Session-Id": affinity,
-        ...(session.parentID ? { "x-parent-session-id": session.parentID } : {}),
-        "User-Agent": App.useragent(app),
-        "x-opencode-project": session.projectID,
-        "x-opencode-session": affinity,
-        "x-opencode-client": app.name,
-      }
-      const middleware: ChatMiddleware = {
-        name: "opencode/session-headers",
-        // Every phase, as `opencode/wrap-fetch` above.
-        onConfig: () => ({ wrapFetch: (next) => withHeaders(next, headers) }),
-      }
-      return { middleware: [middleware], agentMiddleware: [middleware] }
-    },
-  })
-
   const opencodeTools = definePlugin({
     name: "opencode/tools",
     setup: async (ctx) => ({
@@ -308,6 +302,7 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     },
   })
 
+  const isShellHooked = yield* hooks.has("shell", "create.before")
   const outside = TanStackRules.workspaceOutside(
     opencodeAgents.find((agent) => agent.id === selected.id)?.permissions ?? [],
   )
@@ -319,23 +314,31 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     ...(compaction ? { middleware: [compaction.middleware] } : {}),
     // One `subagent` tool for every subagent, as opencode has.
     subagents: { agents: [], tool: "single" },
-    turn: { onModelError: retryTransientErrors() },
+    turn: { onModelError: compat.onModelError },
     plugins: () => {
       const changes = options.onFileChange && trackFileChanges(options.onFileChange)
+      // A wrapped backend loses the bundled `rg` of `grep`, so the shell hook wraps it only when a plugin needs it.
+      const backend = isShellHooked ? compat.backend(changes?.backend ?? hostBackend, root) : changes?.backend
       return [
+        // The session headers and `session.model.request`. Before `opencode/wrap-fetch`, so the wrapper is outside
+        // the opencode request wiring of every adapter.
+        compat.requests,
         wrapFetchPlugin,
-        sessionHeaders,
+        // Before `permissions()`, so a `permission.evaluate` hook can deny a call, or allow it without a question.
+        compat.permissions,
         permissions({ root }),
         workspaceTools({
           root,
           editStyle: "auto",
           outside,
           spillDir,
-          ...(changes ? { backend: changes.backend } : {}),
+          ...(backend ? { backend } : {}),
         }),
         formatter({ root }),
         // After `formatter`, so a change has the formatted text. Before `agents`, so subagents get the tracked tools.
         ...(changes ? [changes.plugin] : []),
+        // Before `agents`, so the `bash` calls of subagents run `shell.create.before` too.
+        compat.shell,
         ...(isSnapshotsOn ? [snapshots({ root, dataDir: path.join(global.data, "snapshot", "tanstack") })] : []),
         boundToolOutput({ dir: spillDir, maxLines: 2000, maxBytes: 50 * 1024 }),
         question(),
@@ -355,6 +358,9 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
         }),
         // Last, so a changed instruction file keeps the prompt cache.
         projectInstructions({ root, global: globalInstructions, files: [] }),
+        // After every plugin that checks or changes a tool call, so `tool.execute.before` sees the call that runs,
+        // and `tool.execute.after` sees the result that the model gets.
+        compat.tools,
       ]
     },
   })
