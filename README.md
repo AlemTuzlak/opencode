@@ -112,6 +112,31 @@ This is used internally and can be invoked using `@general` in messages.
 
 Learn more about [agents](https://opencode.ai/docs/agents).
 
+### TanStack runtime (experimental)
+
+You can run your sessions on the TanStack AI harness instead of the built-in runtime. The clients, the API routes, and your saved sessions stay the same.
+
+Before you turn it on, know these limits:
+
+- GitLab Duo, SAP AI Core, and the ChatGPT Codex backend have no TanStack AI adapter. A model from one of these providers fails with an error that names the provider.
+- Plugins that use the `aisdk.sdk` or `aisdk.language` hooks are not supported.
+
+To turn it on:
+
+1. Stop the background server. The server reads the flag only when it starts.
+
+   ```bash
+   opencode service stop
+   ```
+
+2. Start OpenCode with the flag:
+
+   ```bash
+   OPENCODE_RUNTIME=tanstack opencode
+   ```
+
+Your next prompt runs on the harness. To go back, stop the background server again and start `opencode` without the flag.
+
 ### Documentation
 
 For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).
