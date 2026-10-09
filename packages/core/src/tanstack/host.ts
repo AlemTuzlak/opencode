@@ -87,12 +87,6 @@ export interface Interface {
    * calls. The change names its tool call, not its session.
    */
   readonly onFileChange: (listener: (change: TanStackHarness.FileChange) => void) => () => void
-  /**
-   * @deprecated Always empty. The boot sweep runs after the first build of the harness, so it is not done when the
-   * layer starts. The host gives each session that a sweep resumes to the session layer (`TanStackRecovery.Drivers`)
-   * itself. Remove this field with its reader in `session-layer.ts`.
-   */
-  readonly resumed: ReadonlyArray<Session.ID>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/TanStackHost") {}
@@ -238,7 +232,9 @@ export const layer = Layer.effect(
       Effect.flatMap((built) => Effect.tryPromise(() => host.resumePending({ harnesses: [built.harness] }))),
       Effect.map((opened) => opened.map((entry) => Session.ID.make(entry.threadId))),
       Effect.tap((opened) =>
-        opened.length > 0 ? Effect.logInfo("TanStack host: resumed pending sessions", { sessions: opened }) : Effect.void,
+        opened.length > 0
+          ? Effect.logInfo("TanStack host: resumed pending sessions", { sessions: opened })
+          : Effect.void,
       ),
       Effect.catch((error) =>
         Effect.logError("TanStack host: resumePending failed", { error }).pipe(Effect.as([] as const)),
@@ -266,7 +262,8 @@ export const layer = Layer.effect(
         yield* watchChanges
       }
       yield* Deferred.done(first, exit)
-      if (Exit.isFailure(exit)) return yield* Effect.logError("TanStack host: the harness build failed", { cause: exit.cause })
+      if (Exit.isFailure(exit))
+        return yield* Effect.logError("TanStack host: the harness build failed", { cause: exit.cause })
       yield* sweep
       yield* Effect.sleep(LEASE.ttlMs)
       yield* sweep
@@ -324,7 +321,8 @@ export const layer = Layer.effect(
             }),
           ),
         ),
-      overrides: (ref) => current.pipe(Effect.flatMap((built) => built.overrides(ref).pipe(Effect.provideContext(context)))),
+      overrides: (ref) =>
+        current.pipe(Effect.flatMap((built) => built.overrides(ref).pipe(Effect.provideContext(context)))),
       compaction: () => state.built?.compaction,
       compacted: (sessionID, tokensAfter) =>
         Effect.tryPromise((signal) => findCompaction(sessionID, tokensAfter, signal)).pipe(
@@ -341,7 +339,6 @@ export const layer = Layer.effect(
           listeners.delete(listener)
         }
       },
-      resumed: [],
     })
   }),
 )
@@ -375,7 +372,9 @@ function summaryText(head: ReadonlyArray<{ readonly content: unknown }>) {
 function contentText(content: unknown) {
   if (typeof content === "string") return content
   const parts = Option.getOrElse(decodeParts(content), () => [])
-  return parts.flatMap((part) => (part.type === "text" && typeof part.content === "string" ? [part.content] : [])).join("")
+  return parts
+    .flatMap((part) => (part.type === "text" && typeof part.content === "string" ? [part.content] : []))
+    .join("")
 }
 
 export const node = makeLocationNode({
