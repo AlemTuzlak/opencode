@@ -218,6 +218,10 @@ describe("TanStackHost", () => {
         model.hold = false
         // The closed host keeps its claim on the thread for 30 seconds, as a host that crashed.
         setSystemTime(new Date(Date.now() + 60_000))
+        // The host of another location leaves the turn alone, so it never runs in that location's folder.
+        const elsewhere = yield* tmpdirScoped()
+        // If it took the claim, the next host could not resume the turn and this test would time out.
+        yield* startHost(Location.Ref.make({ directory: AbsolutePath.make(elsewhere.path) }))
         const second = yield* startHost(context.location)
         // Nothing opened the thread on the new host: its boot sweep runs the turn again.
         yield* Effect.promise(() => model.resumed.promise)
