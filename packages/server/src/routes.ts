@@ -16,6 +16,7 @@ import { PersistentPty } from "@opencode/core/persistent-pty"
 import { Project } from "@opencode/core/project"
 import { Worktree } from "@opencode/core/worktree"
 import { Session } from "@opencode/core/session"
+import { TanStackOverrides } from "@opencode/core/tanstack/overrides"
 import { Instance } from "@opencode/core/instance/service"
 import { SessionTransfer } from "@opencode/core/session/transfer"
 import { ShellSelect } from "@opencode/core/shell/select"
@@ -142,6 +143,8 @@ function makeRoutes<AuthError, AuthServices>(
   const build = (overrides: LayerNode.Replacements) => {
     const replacements: LayerNode.Replacements = [
       ...standard,
+      // The sessions run on the TanStack AI harness. Every host builds its graph here.
+      ...TanStackOverrides.replacements,
       // Private instances resolve this list lazily so they inherit the complete host graph, including the selector.
       ...(instances ? [Instance.node.replace(instances(() => replacements))] : []),
       ...overrides,

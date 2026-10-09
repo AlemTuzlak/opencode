@@ -5,7 +5,7 @@ import { Permission } from "../permission.js"
 import { Integration } from "../integration.js"
 import { AgentNotFoundError, StepFailedError } from "./error.js"
 import { ModelResolver } from "../model-resolver.js"
-import { SessionRunnerModel } from "./runner/model.js"
+import { SessionRunnerModel } from "./runner-model.js"
 
 const tokenSharingMessages = {
   subscription_sharing_user_not_eligible:

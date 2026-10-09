@@ -1,12 +1,12 @@
-export * as SessionRunnerModel from "./model.js"
+export * as SessionRunnerModel from "./runner-model.js"
 
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { LanguageModel } from "@opencode/ai"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
 import { Context, Effect, Layer, Schema } from "effect"
-import { ModelResolver } from "../../model-resolver.js"
-import { SessionSchema } from "../schema.js"
+import { ModelResolver } from "../model-resolver.js"
+import { SessionSchema } from "./schema.js"
 
 export class ModelNotSelectedError extends Schema.TaggedError<ModelNotSelectedError>()(
   "SessionRunnerModel.ModelNotSelectedError",

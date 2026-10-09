@@ -23,7 +23,7 @@ import { ModelResolver } from "@opencode/core/model-resolver"
 import { Provider } from "@opencode/core/provider"
 import { Tool } from "@opencode/schema/tool"
 import { toSessionError } from "@opencode/core/session/to-session-error"
-import { SessionRunnerRetry } from "@opencode/core/session/runner/retry"
+import { SessionRunnerRetry } from "@opencode/core/session/runner-retry"
 
 const llm = (reason: AIError["reason"]) => new AIError({ reason })
 
