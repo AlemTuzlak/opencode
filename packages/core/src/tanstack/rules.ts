@@ -3,28 +3,12 @@ export * as TanStackRules from "./rules.js"
 import type { PermissionRule } from "@tanstack/ai-harness"
 import type { Permission } from "@opencode/schema/permission"
 import { Wildcard } from "../util/wildcard.js"
+import { harnessToolNames, permissionAction } from "./tool-names.js"
 
 const EXTERNAL_DIRECTORY = "external_directory"
 
 // Harness tool -> the opencode permission action that its opencode tool asserts.
-// The names follow the D2 tool name table. `write_file` and `patch` assert `edit`, as opencode's
-// write and patch tools do. Other tools (MCP, plugin tools) use the same name on both sides.
-// TODO: derive this from `tool-names.ts` when the tool-name-map node lands.
-const actions = {
-  read_file: "read",
-  write_file: "edit",
-  edit_file: "edit",
-  patch: "edit",
-  list_files: "glob",
-  grep: "grep",
-  bash: "shell",
-  webfetch: "webfetch",
-  websearch: "websearch",
-  question: "question",
-  load_skill: "skill",
-  subagent: "subagent",
-  execute_typescript: "execute",
-}
+const actions = Object.fromEntries(harnessToolNames.map((tool) => [tool, permissionAction(tool)]))
 
 /**
  * Translate opencode permission rules into rules for the harness `permissions()` plugin.
