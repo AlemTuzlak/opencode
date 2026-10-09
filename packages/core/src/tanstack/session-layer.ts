@@ -4,7 +4,7 @@ import path from "path"
 import { asc, eq } from "drizzle-orm"
 import { Context, DateTime, Effect, Fiber, Layer, Option, Schema, Scope } from "effect"
 import { chat, EventType } from "@tanstack/ai"
-import type { ContentPart } from "@tanstack/ai"
+import type { ContentPart, StreamChunk } from "@tanstack/ai"
 import { HARNESS_EVENTS } from "@tanstack/ai-harness"
 import type { HarnessSession, Receipt, UserInput } from "@tanstack/ai-harness"
 import { Event } from "@opencode/schema/event"
@@ -39,6 +39,7 @@ import { SessionShell } from "../session/shell.js"
 import { SessionSkill } from "../session/skill.js"
 import { SessionSchema } from "../session/schema.js"
 import { SessionMessageTable } from "../session/sql.js"
+import { SessionStore } from "../session/store.js"
 import { ShellResult } from "../shell/result.js"
 import { fileDiff } from "../tool/plugin/file-diff.js"
 import { createEventMapper } from "./events.js"
@@ -46,6 +47,7 @@ import type { EventMapper, HarnessEvent, Link, Output } from "./events.js"
 import type { TanStackHarness } from "./harness.js"
 import { TanStackHost } from "./host.js"
 import { TanStackPermission } from "./permission-layer.js"
+import { TanStackRecovery } from "./recovery.js"
 import { TanstackStores } from "./stores.js"
 
 /**
@@ -132,6 +134,12 @@ interface Entry {
   readonly published: Set<string>
   saving: Promise<void>
   fiber: Fiber.Fiber<void> | undefined
+  /** The busy fiber: the current busy period of the session as an Effect. See `ensureBusy`. */
+  busy: Fiber.Fiber<void> | undefined
+  /** Does opencode's execution claim of the session stand? `undefined` until the first sync. */
+  claimed: boolean | undefined
+  /** `close` closed the harness session. Its pump publishes nothing more. */
+  closed: boolean
 }
 
 /**
@@ -148,6 +156,12 @@ interface Entry {
  * - `compact` admits a compaction inbox item and forces a compaction at the next model call of the session. An idle
  *   session compacts at the start of its next turn: the harness cannot compact outside a model call. It dies with
  *   `NotSupportedError` when no model of the location can write a summary.
+ * - Recovery: a new entry of a session that a stopped host left gets the mapper state of the inputs that wait in
+ *   the harness, the manual compaction that waits, and the events of the turn that recovery runs again from its
+ *   first event. opencode's execution claim follows the harness work of the session, so `SessionRestart` resumes it
+ *   at the next boot. The layer gives `SessionExecution` its `TanStackRecovery.Driver`.
+ * - Cancel: each busy period runs as a busy fiber (`ensureBusy`). Interrupting it cancels the harness turn, and a
+ *   cancel on the harness side ends it. A decline with no message ends the turn, as on opencode's runtime.
  *
  * Provide `Session.Service` (opencode's layer) and `Hosts` to it. `node` does that.
  */
@@ -166,9 +180,21 @@ export const layer = Layer.effect(
     const projects = yield* Project.Service
     const locations = yield* LocationServiceMap.Service
     const scope = yield* Scope.Scope
+    const store = yield* SessionStore.Service
+    const drivers = yield* TanStackRecovery.Drivers
     const metadata = (yield* TanstackStores.make).stores.metadata
     const run = Effect.runPromiseWith(yield* Effect.context<never>())
     const entries = new Map<SessionSchema.ID, Entry>()
+    // The busy fibers run in their own scope. It closes after `closing` is set: a shutdown leaves the running turns
+    // to the hosts, which stop them so that the next process runs them again.
+    const busyScope = yield* Scope.fork(scope)
+    const state = { closing: false }
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        state.closing = true
+        drivers.current = undefined
+      }),
+    )
     const opening = KeyedMutex.makeUnsafe<SessionSchema.ID>()
     // File changes by tool call id. The pump of the session that gets the tool result takes them.
     const changes = new Map<string, TanStackHarness.FileChange[]>()
@@ -176,7 +202,8 @@ export const layer = Layer.effect(
     const unwatch: Array<() => void> = []
     yield* Effect.addFinalizer(() => Effect.sync(() => unwatch.forEach((stop) => stop())))
 
-    const watch = (host: TanStackHost.Interface) => {
+    /** Takes the file changes of a host, and opens the sessions that its boot sweep resumed. Once for each host. */
+    const watch = Effect.fn("TanStackSession.watch")(function* (host: TanStackHost.Interface) {
       if (watched.has(host)) return
       watched.add(host)
       unwatch.push(
@@ -184,7 +211,19 @@ export const layer = Layer.effect(
           changes.set(change.toolCallId, [...(changes.get(change.toolCallId) ?? []), change]),
         ),
       )
-    }
+      // Their turns run already. On their own fibers, because `open` holds the lock of the session that asked.
+      yield* Effect.forEach(
+        host.resumed,
+        (sessionID) =>
+          result.resume(sessionID).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("TanStack session: could not open a resumed session", { sessionID, cause }),
+            ),
+            Effect.forkIn(scope),
+          ),
+        { discard: true },
+      )
+    })
 
     /** The agent and the model of the next turn: the session's own, else the defaults of its location. */
     const selection = Effect.fn("TanStackSession.selection")(function* (info: SessionSchema.Info) {
@@ -199,16 +238,9 @@ export const layer = Layer.effect(
         Effect.provideService(LocationServiceMap.Service, locations),
         Effect.orDie,
       )
-      // opencode names the default variant by leaving it out.
-      const model = info.model
-        ? Model.Ref.make({
-            providerID: info.model.providerID,
-            id: info.model.id,
-            ...(info.model.variant === undefined || info.model.variant === "default"
-              ? {}
-              : { variant: info.model.variant }),
-          })
-        : defaults.fallback && Model.Ref.make({ providerID: defaults.fallback.providerID, id: defaults.fallback.id })
+      const model =
+        TanStackRecovery.sessionModel(info) ??
+        (defaults.fallback && Model.Ref.make({ providerID: defaults.fallback.providerID, id: defaults.fallback.id }))
       if (model === undefined)
         return yield* Effect.die(new Error(`The session ${info.id} has no model, and its location has no default.`))
       return { agent: defaults.agent, model }
@@ -220,7 +252,7 @@ export const layer = Layer.effect(
           const existing = entries.get(info.id)
           if (existing) return existing
           const host = yield* hosts.get(info.location)
-          watch(host)
+          yield* watch(host)
           const session = yield* host.open(info.id).pipe(Effect.orDie)
           const saved = decodeLinks(yield* Effect.promise(() => metadata.get(LINKS, info.id)))
           const selected = yield* selection(info)
@@ -250,17 +282,101 @@ export const layer = Layer.effect(
             published: new Set(),
             saving: Promise.resolve(),
             fiber: undefined,
+            busy: undefined,
+            claimed: undefined,
+            closed: false,
           }
-          // Only new events map: the mapper has no state for the events before the head.
-          const from = session.snapshot().cursor
+          yield* restore(entry)
+          // This process published no event of the session yet. The mapper has no state for the events before the
+          // head, so only new events map. A turn that runs already, such as a turn that recovery runs again, maps
+          // from its first event. A background agent run is not a turn: see `isBusy`.
+          const snapshot = session.snapshot()
+          const running = snapshot.activeOperations.find(
+            (operation) => operation.kind !== "agent" && operation.startedCursor !== undefined,
+          )
+          const from = running?.startedCursor ?? snapshot.cursor
           entry.fiber = yield* Effect.promise((signal) => pump(entry, from, signal)).pipe(
             Effect.forkIn(scope, { startImmediately: true }),
           )
           entries.set(info.id, entry)
           live.track({ session, mapper: entry.mapper, outputs: [] })
+          if (isBusy(entry)) yield* ensureBusy(entry)
+          yield* syncClaim(entry)
           return entry
         }),
       )
+    })
+
+    /**
+     * Gives a new mapper the state of the inputs that wait in the harness, and of the manual compaction that waits
+     * for the next model call. After a restart the harness and opencode's inbox still have them, and the events that
+     * admitted them went out before.
+     */
+    const restore = Effect.fn("TanStackSession.restore")(function* (entry: Entry) {
+      const items = yield* base.inbox(entry.sessionID).pipe(Effect.orDie)
+      const waiting = new Set(entry.session.inputs().map((input) => input.inputId))
+      for (const item of items) {
+        if (item.type === "compaction") {
+          // The force to compact is in memory: re-arm it.
+          entry.mapper.compacting(item.id)
+          entry.host.compaction()?.compactNext(entry.sessionID)
+          continue
+        }
+        if (!waiting.has(item.id)) continue
+        entry.mapper.admit({ inboxID: item.id, item })
+        // The mapper only takes the state of the input. Its `inbox.enqueued` went out when the harness accepted it.
+        entry.mapper.map({ operationId: entry.sessionID, event: accepted(item.id) })
+      }
+    })
+
+    /**
+     * Keeps opencode's execution claim (`session_v2.time_suspended`) in step with the harness work claim of the
+     * thread: it stands while a turn runs or waits, or an agent run runs, and goes when the thread is idle. A claim
+     * that a stop or a crash leaves makes `SessionRestart` resume the session at the next boot. `SessionRestart`
+     * counts the resumes in `resume_attempts`, and the release resets them.
+     */
+    const syncClaim = (entry: Entry) =>
+      Effect.suspend(() => {
+        const hasWork =
+          isBusy(entry) ||
+          entry.session.agentRuns().some((agentRun) => agentRun.status === "running" || agentRun.status === "queued")
+        if (entry.claimed === hasWork) return Effect.void
+        entry.claimed = hasWork
+        return hasWork ? store.claim(entry.sessionID) : store.release(entry.sessionID)
+      })
+
+    /**
+     * Starts the busy fiber of the session, when none runs: one fiber for each busy period, until the session is
+     * idle. It is the two-way bridge of a harness turn and an Effect fiber:
+     *
+     * - Interrupting the fiber cancels the harness turn. The fiber ends after the pump published the final tool,
+     *   step, and execution events. A shutdown only stops the fiber: the host stops the turn for the next process.
+     * - A cancel on the harness side, for example `Session.interrupt` or a declined permission, ends the turn, and so
+     *   the fiber.
+     */
+    const ensureBusy = (entry: Entry) =>
+      Effect.gen(function* () {
+        if (entry.busy !== undefined || entry.closed || state.closing) return
+        const fiber = yield* settle(entry).pipe(
+          Effect.onInterrupt(() => (state.closing || entry.closed ? Effect.void : stop(entry))),
+          Effect.ensuring(Effect.sync(() => (entry.busy = undefined))),
+          Effect.forkIn(busyScope, { startImmediately: true }),
+        )
+        // An idle session ended its fiber at once.
+        if (fiber.pollUnsafe() === undefined) entry.busy = fiber
+      })
+
+    /** Cancels the running harness turn, and waits until the pump published its end. */
+    const stop = Effect.fn("TanStackSession.stop")(function* (entry: Entry) {
+      const turns = entry.session
+        .snapshot()
+        .activeOperations.filter((operation) => operation.kind === "chat")
+        .map((operation) => operation.id)
+      yield* Effect.forEach(turns, (operationId) => Effect.promise(() => entry.session.cancel(operationId)), {
+        discard: true,
+      })
+      const isPublished = () => turns.every((operationId) => entry.finished.has(operationId))
+      while (!isPublished() && !entry.closed && !state.closing) yield* next(entry)
     })
 
     const save = (entry: Entry) => {
@@ -276,10 +392,27 @@ export const layer = Layer.effect(
     /** Reads the harness events of the session after `from`, and publishes the mapped events until `signal` aborts. */
     async function pump(entry: Entry, from: string, signal: AbortSignal) {
       for await (const event of entry.session.events({ from, signal })) {
+        // At once, so the harness makes as few model calls after the refusal as it can.
+        if (TanStackRecovery.isDeclined(event.event)) cancelTurn(entry, event.operationId)
         await run(publishEvent(entry, event))
         track(entry, event)
+        const chunk = event.event
+        if (chunk.type === EventType.CUSTOM) {
+          if (chunk.name === HARNESS_EVENTS.operationStarted) await run(ensureBusy(entry))
+          await run(syncClaim(entry))
+        }
         entry.waiters.forEach((wake) => wake())
       }
+    }
+
+    /**
+     * A decline with no message ends the turn on opencode's runtime: its permission service fails the tool with a
+     * defect. The harness gives the model the refusal and goes on, so cancel the turn after the refusal.
+     */
+    const cancelTurn = (entry: Entry, operationId: string) => {
+      entry.session.cancel(operationId).then(undefined, (error: unknown) =>
+        run(Effect.logWarning("TanStack session: could not end the turn after a decline", { operationId, error })),
+      )
     }
 
     const publishEvent = (entry: Entry, event: HarnessEvent) =>
@@ -388,7 +521,7 @@ export const layer = Layer.effect(
     /** Waits until the harness session is idle and the pump published the end of each operation. */
     const settle = Effect.fn("TanStackSession.settle")(function* (entry: Entry) {
       const isSettled = () => !isBusy(entry) && entry.running.size === 0 && entry.expected.size === 0
-      while (!isSettled()) yield* next(entry)
+      while (!isSettled() && !entry.closed) yield* next(entry)
     })
 
     /** Expects the end of `operationId` from the pump, so `wait` waits for it. */
@@ -445,6 +578,8 @@ export const layer = Layer.effect(
       const receipt = yield* Effect.promise(() => operation.receipt)
       if (receipt.status === "rejected") return receipt.status
       expect(entry, receipt.operationId)
+      yield* ensureBusy(entry)
+      yield* syncClaim(entry)
       // opencode's prompt returns after the inbox has the item.
       yield* published(entry, SessionEvent.InboxEnqueued.type, input.inboxID)
       return receipt.status
@@ -481,6 +616,8 @@ export const layer = Layer.effect(
       const overrides = yield* turn(entry, info)
       const operation = entry.session.prompt(message, { busy: "steer", overrides })
       expect(entry, (yield* Effect.promise(() => operation.receipt)).operationId)
+      yield* ensureBusy(entry)
+      yield* syncClaim(entry)
     })
 
     const synthetic: Session.Interface["synthetic"] = Effect.fn("TanStackSession.synthetic")(function* (input) {
@@ -590,6 +727,8 @@ export const layer = Layer.effect(
       if (entry === undefined) return
       entries.delete(sessionID)
       live.forget(sessionID)
+      entry.closed = true
+      if (entry.busy) yield* Fiber.interrupt(entry.busy)
       if (entry.fiber) yield* Fiber.interrupt(entry.fiber)
       yield* Effect.promise(() => entry.session.close())
     })
@@ -699,12 +838,14 @@ export const layer = Layer.effect(
         const entry = yield* open(info)
         const overrides = yield* turn(entry, info)
         const transcript = yield* Effect.promise(() => entry.session.transcript())
-        const generated = yield* Effect.tryPromise(() =>
+        // Interrupting the Effect aborts the model call.
+        const generated = yield* Effect.tryPromise((signal) =>
           chat({
             adapter: overrides.adapter,
             ...(overrides.wrapFetch ? { wrapFetch: overrides.wrapFetch } : {}),
             messages: [...transcript, { role: "user", content: input.prompt }],
             stream: false,
+            abortController: controllerOf(signal),
           }),
         ).pipe(Effect.orDie)
         return generated.text
@@ -801,6 +942,9 @@ export const layer = Layer.effect(
         const info = yield* base.get(sessionID)
         const entry = yield* open(info)
         yield* Effect.promise(() => entry.session.recover())
+        if (isBusy(entry)) yield* ensureBusy(entry)
+        yield* syncClaim(entry)
+        // It joins the busy period: interrupting it leaves the turn running, as on opencode's runtime.
         yield* settle(entry)
       }),
       interrupt: (sessionID) =>
@@ -916,6 +1060,25 @@ export const layer = Layer.effect(
       },
     })
 
+    drivers.current = {
+      active: result.active,
+      resume: (sessionID) => result.resume(sessionID).pipe(Effect.orDie),
+      interrupt: (sessionID, options) =>
+        Effect.gen(function* () {
+          const entry = entries.get(sessionID)
+          if (entry === undefined || !isBusy(entry)) return false
+          const stopping = entry.busy ? Fiber.interrupt(entry.busy) : stop(entry)
+          if (options.awaitSettlement) yield* stopping
+          else yield* Effect.forkIn(stopping, scope)
+          return true
+        }),
+      awaitIdle: (sessionID) =>
+        Effect.suspend(() => {
+          const entry = entries.get(sessionID)
+          return entry ? settle(entry) : Effect.void
+        }),
+    }
+
     return result
   }),
 )
@@ -934,6 +1097,8 @@ export const node = makeGlobalNode({
     original,
     hostsNode,
     TanStackPermission.liveNode,
+    TanStackRecovery.driversNode,
+    SessionStore.node,
     Bus.node,
     Database.node,
     SessionInbox.node,
@@ -945,10 +1110,13 @@ export const node = makeGlobalNode({
   ],
 })
 
-/** A turn or a control input runs while the harness has a running or a queued operation. */
+/**
+ * A turn or a control input runs while the harness has a running or a queued operation. A background agent run
+ * does not count: on opencode's runtime it runs in its child session, and its parent is idle.
+ */
 function isBusy(entry: Entry) {
   const snapshot = entry.session.snapshot()
-  return snapshot.activeOperations.length > 0 || snapshot.queuedTurns > 0
+  return snapshot.activeOperations.some((operation) => operation.kind !== "agent") || snapshot.queuedTurns > 0
 }
 
 /** Runs a harness control input. A refused one only logs: opencode applies the change at the next turn. */
@@ -979,9 +1147,12 @@ function userMessage(payload: SessionInbox.UserPayload): UserInput {
 function track(entry: Entry, event: HarnessEvent) {
   const chunk = event.event
   if (chunk.type !== EventType.CUSTOM) return
-  const operationId = Option.getOrUndefined(decodeOperationID(chunk.value))?.operationId
-  if (operationId === undefined) return
-  if (chunk.name === HARNESS_EVENTS.operationStarted) entry.running.add(operationId)
+  const operation = Option.getOrUndefined(decodeOperationID(chunk.value))
+  if (operation === undefined) return
+  const operationId = operation.operationId
+  // A background agent run does not keep the session busy: see `isBusy`.
+  const isTurn = operation.kind !== "agent"
+  if (chunk.name === HARNESS_EVENTS.operationStarted && isTurn) entry.running.add(operationId)
   if (chunk.name !== HARNESS_EVENTS.operationFinished) return
   entry.running.delete(operationId)
   entry.expected.delete(operationId)
@@ -992,11 +1163,30 @@ function mark(type: string, inboxID: string) {
   return `${type} ${inboxID}`
 }
 
+/** The harness event of an accepted input, for a mapper that did not see it. */
+function accepted(inputId: string) {
+  return {
+    type: EventType.CUSTOM,
+    name: HARNESS_EVENTS.inputAccepted,
+    value: { inputId },
+    timestamp: Date.now(),
+  } satisfies StreamChunk
+}
+
+/** An `AbortController` that aborts with `signal`, for a TanStack call that takes a controller. */
+function controllerOf(signal: AbortSignal) {
+  const controller = new AbortController()
+  signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true })
+  return controller
+}
+
 function now() {
   return { created: DateTime.makeUnsafe(Date.now()) }
 }
 
-const decodeOperationID = Schema.decodeUnknownOption(Schema.Struct({ operationId: Schema.String }))
+const decodeOperationID = Schema.decodeUnknownOption(
+  Schema.Struct({ operationId: Schema.String, kind: Schema.optionalKey(Schema.String) }),
+)
 const decodeInboxID = Schema.decodeUnknownOption(Schema.Struct({ inboxID: Schema.String }))
 
 function locationKey(location: Location.Ref) {

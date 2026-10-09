@@ -17,10 +17,13 @@ import { Location } from "../location.js"
 import { Mcp } from "../mcp/index.js"
 import { Model } from "../model.js"
 import { Plugin } from "../plugin.js"
+import { PluginHooks } from "../plugin/hooks.js"
 import { Provider } from "../provider.js"
 import { Session } from "../session.js"
 import { Skill } from "../skill.js"
+import { Tool } from "../tool.js"
 import { TanStackHarness } from "./harness.js"
+import { TanStackRecovery } from "./recovery.js"
 import { TanstackStores } from "./stores.js"
 
 type Built = Effect.Success<ReturnType<typeof TanStackHarness.make>>
@@ -71,6 +74,11 @@ export interface Interface {
    * calls. The change names its tool call, not its session.
    */
   readonly onFileChange: (listener: (change: TanStackHarness.FileChange) => void) => () => void
+  /**
+   * The sessions that the boot sweep (`host.resumePending`) opened to run the work that a stopped host left. The
+   * session layer opens them too, so their events reach the Bus.
+   */
+  readonly resumed: ReadonlyArray<Session.ID>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/TanStackHost") {}
@@ -79,7 +87,8 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Ta
  * One TanStack `HarnessHost` for the location, with the harness from `TanStackHarness.make` and the stores on
  * opencode's SQLite database.
  *
- * - At boot it calls `host.resumePending`, so a turn that a stopped host left runs again.
+ * - At boot it calls `host.resumePending`, so a turn that a stopped host left runs again. A recovered turn runs on
+ *   the model of its opencode session: the harness log keeps no turn overrides.
  * - On a config update of the location it builds the harness definition again and calls `host.reload`.
  * - When the location scope closes it closes the host with `recoverable: true`, so the next host runs the
  *   running turns again.
@@ -91,12 +100,34 @@ export const layer = Layer.effect(
     const persistence = yield* TanstackStores.make
     const listeners = new Set<(change: TanStackHarness.FileChange) => void>()
     const notify = (change: TanStackHarness.FileChange) => [...listeners].forEach((listener) => listener(change))
-    const make = TanStackHarness.make({ onFileChange: notify })
-    const state = { built: yield* make }
-    const context = yield* Effect.context<Effect.Services<Overrides>>()
-    const stores = persistence.stores
     const location = yield* Location.Service
     const sessions = yield* Session.Service
+    const build = TanStackHarness.make({ onFileChange: notify })
+    const state = { built: yield* build }
+    const context = yield* Effect.context<Effect.Services<Overrides>>()
+    // The overrides of a turn that recovery runs again: the model of its session. `undefined` keeps the default
+    // model of the location, for a session with no model of its own.
+    const recovered = (threadId: string) =>
+      Effect.runPromise(
+        sessions.get(Session.ID.make(threadId)).pipe(
+          Effect.flatMap((info) => {
+            const ref = TanStackRecovery.sessionModel(info)
+            return ref === undefined ? Effect.undefined : state.built.overrides(ref).pipe(Effect.provideContext(context))
+          }),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("TanStack host: a recovered turn runs on the default model", { threadId, cause }).pipe(
+              Effect.as(undefined),
+            ),
+          ),
+        ),
+      )
+    const recoverable = (built: Built) => ({
+      ...built,
+      harness: TanStackRecovery.withRecovery(built.harness, recovered),
+    })
+    state.built = recoverable(state.built)
+    const make = build.pipe(Effect.map(recoverable))
+    const stores = persistence.stores
     // A work claim names only the thread and the harness, and every location's harness is `opencode`. So the boot
     // sweep resumes only the sessions of this location, and a turn never runs in the folder of another location.
     // ponytail: filters after the store's `limit`, so many expired claims of other locations can delay a resume.
@@ -233,6 +264,7 @@ export const layer = Layer.effect(
           listeners.delete(listener)
         }
       },
+      resumed: resumed.map((entry) => Session.ID.make(entry.threadId)),
     })
   }),
 )
@@ -280,6 +312,7 @@ export const node = makeLocationNode({
     Location.node,
     Config.node,
     Plugin.node,
+    PluginHooks.node,
     Agent.node,
     Skill.node,
     InstructionDiscovery.node,
@@ -287,5 +320,6 @@ export const node = makeLocationNode({
     Model.node,
     Provider.node,
     Mcp.node,
+    Tool.node,
   ],
 })
