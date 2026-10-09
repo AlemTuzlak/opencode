@@ -702,6 +702,7 @@ export const layer = Layer.effect(
         const generated = yield* Effect.tryPromise(() =>
           chat({
             adapter: overrides.adapter,
+            ...(overrides.wrapFetch ? { wrapFetch: overrides.wrapFetch } : {}),
             messages: [...transcript, { role: "user", content: input.prompt }],
             stream: false,
           }),

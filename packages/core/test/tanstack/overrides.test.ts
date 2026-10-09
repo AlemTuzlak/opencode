@@ -36,6 +36,8 @@ const ANSWER = "Hello from the fake model."
 interface ModelRequest {
   readonly tools: ReadonlyArray<string>
   readonly openaiSDK: boolean
+  /** The `x-opencode-session` header. OpenCode Zen and Go route on it. */
+  readonly session: string | null
 }
 
 const requests: ModelRequest[] = []
@@ -54,6 +56,7 @@ const server = Bun.serve({
     requests.push({
       tools: (body.tools ?? []).map((tool) => tool.function.name),
       openaiSDK: request.headers.has("x-stainless-lang"),
+      session: request.headers.get("x-opencode-session"),
     })
     if (!body.stream) return Response.json(completion())
     return new Response(encoder.encode(completionStream()), { headers: { "content-type": "text/event-stream" } })
@@ -151,6 +154,10 @@ const promptTurn = (location: Location.Ref) =>
 
 /** The tool names of the turn requests. A title or generate request has no tools. */
 const turnTools = () => requests.flatMap((request) => request.tools)
+/** The distinct session headers of the turn requests. */
+const turnSessions = () => [
+  ...new Set(requests.filter((request) => request.tools.length > 0).map((request) => request.session)),
+]
 
 describe("TanStackOverrides", () => {
   tanstack.live(
@@ -168,6 +175,8 @@ describe("TanStackOverrides", () => {
         // The harness sends its own tool names. opencode's runner calls the same tool `read`.
         expect(turnTools()).toContain("read_file")
         expect(turnTools()).not.toContain("read")
+        // The same session headers as opencode's runner sends.
+        expect(turnSessions()).toEqual([expect.stringMatching(/^ses_/)])
       }),
     60_000,
   )
@@ -184,7 +193,7 @@ describe("TanStackOverrides", () => {
         }).pipe(Effect.provide(LocationServiceMap.Service.get(location)))
 
         expect(text).toBe(ANSWER)
-        expect(requests).toEqual([{ tools: [], openaiSDK: true }])
+        expect(requests).toEqual([{ tools: [], openaiSDK: true, session: expect.stringMatching(/^ses_/) }])
       }),
     60_000,
   )
@@ -203,6 +212,7 @@ describe("TanStackOverrides", () => {
         ])
         expect(turnTools()).toContain("read")
         expect(turnTools()).not.toContain("read_file")
+        expect(turnSessions()).toEqual([expect.stringMatching(/^ses_/)])
         expect(requests.some((request) => request.openaiSDK)).toBe(false)
       }),
     60_000,
