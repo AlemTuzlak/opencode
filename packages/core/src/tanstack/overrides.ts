@@ -30,6 +30,7 @@ import { SessionRunner } from "../session/runner/index.js"
 import { SessionRunnerLLM } from "../session/runner/llm.js"
 import { TanStackAdapters } from "./adapters.js"
 import { TanStackForm } from "./form-layer.js"
+import { TanStackHarness } from "./harness.js"
 import { TanStackHost } from "./host.js"
 import { TanStackJob } from "./job-layer.js"
 import { TanStackPermission } from "./permission-layer.js"
@@ -123,9 +124,19 @@ const clientLayer = Layer.effect(
           const input = yield* chatInput(request)
           const controller = new AbortController()
           yield* Effect.addFinalizer(() => Effect.sync(() => controller.abort()))
+          // The request's own headers, such as the `x-opencode-session` that `Generate` sets.
+          const headers = request.http?.headers
+          const outer = resolved.wrapFetch
+          const wrapFetch =
+            headers === undefined
+              ? outer
+              : (next: typeof fetch) => {
+                  const inner = TanStackHarness.withHeaders(next, headers)
+                  return outer ? outer(inner) : inner
+                }
           const chunks = chat({
             adapter: resolved.adapter,
-            wrapFetch: resolved.wrapFetch,
+            wrapFetch,
             reasoning: resolved.reasoning,
             systemPrompts: input.system,
             messages: input.messages,

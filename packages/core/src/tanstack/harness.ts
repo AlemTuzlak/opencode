@@ -27,6 +27,7 @@ import { skills } from "@tanstack/ai-skills/harness"
 import { Effect, Option, Result, Schema } from "effect"
 import type { JsonSchema } from "effect"
 import { Agent } from "../agent.js"
+import { App } from "../app.js"
 import { Config } from "../config.js"
 import { InstructionDiscovery } from "../instruction-discovery.js"
 import { Integration } from "../integration.js"
@@ -36,6 +37,7 @@ import { Model } from "../model.js"
 import { Plugin } from "../plugin.js"
 import { Provider } from "../provider.js"
 import { Session } from "../session.js"
+import { SessionAffinity } from "../session/affinity.js"
 import { Skill } from "../skill.js"
 import { ToolOutput } from "../tool-output.js"
 import { McpTool } from "../tool/mcp.js"
@@ -239,8 +241,9 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
   // ponytail: by model id, so two providers with the same model id share the last resolved wrapper.
   const wrapFetch: ChatMiddleware = {
     name: "opencode/wrap-fetch",
+    // Every phase: before each model call the chat config starts again from the `chat()` options, so a
+    // `wrapFetch` given only at `init` would be lost. The config is built new each time, so it is never wrapped twice.
     onConfig: (context) => {
-      if (context.phase !== "init") return
       const wrapper = resolved.get(context.model)?.wrapFetch
       return wrapper ? { wrapFetch: wrapper } : undefined
     },
@@ -249,6 +252,35 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
   const wrapFetchPlugin = definePlugin({
     name: "opencode/wrap-fetch",
     setup: () => ({ middleware: [wrapFetch], agentMiddleware: [wrapFetch] }),
+  })
+
+  const app = yield* App.Metadata
+  // The headers that the opencode runtime sends with each model request (`session/model-request.ts`). OpenCode
+  // Zen and Go route on them, and providers use the affinity for their prompt cache.
+  // ponytail: a subagent's requests carry its parent session's headers, because its child session is made later.
+  const sessionHeaders = definePlugin({
+    name: "opencode/session-headers",
+    setup: async (ctx) => {
+      const session = await run(Session.Service.use((service) => service.get(Session.ID.make(ctx.session.threadId))))
+      const affinity = SessionAffinity.get(session)
+      const headers: Record<string, string> = {
+        "x-opencode-session-id": session.id,
+        ...(session.parentID ? { "x-opencode-parent-session-id": session.parentID } : {}),
+        "x-session-affinity": affinity,
+        "X-Session-Id": affinity,
+        ...(session.parentID ? { "x-parent-session-id": session.parentID } : {}),
+        "User-Agent": App.useragent(app),
+        "x-opencode-project": session.projectID,
+        "x-opencode-session": affinity,
+        "x-opencode-client": app.name,
+      }
+      const middleware: ChatMiddleware = {
+        name: "opencode/session-headers",
+        // Every phase, as `opencode/wrap-fetch` above.
+        onConfig: () => ({ wrapFetch: (next) => withHeaders(next, headers) }),
+      }
+      return { middleware: [middleware], agentMiddleware: [middleware] }
+    },
   })
 
   const opencodeTools = definePlugin({
@@ -292,6 +324,7 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
       const changes = options.onFileChange && trackFileChanges(options.onFileChange)
       return [
         wrapFetchPlugin,
+        sessionHeaders,
         permissions({ root }),
         workspaceTools({
           root,
@@ -333,7 +366,12 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
    */
   const overrides = Effect.fn("TanStackHarness.overrides")(function* (ref: Model.Ref) {
     const entry = yield* resolve(ref)
-    return { adapter: entry.adapter, ...(entry.reasoning ? { reasoning: entry.reasoning } : {}) }
+    return {
+      adapter: entry.adapter,
+      ...(entry.reasoning ? { reasoning: entry.reasoning } : {}),
+      // Not a turn override: a turn gets it from the `opencode/wrap-fetch` middleware. A direct `chat()` call needs it.
+      ...(entry.wrapFetch ? { wrapFetch: entry.wrapFetch } : {}),
+    }
   })
 
   return {
@@ -341,8 +379,7 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     overrides,
     /** `undefined` when no model resolves for the summaries: then the harness never compacts. */
     compaction:
-      compaction &&
-      ({ model: compaction.model, compactNext: compaction.middleware.compactNext } satisfies Compaction),
+      compaction && ({ model: compaction.model, compactNext: compaction.middleware.compactNext } satisfies Compaction),
   }
 })
 
@@ -498,4 +535,15 @@ function trackFileChanges(onFileChange: (change: FileChange) => void) {
   })
 
   return { backend, plugin }
+}
+
+/** `next` with `headers` added to each request. A header that the request already sets wins. */
+export function withHeaders(next: typeof fetch, headers: Record<string, string>): typeof fetch {
+  const send = (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    const merged = new Headers(input instanceof Request ? input.headers : undefined)
+    new Headers(init?.headers).forEach((value, key) => merged.set(key, value))
+    for (const [key, value] of Object.entries(headers)) if (!merged.has(key)) merged.set(key, value)
+    return next(input, { ...init, headers: merged })
+  }
+  return Object.assign(send, { preconnect: next.preconnect })
 }
