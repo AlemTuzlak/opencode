@@ -122,8 +122,7 @@ export type InterruptReason = Event.Data<typeof SessionEvent.Execution.Interrupt
 
 /**
  * Turns the harness event stream of one session into opencode session events,
- * in the order the opencode projector needs (see the golden traces in
- * `test/tanstack/traces`).
+ * in the order the opencode projector needs.
  *
  * The mapper does no I/O. The session layer feeds it each harness event and
  * publishes what comes back, in order. It also tells the mapper what the
