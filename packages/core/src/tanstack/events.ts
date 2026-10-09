@@ -20,6 +20,9 @@ import type { SessionInbox } from "@opencode/schema/session-inbox"
 import { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
 import { Option, Schema } from "effect"
+import { SessionUsage } from "../session/usage.js"
+import { TanStackForm } from "./form-layer.js"
+import { TanStackRecovery } from "./recovery.js"
 import {
   executeToolCalls,
   isEditTool,
@@ -96,6 +99,8 @@ export interface MapperOptions {
   /** The agent and model of the next model call. Change them with `select`. */
   readonly agent: Agent.ID
   readonly model: Model.Ref
+  /** The catalog prices of `model`. A step that the provider gives no cost costs what they say. Default: none. */
+  readonly costs?: Model.Info["cost"]
   /** Default: {@link ids}. */
   readonly ids?: Ids
   /** Epoch milliseconds. Default: `Date.now`. */
@@ -109,7 +114,11 @@ export interface MapperOptions {
 const STEP_INTERRUPTED = { type: "aborted", message: "Step interrupted" }
 const TOOLS_INTERRUPTED = { type: "aborted", message: "Tool execution interrupted" }
 const TURN_FAILED = { type: "unknown", message: "The turn failed." }
-// The harness tools that change files. opencode checks them with the one `edit` permission.
+// The error of a call that the user rejected with no message, as opencode's runtime fails it.
+const DECLINED = { type: "aborted", message: "The user declined this tool call" }
+
+/** Why a turn was interrupted, as `session.execution.interrupted` names it. */
+export type InterruptReason = Event.Data<typeof SessionEvent.Execution.Interrupted>["reason"]
 
 /**
  * Turns the harness event stream of one session into opencode session events,
@@ -126,6 +135,7 @@ const TURN_FAILED = { type: "unknown", message: "The turn failed." }
  * - `link`: a pair of message ids that the transcript shows, for a revert.
  * - `compacting` and `compacted`: the inbox item of a manual compaction, and the summary of a compaction from
  *   the harness log.
+ * - `interrupting`: the reason of the next cancel, when it is not the user.
  *
  * @example
  * ```ts
@@ -148,11 +158,13 @@ export function createEventMapper(options: MapperOptions) {
   const children = new Map<string, Child>()
   const asks = new Map<string, string>()
   const links = { message: new Map<string, string>(), session: new Map<string, string>() }
-  const selection = { agent: options.agent, model: options.model }
+  const selection = { agent: options.agent, model: options.model, costs: options.costs ?? [] }
   /** The compaction of each operation, from its `compaction:started` to its `compaction:ended`. */
   const compactions = new Map<string, Compaction>()
   /** The inbox item of the manual compaction that waits for the next model call. */
   const manual: { inboxID: SessionMessage.ID | undefined } = { inboxID: undefined }
+  /** The reason of the next cancel of a turn. The harness cancel names no reason. */
+  const cancel: { reason: InterruptReason } = { reason: "user" }
   for (const link of options.links ?? []) links[link.kind].set(link.harnessID, link.opencodeID)
 
   const emit = <D extends Event.Definition>(definition: D, data: Event.Data<D>) =>
@@ -206,6 +218,7 @@ export function createEventMapper(options: MapperOptions) {
       finish: undefined,
       tokens: undefined,
       cost: 0,
+      costs: selection.costs,
       retrying: false,
     }
     run.step = step
@@ -295,10 +308,13 @@ export function createEventMapper(options: MapperOptions) {
         executed: false,
       })
     }
+    // opencode gives a failed step its usage when its model call finished, for example before a declined tool.
+    const isFinished = step.finish !== undefined
     emit(SessionEvent.Step.Failed, {
       sessionID: run.sessionID,
       assistantMessageID: step.messageID,
       error,
+      ...(isFinished ? { cost: Money.USD.make(step.cost), tokens: step.tokens ?? noTokens() } : {}),
       files: changedFiles(step),
     })
   }
@@ -310,7 +326,7 @@ export function createEventMapper(options: MapperOptions) {
     switch (status) {
       case "cancelled":
         if (step) failStep(run, step, STEP_INTERRUPTED)
-        return emitOutside(SessionEvent.Execution.Interrupted, { sessionID: run.sessionID, reason: "user" })
+        return emitOutside(SessionEvent.Execution.Interrupted, { sessionID: run.sessionID, reason: cancel.reason })
       case "failed": {
         const error = run.error ?? TURN_FAILED
         if (step) failStep(run, step, error)
@@ -408,6 +424,7 @@ export function createEventMapper(options: MapperOptions) {
     if (stopped) for (const child of open) finishRun(child, finished.status)
     finishRun(run, finished.status)
     operations.delete(finished.operationId)
+    if (finished.status === "cancelled") cancel.reason = "user"
   }
 
   // An input that waited and never ran: `cancelInput`, or a cancel before it joined.
@@ -481,16 +498,19 @@ export function createEventMapper(options: MapperOptions) {
     asks.set(id, question.questionId)
     const index = found ? found.call.asked++ : 0
     const asked = found ? Option.getOrUndefined(decodeQuestions(found.call.input))?.questions[index] : undefined
-    const field = asked
-      ? questionField(index, asked)
-      : { key: "answer", title: question.message, type: "string" as const }
+    // A question that no `question` tool call asks, for example from a plugin: its form comes from its JSON Schema
+    // and its `url`.
+    const form = asked ? undefined : TanStackForm.questionForm(question)
+    const [first, ...rest] = asked ? [questionField(index, asked)] : (form?.fields ?? [])
+    // A JSON Schema object with no properties gives no field. Then the form asks for one answer.
+    const fields: Form.Info["fields"] = first === undefined ? [answerField(question.message)] : [first, ...rest]
     emit(Form.Event.Created, {
       form: {
         id,
         sessionID: run.sessionID,
-        title: "Questions",
+        title: form?.title ?? "Questions",
         ...(found ? { metadata: { kind: "question", tool: { messageID: found.step.messageID, id: found.id } } } : {}),
-        fields: [field],
+        fields,
       },
     })
   }
@@ -503,7 +523,7 @@ export function createEventMapper(options: MapperOptions) {
     // The first usage of a step is its own model call. A subagent's calls report on the parent too.
     if (usage === undefined || step === undefined || step.tokens !== undefined) return
     step.tokens = tokensOf(usage.promptTokens, usage.completionTokens, 0, usage.cachedTokens, usage.cacheWriteTokens)
-    step.cost = usage.cost ?? 0
+    step.cost = usage.cost ?? SessionUsage.calculateCost(step.costs, step.tokens)
   }
 
   const onRetry = (entry: HarnessEvent, value: unknown) => {
@@ -734,6 +754,15 @@ export function createEventMapper(options: MapperOptions) {
     streamed(run)
     call.settled = true
     remember("message", chunk.messageId, step.messageID)
+    // The harness gives a declined call a normal result. opencode fails it, and the session layer ends the turn.
+    if (TanStackRecovery.isDeclined(entry.event))
+      return emit(SessionEvent.Tool.Failed, {
+        sessionID: run.sessionID,
+        assistantMessageID: step.messageID,
+        id: chunk.toolCallId,
+        error: DECLINED,
+        executed: false,
+      })
     const text = typeof chunk.content === "string" ? chunk.content : JSON.stringify(chunk.content)
     const failure = Option.getOrUndefined(decodeResultState(chunk))?.metadata.tanstack
     if (failure?.state === "output-error") {
@@ -797,7 +826,7 @@ export function createEventMapper(options: MapperOptions) {
       usage.promptTokensDetails?.cachedTokens ?? 0,
       usage.promptTokensDetails?.cacheWriteTokens ?? 0,
     )
-    step.cost = usage.cost ?? step.cost
+    step.cost = usage.cost ?? SessionUsage.calculateCost(step.costs, step.tokens)
   }
 
   const onRunError = (entry: HarnessEvent, message: string) => {
@@ -956,10 +985,18 @@ export function createEventMapper(options: MapperOptions) {
       const compaction = compactions.get(operationId)
       if (compaction) compaction.summary = summary
     },
+    /**
+     * The reason of the next cancelled turn, for example `inactivity` when the location evicts its idle owners.
+     * Call it before you cancel the turn. Without it, a cancelled turn is interrupted by the `user`.
+     */
+    interrupting: (reason: InterruptReason) => {
+      cancel.reason = reason
+    },
     /** The agent and the model of the next model calls. */
-    select: (next: { readonly agent?: Agent.ID; readonly model?: Model.Ref }) => {
+    select: (next: { readonly agent?: Agent.ID; readonly model?: Model.Ref; readonly costs?: Model.Info["cost"] }) => {
       if (next.agent !== undefined) selection.agent = next.agent
       if (next.model !== undefined) selection.model = next.model
+      if (next.costs !== undefined) selection.costs = next.costs
     },
     /** Add a link that the stream does not show, for example a user message of the transcript. */
     link: (link: Link) => remember(link.kind, link.harnessID, link.opencodeID),
@@ -1032,6 +1069,8 @@ interface Step {
   finish: FinishReason | undefined
   tokens: TokenUsage.Info | undefined
   cost: number
+  /** The catalog prices of the model of the step. */
+  readonly costs: Model.Info["cost"]
   /** A retry runs the model call again in the same step. */
   retrying: boolean
 }
@@ -1121,6 +1160,11 @@ function questionField(index: number, item: (typeof ToolQuestions.Type)["questio
   return item.multiple === true ? { ...base, type: "multiselect" as const } : { ...base, type: "string" as const }
 }
 
+/** The one field of a question with no schema. */
+function answerField(message: string) {
+  return { key: "answer", title: message, required: true, type: "string" as const }
+}
+
 /** The permissions plugin asks with an `answer` of `once`, `always`, or `reject`. */
 function isPermissionQuestion(schema: unknown) {
   const answer = Option.getOrUndefined(decodePermissionSchema(schema))?.properties.answer.enum ?? []
@@ -1166,6 +1210,7 @@ const QuestionValue = Schema.Struct({
   questionId: Schema.String,
   message: Schema.String,
   schema: Schema.optionalKey(Schema.Unknown),
+  url: Schema.optionalKey(Schema.String),
 })
 const decodeQuestion = Schema.decodeUnknownOption(QuestionValue)
 const decodePermissionSchema = Schema.decodeUnknownOption(

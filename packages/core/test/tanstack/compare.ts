@@ -10,28 +10,38 @@ import { Effect } from "effect"
 import { readTrace } from "./trace"
 import type { Trace, TraceEvent, TraceValue } from "./trace"
 
-/** A change to the golden events of one type. */
-export interface Patch {
+/** The events of one type, or the ones of that type that `where` picks. */
+export interface Selector {
   readonly type: string
   /** Data fields that pick the event. Without it, every event of the type. */
   readonly where?: Readonly<Record<string, string>>
+}
+
+/** A change to the golden events of one type. */
+export interface Patch extends Selector {
   readonly set?: Readonly<Record<string, TraceValue>>
   readonly unset?: ReadonlyArray<string>
 }
 
 /**
  * The golden trace `traces/<name>.json` as the TanStack runtime must publish it: without the `drop` event types,
- * without step snapshots (the harness has no snapshot ids), and with the patches. Compare it with
- * `comparable(normalizeTrace(...))` of the recorded events.
+ * without the `omit` events (events that the TanStack runtime cannot publish), without step snapshots (the harness
+ * has no snapshot ids), and with the patches. `select` keeps a part of the trace, for example `compactionSlice`.
+ * Compare it with `comparable(normalizeTrace(...))` of the recorded events.
  */
 export const expectedTrace = (
   name: string,
-  input: { readonly drop: ReadonlySet<string>; readonly patches?: ReadonlyArray<Patch> },
+  input: {
+    readonly drop: ReadonlySet<string>
+    readonly omit?: ReadonlyArray<Selector>
+    readonly patches?: ReadonlyArray<Patch>
+    readonly select?: (trace: Trace) => Trace
+  },
 ) =>
   Effect.promise(() => readTrace(name)).pipe(
     Effect.map((golden) =>
       comparable(
-        golden
+        (input.select ?? everything)(without(golden, input.omit ?? []))
           .filter((event) => !input.drop.has(event.type))
           .map((event) =>
             [
@@ -42,6 +52,38 @@ export const expectedTrace = (
       ),
     ),
   )
+
+/** `trace` without the events that a selector picks. */
+export function without(trace: Trace, selectors: ReadonlyArray<Selector>) {
+  return trace.filter((event) => !selectors.some((selector) => isSelected(event, selector)))
+}
+
+/**
+ * The events of the manual compaction of a trace: its inbox item, its compaction events, and its usage. The
+ * projector publishes `session.usage.updated` from the usage at its own time, so it is left out.
+ */
+export function compactionSlice(trace: Trace) {
+  const inboxID = trace.flatMap((event) => {
+    const data = event.data
+    const isCompaction =
+      event.type === "session.inbox.enqueued" && isObject(data) && isObject(data.item) && data.item.type === "compaction"
+    return isCompaction ? [data.inboxID] : []
+  })[0]
+  return trace.filter((event) => {
+    const data = event.data
+    if (!isObject(data)) return false
+    if (event.type.startsWith("session.inbox.")) return data.inboxID === inboxID
+    if (event.type === "session.usage.recorded") return data.source === "compaction"
+    return event.type.startsWith("session.compaction.")
+  })
+}
+
+/** The events from the first event of type `type` to the end. */
+export const from = (type: string) => (trace: Trace) => trace.slice(Math.max(0, trace.findIndex((event) => event.type === type)))
+
+function everything(trace: Trace) {
+  return trace
+}
 
 /**
  * Renumbers the id and hash placeholders by first appearance, and drops the durable `seq`. Both sides have events
@@ -86,11 +128,15 @@ const HASH_PLACEHOLDER = /<hash:(\d+)>/g
 
 function patchEvent(event: TraceEvent, patch: Patch): TraceEvent {
   const data = event.data
-  if (event.type !== patch.type || !isObject(data)) return event
-  const matches = Object.entries(patch.where ?? {}).every(([key, value]) => data[key] === value)
-  if (!matches) return event
+  if (!isSelected(event, patch) || !isObject(data)) return event
   const kept = Object.entries(data).filter(([key]) => !(patch.unset ?? []).includes(key))
   return { ...event, data: { ...Object.fromEntries(kept), ...patch.set } }
+}
+
+function isSelected(event: TraceEvent, selector: Selector) {
+  const data = event.data
+  if (event.type !== selector.type || !isObject(data)) return false
+  return Object.entries(selector.where ?? {}).every(([key, value]) => data[key] === value)
 }
 
 function isObject(value: TraceValue | undefined): value is { [key: string]: TraceValue } {

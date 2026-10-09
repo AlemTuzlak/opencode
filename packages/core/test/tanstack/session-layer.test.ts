@@ -38,8 +38,9 @@ import { tempGlobalLayer } from "../fixture/global"
 import { offlineModels } from "../fixture/models"
 import { tmpdirScoped } from "../fixture/tmpdir"
 import { testEffect } from "../lib/effect"
-import { normalizeTrace, readTrace, recordTrace } from "./trace"
-import type { Trace, TraceEvent, TraceValue } from "./trace"
+import { comparable, compactionSlice, expectedTrace, harnessResult, rawInput } from "./compare"
+import { normalizeTrace, recordTrace } from "./trace"
+import type { Trace } from "./trace"
 import type { Event } from "@opencode/schema/event"
 
 const golden = Model.Ref.make({ id: Model.ID.make("golden"), providerID: Provider.ID.make("test") })
@@ -292,120 +293,11 @@ const projected = (context: Context, sessionID: Session.ID) =>
 // - `permission.replied`: the permission facade, when a client answers.
 const NOT_OWNED = new Set(["session.instructions.updated", "permission.replied"])
 
-interface Patch {
-  readonly type: string
-  /** Data fields that pick the event. Without it, every event of the type. */
-  readonly where?: Readonly<Record<string, string>>
-  readonly set?: Readonly<Record<string, TraceValue>>
-  readonly unset?: ReadonlyArray<string>
-}
-
-/** The golden trace as the TanStack runtime must publish it: without step snapshots, and with the patches. */
-const expected = (name: string, patches: ReadonlyArray<Patch> = [], select = everything) =>
-  Effect.promise(() => readTrace(name)).pipe(
-    Effect.map((trace) =>
-      comparable(
-        select(trace.filter((event) => !NOT_OWNED.has(event.type)))
-          .map((event) =>
-            [
-              { type: event.type, unset: event.type.startsWith("session.step.") ? ["snapshot"] : [] },
-              ...patches,
-            ].reduce(patchEvent, event),
-          ),
-      ),
-    ),
-  )
-
-/** The recorded trace of a scenario, comparable with `expected`. */
-const recorded = (context: Context, select = everything) =>
+/** The recorded trace of a scenario, comparable with `expectedTrace`. `select` keeps a part of it. */
+const recorded = (context: Context, select = (trace: Trace) => trace) =>
   context.recorder.events.pipe(
     Effect.map((events) => comparable(select(normalizeTrace(events, { roots: [context.directory, context.global] })))),
   )
-
-function everything(trace: Trace) {
-  return trace
-}
-
-/**
- * The events of the manual compaction of a trace: its inbox item, its compaction events, and its usage. The
- * projector publishes `session.usage.updated` from the usage at its own time, so it is left out.
- */
-function compactionSlice(trace: Trace) {
-  const inboxID = trace.flatMap((event) => {
-    const data = event.data
-    const isCompaction =
-      event.type === "session.inbox.enqueued" && isObject(data) && isObject(data.item) && data.item.type === "compaction"
-    return isCompaction ? [data.inboxID] : []
-  })[0]
-  return trace.filter((event) => {
-    const data = event.data
-    if (!isObject(data)) return false
-    if (event.type.startsWith("session.inbox.")) return data.inboxID === inboxID
-    if (event.type === "session.usage.recorded") return data.source === "compaction"
-    return event.type.startsWith("session.compaction.")
-  })
-}
-
-function patchEvent(event: TraceEvent, patch: Patch): TraceEvent {
-  const data = event.data
-  if (event.type !== patch.type || !isObject(data)) return event
-  const matches = Object.entries(patch.where ?? {}).every(([key, value]) => data[key] === value)
-  if (!matches) return event
-  const kept = Object.entries(data).filter(([key]) => !(patch.unset ?? []).includes(key))
-  return { ...event, data: { ...Object.fromEntries(kept), ...patch.set } }
-}
-
-function isObject(value: TraceValue | undefined): value is { [key: string]: TraceValue } {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-const PLACEHOLDER = /\b([a-z]+)_(\d+)\b/g
-const HASH_PLACEHOLDER = /<hash:(\d+)>/g
-
-/**
- * Renumbers the id and hash placeholders by first appearance, and drops the durable `seq`. Both sides have events
- * that the other side lacks, so the numbers and the Bus sequence differ, while the order and the id relations stay
- * the same.
- */
-function comparable(trace: Trace) {
-  const ids = new Map<string, number>()
-  const hashes = new Map<string, number>()
-  const renumber = (text: string) =>
-    text
-      .replace(PLACEHOLDER, (_, prefix: string, n: string) => `${prefix}_${numbered(ids, n)}`)
-      .replace(HASH_PLACEHOLDER, (_, n: string) => `<hash:${numbered(hashes, n)}>`)
-  const walk = (value: TraceValue): TraceValue => {
-    if (typeof value === "string") return renumber(value)
-    if (Array.isArray(value)) return value.map(walk)
-    if (!isObject(value)) return value
-    const keys = Object.keys(value)
-      .filter((key) => key !== "seq")
-      .toSorted()
-    return Object.fromEntries(keys.map((key) => [renumber(key), walk(value[key])]))
-  }
-  return trace.map((event) => walk(event))
-}
-
-function numbered(seen: Map<string, number>, value: string) {
-  const existing = seen.get(value)
-  if (existing !== undefined) return existing
-  seen.set(value, seen.size + 1)
-  return seen.size
-}
-
-/** The raw tool input that the fake model streams. The old scripted model sent none, so its traces have "". */
-const rawInput = (toolCall: string, input: string): Patch => ({
-  type: "session.tool.input.ended",
-  where: { id: toolCall },
-  set: { text: input },
-})
-
-/** The harness tool writes another result text than opencode's own tool. */
-const harnessResult = (toolCall: string, text: string): Patch => ({
-  type: "session.tool.success",
-  where: { id: toolCall },
-  set: { content: [{ type: "text", text }] },
-})
 
 /** Waits in the background for the next event that matches. Join the fiber to wait. */
 const nextEvent = <D extends Event.Definition>(context: Context, definition: D) =>
@@ -437,7 +329,7 @@ describe("TanStackSession golden traces", () => {
 
         yield* runTurn(context, "Say hello")
 
-        expect(yield* recorded(context)).toEqual(yield* expected("text-turn"))
+        expect(yield* recorded(context)).toEqual(yield* expectedTrace("text-turn", { drop: NOT_OWNED }))
       }),
     60_000,
   )
@@ -466,14 +358,17 @@ describe("TanStackSession golden traces", () => {
         yield* runTurn(context, "Change alpha to beta in notes.txt")
 
         expect(yield* recorded(context)).toEqual(
-          yield* expected("tool-permission", [
+          yield* expectedTrace("tool-permission", {
+            drop: NOT_OWNED,
+            patches: [
             rawInput("call-read", '{"path":"notes.txt"}'),
             rawInput("call-edit", '{"path":"notes.txt","old":"alpha","new":"beta"}'),
             harnessResult("call-read", "1\talpha"),
             harnessResult("call-edit", "Edited notes.txt (1 change)."),
             // opencode's edit tool computes a diff preview before it asks. The harness asks before the tool runs.
             { type: "permission.asked", unset: ["metadata"] },
-          ]),
+            ],
+          }),
         )
         expect(yield* Effect.promise(() => Bun.file(path.join(context.directory, "notes.txt")).text())).toBe("beta\n")
       }),
@@ -503,7 +398,7 @@ describe("TanStackSession golden traces", () => {
         steered.resolve()
         yield* context.sessions.wait(context.sessionID)
 
-        expect(yield* recorded(context)).toEqual(yield* expected("steer"))
+        expect(yield* recorded(context)).toEqual(yield* expectedTrace("steer", { drop: NOT_OWNED }))
       }),
     60_000,
   )
@@ -522,7 +417,7 @@ describe("TanStackSession golden traces", () => {
         yield* context.sessions.wait(context.sessionID)
 
         expect(interrupted).toBe(true)
-        expect(yield* recorded(context)).toEqual(yield* expected("interrupt"))
+        expect(yield* recorded(context)).toEqual(yield* expectedTrace("interrupt", { drop: NOT_OWNED }))
       }),
     60_000,
   )
@@ -558,9 +453,10 @@ describe("TanStackSession golden traces", () => {
         // Only the compaction events compare: the old runtime ran the compaction as its own execution, and the
         // harness runs it inside the next turn, after that turn's `inbox.delivered` and `step.started`.
         expect(yield* recorded(context, compactionSlice)).toEqual(
-          yield* expected(
-            "compaction",
-            [
+          yield* expectedTrace("compaction", {
+            drop: NOT_OWNED,
+            select: compactionSlice,
+            patches: [
               // The compaction agent of this test has its own model. The old trace's agent had none, so the session
               // model wrote the summary.
               {
@@ -568,8 +464,7 @@ describe("TanStackSession golden traces", () => {
                 set: { model: { id: "summary", providerID: "stub" } },
               },
             ],
-            compactionSlice,
-          ),
+          }),
         )
       }),
     60_000,
@@ -701,6 +596,29 @@ describe("TanStackSession runtime methods", () => {
         expect(yield* projected(context, sessionID)).toEqual([
           { type: "user", text: "First question" },
           { type: "assistant", text: "First answer" },
+        ])
+      }),
+    60_000,
+  )
+
+  it.live(
+    "resume runs the inputs that wait with resume: false",
+    () =>
+      Effect.gen(function* () {
+        const context = yield* setup()
+        const sessionID = context.sessionID
+        const fake = script([{ text: "Answered" }])
+        const held = yield* context.sessions.prompt({ sessionID, text: "Held question", resume: false })
+        const waiting = yield* context.sessions.inbox(sessionID)
+
+        yield* context.sessions.resume(sessionID)
+
+        expect(waiting.map((item) => item.id)).toEqual([held.id])
+        expect(fake.calls).toBe(1)
+        expect(yield* context.sessions.inbox(sessionID)).toEqual([])
+        expect(yield* projected(context, sessionID)).toEqual([
+          { type: "user", text: "Held question" },
+          { type: "assistant", text: "Answered" },
         ])
       }),
     60_000,

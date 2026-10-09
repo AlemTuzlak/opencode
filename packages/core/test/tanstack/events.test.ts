@@ -23,6 +23,7 @@ import { Agent } from "@opencode/schema/agent"
 import { Event } from "@opencode/schema/event"
 import { Form } from "@opencode/schema/form"
 import { Model } from "@opencode/schema/model"
+import { Money } from "@opencode/schema/money"
 import { Permission } from "@opencode/schema/permission"
 import { Provider } from "@opencode/schema/provider"
 import { AbsolutePath } from "@opencode/schema/schema"
@@ -36,8 +37,9 @@ import type { EventMapper, HarnessEvent, Link, Output } from "@opencode/core/tan
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { tmpdirScoped } from "../fixture/tmpdir"
 import { testEffect } from "../lib/effect"
-import { normalizeTrace, readTrace, recordTrace } from "./trace"
-import type { Trace, TraceEvent, TraceValue } from "./trace"
+import { comparable, expectedTrace, harnessResult, rawInput } from "./compare"
+import type { Patch } from "./compare"
+import { normalizeTrace, recordTrace } from "./trace"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, Bus.node])))
 
@@ -177,96 +179,13 @@ const NOT_MAPPED = new Set([
   "form.replied",
 ])
 
-interface Patch {
-  readonly type: string
-  /** Data fields that pick the event. Without it, every event of the type. */
-  readonly where?: Readonly<Record<string, string>>
-  readonly set?: Readonly<Record<string, TraceValue>>
-  readonly unset?: ReadonlyArray<string>
-}
-
 /**
  * The golden trace as the mapper must produce it: without the events the
  * mapper does not own, without step snapshots (the harness stream has no
  * snapshot ids), and with the scenario patches.
  */
 const expected = (name: string, patches: ReadonlyArray<Patch> = []) =>
-  Effect.promise(() => readTrace(name)).pipe(
-    Effect.map((golden) =>
-      comparable(
-        golden
-          .filter((event) => !NOT_MAPPED.has(event.type))
-          .map((event) =>
-            [
-              { type: event.type, unset: event.type.startsWith("session.step.") ? ["snapshot"] : [] },
-              ...patches,
-            ].reduce(patchEvent, event),
-          ),
-      ),
-    ),
-  )
-
-function patchEvent(event: TraceEvent, patch: Patch): TraceEvent {
-  const data = event.data
-  if (event.type !== patch.type || !isObject(data)) return event
-  const matches = Object.entries(patch.where ?? {}).every(([key, value]) => data[key] === value)
-  if (!matches) return event
-  const kept = Object.entries(data).filter(([key]) => !(patch.unset ?? []).includes(key))
-  return { ...event, data: { ...Object.fromEntries(kept), ...patch.set } }
-}
-
-function isObject(value: TraceValue | undefined): value is { [key: string]: TraceValue } {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-}
-
-const PLACEHOLDER = /\b([a-z]+)_(\d+)\b/g
-const HASH_PLACEHOLDER = /<hash:(\d+)>/g
-
-/**
- * Renumbers the id and hash placeholders by first appearance, and drops the
- * durable `seq`. Both sides have events that the other side lacks, so the
- * numbers and the Bus sequence differ, while the order and the id relations
- * stay the same.
- */
-function comparable(trace: Trace) {
-  const ids = new Map<string, number>()
-  const hashes = new Map<string, number>()
-  const renumber = (text: string) =>
-    text
-      .replace(PLACEHOLDER, (_, prefix: string, n: string) => `${prefix}_${numbered(ids, n)}`)
-      .replace(HASH_PLACEHOLDER, (_, n: string) => `<hash:${numbered(hashes, n)}>`)
-  const walk = (value: TraceValue): TraceValue => {
-    if (typeof value === "string") return renumber(value)
-    if (Array.isArray(value)) return value.map(walk)
-    if (!isObject(value)) return value
-    const keys = Object.keys(value)
-      .filter((key) => key !== "seq")
-      .toSorted()
-    return Object.fromEntries(keys.map((key) => [renumber(key), walk(value[key])]))
-  }
-  return trace.map((event) => walk(event))
-}
-
-function numbered(seen: Map<string, number>, value: string) {
-  const existing = seen.get(value)
-  if (existing !== undefined) return existing
-  seen.set(value, seen.size + 1)
-  return seen.size
-}
-
-/** The raw tool input that the fake model streams. The old scripted model sent none, so its traces have "". */
-const rawInput = (toolCall: string, input: string): Patch => ({
-  type: "session.tool.input.ended",
-  where: { id: toolCall },
-  set: { text: input },
-})
-
-/** The harness tool writes another result text than opencode's own tool. */
-const harnessResult = (toolCall: string, text: string): Patch => ({
-  type: "session.tool.success",
-  where: { id: toolCall },
-  set: { content: [{ type: "text", text }] },
-})
+  expectedTrace(name, { drop: NOT_MAPPED, patches })
 
 const answerPermissions = (entry: HarnessEvent, context: Drive) => {
   const chunk = entry.event
@@ -461,7 +380,9 @@ describe("golden traces through the event mapper", () => {
  * `feed`, which maps scripted chunks of one operation and returns the
  * published events as `[type, data]`.
  */
-function scripted(input: { readonly links?: ReadonlyArray<Link>; readonly onLink?: (link: Link) => void } = {}) {
+function scripted(
+  input: Pick<Parameters<typeof createEventMapper>[0], "links" | "onLink" | "costs"> = {},
+) {
   const counts = new Map<string, number>()
   const next = (prefix: string) => {
     const count = (counts.get(prefix) ?? 0) + 1
@@ -642,6 +563,86 @@ describe("event mapper rules", () => {
         attempt: 1,
         at: 1000,
         error: { type: "provider.unknown", message: "overloaded" },
+      },
+    ])
+  })
+
+  test("a step with no provider cost costs what the catalog prices of its model say", () => {
+    // $2 for each million input tokens, and $10 for each million output tokens.
+    const price = (value: number) => Money.USDPerMillionTokens.make(value)
+    const { feed } = scripted({ costs: [{ input: price(2), output: price(10), cache: { read: price(0), write: price(0) } }] })
+    const usage = { promptTokens: 1_000, completionTokens: 500, cachedTokens: 0, cacheWriteTokens: 0 }
+    const events = feed(
+      chunks.started(),
+      chunks.runStarted(),
+      ...chunks.text("t-1", "Hi."),
+      chunks.custom(HARNESS_EVENTS.usage, { model: "fake/golden", usage }),
+      chunks.runFinished("stop"),
+      chunks.finished("completed"),
+    )
+    expect(events.find(([type]) => type === "session.step.ended")?.[1]).toMatchObject({ cost: 0.007 })
+  })
+
+  test("a declined call fails as on opencode's runtime, and its finished step fails with its usage", () => {
+    const { feed } = scripted()
+    const events = feed(
+      chunks.started(),
+      chunks.runStarted(),
+      ...chunks.toolCall("call-1", "edit_file", { path: "notes.txt" }),
+      chunks.runFinished("tool_calls"),
+      // The result that the harness `permissions()` plugin gives a call that the user rejects with no message.
+      chunks.toolResult("call-1", JSON.stringify({ error: "The user denied this tool call." }), {}),
+      chunks.finished("cancelled"),
+    )
+    const step = { sessionID: "ses_main", assistantMessageID: "msg_1" }
+    expect(events.slice(-3)).toEqual([
+      [
+        "session.tool.failed",
+        { ...step, id: "call-1", error: { type: "aborted", message: "The user declined this tool call" }, executed: false },
+      ],
+      [
+        "session.step.failed",
+        { ...step, error: { type: "aborted", message: "Step interrupted" }, cost: 0, tokens: noTokens, files: [] },
+      ],
+      ["session.execution.interrupted", { sessionID: "ses_main", reason: "user" }],
+    ])
+  })
+
+  test("a cancel interrupts with the reason given before it, and the next cancel is the user's", () => {
+    const { mapper, feed } = scripted()
+    const cancelled = () => feed(chunks.started(), chunks.runStarted(), chunks.finished("cancelled")).at(-1)
+
+    mapper.interrupting("inactivity")
+    const evicted = cancelled()
+    const stopped = cancelled()
+
+    expect(evicted).toEqual(["session.execution.interrupted", { sessionID: "ses_main", reason: "inactivity" }])
+    expect(stopped).toEqual(["session.execution.interrupted", { sessionID: "ses_main", reason: "user" }])
+  })
+
+  test("a question that no question tool call asks gets its form from its schema and its url", () => {
+    const { feed } = scripted()
+    const events = feed(
+      chunks.started(),
+      chunks.runStarted(),
+      chunks.custom(HARNESS_EVENTS.question, {
+        questionId: "q-1",
+        message: "Which code did you get?",
+        url: "https://pay.example/1",
+      }),
+    )
+    expect(events.at(-1)).toEqual([
+      "form.created",
+      {
+        form: {
+          id: "frm_1",
+          sessionID: "ses_main",
+          title: "Which code did you get?",
+          fields: [
+            { key: "page", type: "external", url: "https://pay.example/1", title: "Open this page, then answer." },
+            { key: "answer", title: "Which code did you get?", required: true, type: "string" },
+          ],
+        },
       },
     ])
   })
