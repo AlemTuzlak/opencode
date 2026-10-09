@@ -1,0 +1,65 @@
+{
+  "name": "@tanstack/ai-cloudflare",
+  "version": "0.2.3",
+  "description": "Cloudflare adapter for TanStack AI — Workers AI chat, embeddings, images, speech, transcription, and summarization over the AI binding or REST, with AI Gateway routing for any provider.",
+  "author": "Tanner Linsley",
+  "license": "MIT",
+  "homepage": "https://tanstack.com/ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TanStack/ai.git",
+    "directory": "packages/ai-cloudflare"
+  },
+  "bugs": {
+    "url": "https://github.com/TanStack/ai/issues"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/tannerlinsley"
+  },
+  "type": "module",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js"
+    },
+    "./byok": {
+      "types": "./dist/esm/byok.d.ts",
+      "import": "./dist/esm/byok.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "ai",
+    "ai-sdk",
+    "typescript",
+    "tanstack",
+    "cloudflare",
+    "workers-ai",
+    "ai-gateway",
+    "workers",
+    "adapter",
+    "chat",
+    "streaming",
+    "tool-calling",
+    "structured-outputs",
+    "embeddings",
+    "image-generation",
+    "text-to-speech",
+    "transcription"
+  ],
+  "dependencies": {
+    "@cloudflare/workers-types": "^4.20260317.1",
+    "@tanstack/ai-utils": "workspace:*",
+    "@tanstack/openai-base": "workspace:*",
+    "openai": "^7.30.0"
+  },
+  "peerDependencies": {
+    "@tanstack/ai": "^0.65.1"
+  }
+}

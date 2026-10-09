@@ -1,0 +1,1025 @@
+import { convertToolsToProviderFormat } from "../tools/tool-converter.js";
+import { buildGeminiUsage } from "../usage.js";
+import { geminiThinkingConfig } from "../text/reasoning.js";
+import { GEMINI_MODEL_REASONING } from "../model-reasoning.js";
+import { createGeminiClient, generateId, getGeminiApiKeyFromEnv } from "../utils/client.js";
+import "../utils/index.js";
+import { GEMINI_COMBINED_TOOLS_AND_SCHEMA_MODELS, GEMINI_MODEL_INPUT_MODALITIES } from "../model-meta.js";
+import { FinishReason, FunctionCallingConfigMode } from "@google/genai";
+import { EventType, fileReferenceFor, isFileSource, normalizeSystemPrompts } from "@tanstack/ai";
+import { hashToolCallId, orderedAssistantBlocks, sanitizeJsonArguments, sanitizeUnicode, tanstackMetadata, toRunErrorRawEvent, transformMessagesForReplay } from "@tanstack/ai/adapter-internals";
+import { BaseTextAdapter } from "@tanstack/ai/adapters";
+//#region src/adapters/text.ts
+/**
+* Fallback MIME types for URL-sourced media parts that don't specify one.
+*/
+var DEFAULT_MEDIA_MIME_TYPES = {
+	image: "image/jpeg",
+	audio: "audio/mp3",
+	video: "video/mp4",
+	document: "application/pdf"
+};
+/** Request-local replay for the selected Google API. */
+function prepareGeminiMessagesForReplay(messages, target) {
+	const major = target.model.toLowerCase().match(/^gemini(?:-live)?-(\d+)/)?.[1];
+	const requiresId = target.model.startsWith("claude-") || target.model.startsWith("gpt-oss-") || major !== void 0 && Number(major) >= 3;
+	return transformMessagesForReplay(messages, target, requiresId ? (id, { attempt }) => {
+		const normalized = id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
+		if (attempt === 0) return normalized;
+		const suffix = `_${hashToolCallId(`${id}:${attempt}`)}`;
+		return `${normalized.slice(0, 64 - suffix.length)}${suffix}`;
+	} : void 0).messages;
+}
+/** Keep source identity local to this call, including errors. */
+function withGeminiSource(chunk, source) {
+	return {
+		...chunk,
+		metadata: {
+			...chunk.metadata,
+			tanstack: {
+				...tanstackMetadata(chunk),
+				source
+			}
+		}
+	};
+}
+function getGroundingSources(metadata) {
+	const sources = /* @__PURE__ */ new Map();
+	for (const chunk of metadata.groundingChunks ?? []) {
+		const url = chunk.web?.uri;
+		if (!url) continue;
+		const existing = sources.get(url);
+		if (existing) {
+			if (!existing.title && chunk.web?.title) existing.title = chunk.web.title;
+			continue;
+		}
+		sources.set(url, {
+			url,
+			...chunk.web?.title ? { title: chunk.web.title } : {}
+		});
+	}
+	return [...sources.values()];
+}
+/** Maps `chat({ toolChoice })` to the Gemini function calling config. */
+function toGeminiFunctionCallingConfig(choice) {
+	if (choice === "auto") return { mode: FunctionCallingConfigMode.AUTO };
+	if (choice === "none") return { mode: FunctionCallingConfigMode.NONE };
+	if (choice === "required") return { mode: FunctionCallingConfigMode.ANY };
+	return {
+		mode: FunctionCallingConfigMode.ANY,
+		allowedFunctionNames: [choice.name]
+	};
+}
+/** True when any message carries a video part requesting agentic processing. */
+function hasAgenticVideo(messages) {
+	return messages.some((msg) => Array.isArray(msg.content) && msg.content.some((part) => part.type === "video" && part.metadata?.processing === "agentic"));
+}
+/** Convert a single content part to an Interactions API content block. */
+function contentPartToInteraction(part) {
+	if (part.type === "text") return {
+		type: "text",
+		text: sanitizeUnicode(part.content)
+	};
+	const source = part.source;
+	const mimeType = source.type === "data" ? source.mimeType : source.mimeType ?? DEFAULT_MEDIA_MIME_TYPES[part.type];
+	const base = isFileSource(source) ? {
+		uri: fileReferenceFor(source, "gemini"),
+		mime_type: mimeType
+	} : source.type === "data" ? {
+		data: source.value,
+		mime_type: mimeType
+	} : {
+		uri: source.value,
+		mime_type: mimeType
+	};
+	if (part.type === "video") {
+		const processing = part.metadata?.processing;
+		return {
+			type: "video",
+			...base,
+			...processing && { processing }
+		};
+	}
+	return {
+		type: part.type,
+		...base
+	};
+}
+/**
+* Build the Interactions API `input` from chat messages. Each user/assistant
+* message becomes a `user_input` / `model_output` step wrapping its content
+* blocks — the wrapping the Python SDK performs implicitly but the JS SDK
+* does not. Calls and results use the SDK's matching function steps.
+*/
+function buildInteractionsInput(messages) {
+	const steps = [];
+	const names = new Map(messages.flatMap((message) => (message.toolCalls ?? []).map((call) => [call.id, call.function.name])));
+	for (const msg of messages) {
+		if (msg.role === "tool") {
+			if (!msg.toolCallId) continue;
+			const result = Array.isArray(msg.content) ? msg.content.map((part) => {
+				if (part.type !== "text" && part.type !== "image") throw new Error(`Gemini Interactions function results do not support ${part.type} content`);
+				return contentPartToInteraction(part);
+			}) : sanitizeJsonArguments(sanitizeUnicode(msg.content ?? ""));
+			const name = names.get(msg.toolCallId);
+			steps.push({
+				type: "function_result",
+				call_id: msg.toolCallId,
+				...name && { name },
+				...msg.error !== void 0 && { is_error: true },
+				result
+			});
+			continue;
+		}
+		const stepType = msg.role === "assistant" ? "model_output" : "user_input";
+		const content = [];
+		const flush = () => {
+			if (content.length) steps.push({
+				type: stepType,
+				content: content.splice(0)
+			});
+		};
+		const thought = (thinking) => {
+			flush();
+			steps.push({
+				type: "thought",
+				...thinking.signature && { signature: thinking.signature },
+				summary: thinking.content ? [{
+					type: "text",
+					text: sanitizeUnicode(thinking.content)
+				}] : []
+			});
+		};
+		const call = (toolCall) => {
+			const metadata = toolCall.metadata;
+			if (metadata?.providerExecuted) return;
+			flush();
+			const signature = metadata?.thoughtSignature;
+			if (typeof signature === "string" && signature) steps.push({
+				type: "thought",
+				signature,
+				summary: []
+			});
+			const args = JSON.parse(sanitizeJsonArguments(toolCall.function.arguments || "{}"));
+			if (typeof args !== "object" || args === null || Array.isArray(args)) throw new Error(`Gemini Interactions function ${toolCall.function.name} requires object arguments`);
+			steps.push({
+				type: "function_call",
+				id: toolCall.id,
+				name: toolCall.function.name,
+				arguments: { ...args }
+			});
+		};
+		const ordered = msg.role === "assistant" ? orderedAssistantBlocks(msg) : void 0;
+		if (ordered) {
+			for (const block of ordered) if (block.type === "thinking") thought(block.thinking);
+			else if (block.type === "text") content.push({
+				type: "text",
+				text: sanitizeUnicode(block.text)
+			});
+			else call(block.toolCall);
+			flush();
+			continue;
+		}
+		for (const thinking of msg.thinking ?? []) if (thinking.content || thinking.signature) thought(thinking);
+		if (Array.isArray(msg.content)) for (const part of msg.content) content.push(contentPartToInteraction(part));
+		else if (msg.content) content.push({
+			type: "text",
+			text: sanitizeUnicode(msg.content)
+		});
+		flush();
+		for (const toolCall of msg.toolCalls ?? []) call(toolCall);
+	}
+	return steps;
+}
+/**
+* Gemini Text (Chat) Adapter
+*
+* Tree-shakeable adapter for Gemini chat/text completion functionality.
+* Import only what you need for smaller bundle sizes.
+*/
+var GeminiTextAdapter = class extends BaseTextAdapter {
+	kind = "text";
+	name = "gemini";
+	provider;
+	api;
+	supportsFileSources = true;
+	inputModalities = GEMINI_MODEL_INPUT_MODALITIES[this.model];
+	client;
+	/** `config.reasoning`, which wins over `GEMINI_MODEL_REASONING`. */
+	configReasoning;
+	constructor(config, model) {
+		super({}, model);
+		const { reasoning, ...clientConfig } = config;
+		this.configReasoning = reasoning;
+		this.provider = config.vertexai === true || config.enterprise === true ? "google-vertex" : "google";
+		this.api = this.provider === "google-vertex" ? "google-vertex" : "google-generative-ai";
+		this.client = createGeminiClient(clientConfig);
+	}
+	async *chatStream(options) {
+		const source = {
+			provider: this.provider,
+			api: hasAgenticVideo(options.messages) ? "google-interactions" : this.api,
+			model: options.model
+		};
+		for await (const chunk of this.chatStreamRequest(options)) yield withGeminiSource(chunk, source);
+	}
+	async *chatStreamRequest(options) {
+		if (hasAgenticVideo(options.messages)) {
+			yield* this.interactionsStream(options);
+			return;
+		}
+		const mappedOptions = this.mapCommonOptionsToGemini(options);
+		const { logger } = options;
+		try {
+			logger.request(`activity=chat provider=gemini model=${this.model} messages=${options.messages.length} tools=${options.tools?.length ?? 0} stream=true`, {
+				provider: "gemini",
+				model: this.model
+			});
+			const result = await this.client.models.generateContentStream(mappedOptions);
+			yield* this.processStreamChunks(result, options, logger);
+		} catch (error) {
+			const rawEvent = toRunErrorRawEvent(error);
+			logger.errors("gemini.chatStream fatal", {
+				error,
+				source: "gemini.chatStream"
+			});
+			yield {
+				type: EventType.RUN_ERROR,
+				model: options.model,
+				timestamp: Date.now(),
+				message: error instanceof Error ? error.message : "An unknown error occurred during the chat stream.",
+				...rawEvent !== void 0 && { rawEvent },
+				error: { message: error instanceof Error ? error.message : "An unknown error occurred during the chat stream." }
+			};
+		}
+	}
+	/**
+	* Agentic video-understanding path via the Interactions API.
+	*
+	* The Interactions API (unlike `generateContent`) requires message parts to
+	* be wrapped in `user_input` / `model_output` steps, and it accepts the
+	* `processing: 'agentic'` video flag. This is a non-streaming call whose
+	* single text result is re-emitted as AG-UI stream chunks.
+	*/
+	async *interactionsStream(options) {
+		const model = options.model;
+		const { logger } = options;
+		const runId = options.runId ?? generateId(this.name);
+		const threadId = options.threadId ?? generateId(this.name);
+		const messageId = generateId(this.name);
+		try {
+			logger.request(`activity=chat provider=gemini model=${model} messages=${options.messages.length} mode=interactions-agentic-video`, {
+				provider: "gemini",
+				model
+			});
+			const normalizedPrompts = normalizeSystemPrompts(options.systemPrompts);
+			const systemInstruction = normalizedPrompts.length > 0 ? sanitizeUnicode(normalizedPrompts.map((p) => p.content).join("\n")) : void 0;
+			const input = buildInteractionsInput(prepareGeminiMessagesForReplay(options.messages, {
+				provider: this.provider,
+				api: "google-interactions",
+				model
+			}));
+			const interaction = await this.client.interactions.create({
+				model,
+				...systemInstruction !== void 0 && { system_instruction: systemInstruction },
+				input
+			});
+			const text = interaction.output_text ?? "";
+			const responseMetadata = { tanstack: {
+				...interaction.id && { responseId: interaction.id },
+				...interaction.model && { model: interaction.model }
+			} };
+			yield {
+				type: EventType.RUN_STARTED,
+				metadata: responseMetadata,
+				runId,
+				threadId,
+				model,
+				timestamp: Date.now(),
+				parentRunId: options.parentRunId
+			};
+			yield {
+				type: EventType.TEXT_MESSAGE_START,
+				messageId,
+				model,
+				timestamp: Date.now(),
+				role: "assistant"
+			};
+			if (text) yield {
+				type: EventType.TEXT_MESSAGE_CONTENT,
+				messageId,
+				model,
+				timestamp: Date.now(),
+				delta: text,
+				content: text
+			};
+			yield {
+				type: EventType.TEXT_MESSAGE_END,
+				messageId,
+				model,
+				timestamp: Date.now()
+			};
+			yield {
+				type: EventType.RUN_FINISHED,
+				metadata: responseMetadata,
+				runId,
+				threadId,
+				model,
+				timestamp: Date.now(),
+				finishReason: "stop"
+			};
+		} catch (error) {
+			const rawEvent = toRunErrorRawEvent(error);
+			logger.errors("gemini.interactionsStream fatal", {
+				error,
+				source: "gemini.interactionsStream"
+			});
+			yield {
+				type: EventType.RUN_ERROR,
+				model,
+				timestamp: Date.now(),
+				message: error instanceof Error ? error.message : "An unknown error occurred during the chat stream.",
+				...rawEvent !== void 0 && { rawEvent },
+				error: { message: error instanceof Error ? error.message : "An unknown error occurred during the chat stream." }
+			};
+		}
+	}
+	/**
+	* Generate structured output using Gemini's native JSON response format.
+	* Uses responseMimeType: 'application/json' and responseSchema for structured output.
+	* The outputSchema is already JSON Schema (converted in the ai layer).
+	*/
+	async structuredOutput(options) {
+		const { chatOptions, outputSchema } = options;
+		const { logger } = chatOptions;
+		const mappedOptions = this.mapCommonOptionsToGemini(chatOptions);
+		try {
+			logger.request(`activity=chat provider=gemini model=${this.model} messages=${chatOptions.messages.length} tools=${chatOptions.tools?.length ?? 0} stream=false`, {
+				provider: "gemini",
+				model: this.model
+			});
+			const result = await this.client.models.generateContent({
+				...mappedOptions,
+				config: {
+					...mappedOptions.config,
+					responseMimeType: "application/json",
+					responseSchema: outputSchema
+				}
+			});
+			if (result.candidates?.[0]?.finishReason === FinishReason.MAX_TOKENS) throw new Error("gemini.structuredOutput: the response was cut off because the maximum token limit was reached (finishReason=MAX_TOKENS); raise modelOptions.maxOutputTokens");
+			const rawText = this.extractTextFromResponse(result);
+			let parsed;
+			try {
+				parsed = JSON.parse(rawText);
+			} catch {
+				throw new Error(jsonContentParseError(rawText, "structured output"));
+			}
+			return {
+				data: parsed,
+				rawText,
+				...result.responseId && { responseId: result.responseId },
+				...result.modelVersion && { model: result.modelVersion },
+				usage: result.usageMetadata ? buildGeminiUsage(result.usageMetadata) : void 0
+			};
+		} catch (error) {
+			logger.errors("gemini.structuredOutput fatal", {
+				error,
+				source: "gemini.structuredOutput"
+			});
+			throw new Error(error instanceof Error ? error.message : "An unknown error occurred during structured output generation.");
+		}
+	}
+	/**
+	* Stream schema-constrained JSON from Gemini natively.
+	*
+	* `chat({ outputSchema, stream: true })` calls this when the adapter
+	* implements it. Without it, the engine buffers `structuredOutput()` and
+	* emits one synthetic delta.
+	*/
+	async *structuredOutputStream(options) {
+		const source = {
+			provider: this.provider,
+			api: this.api,
+			model: options.chatOptions.model
+		};
+		for await (const chunk of this.structuredOutputRequestStream(options)) yield withGeminiSource(chunk, source);
+	}
+	async *structuredOutputRequestStream(options) {
+		const { chatOptions: requestedChatOptions, outputSchema } = options;
+		const chatOptions = {
+			...requestedChatOptions,
+			runId: requestedChatOptions.runId ?? generateId(this.name)
+		};
+		const mappedOptions = this.mapCommonOptionsToGemini(chatOptions);
+		try {
+			chatOptions.logger.request(`activity=structuredOutputStream provider=gemini model=${this.model} messages=${chatOptions.messages.length}`, {
+				provider: "gemini",
+				model: this.model
+			});
+			const result = await this.client.models.generateContentStream({
+				...mappedOptions,
+				config: {
+					...mappedOptions.config,
+					responseMimeType: "application/json",
+					responseSchema: outputSchema
+				}
+			});
+			let rawText = "";
+			let finished;
+			let failed = false;
+			for await (const chunk of this.processStreamChunks(result, chatOptions, chatOptions.logger)) {
+				if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) rawText += chunk.delta;
+				if (chunk.type === EventType.RUN_ERROR) failed = true;
+				if (chunk.type === EventType.RUN_FINISHED) finished = chunk;
+				else yield chunk;
+			}
+			if (failed) return;
+			if (!finished) {
+				yield structuredStreamError(chatOptions, "Gemini structured-output stream ended without a terminal event", "truncated-stream");
+				return;
+			}
+			if (!rawText) {
+				yield structuredStreamError(chatOptions, "Gemini structured-output stream contained no content", "empty-response");
+				return;
+			}
+			let object;
+			try {
+				object = JSON.parse(rawText);
+			} catch {
+				yield structuredStreamError(chatOptions, jsonContentParseError(rawText, "Gemini structured-output stream"), "parse-error");
+				return;
+			}
+			yield {
+				type: EventType.CUSTOM,
+				name: "structured-output.complete",
+				value: {
+					object,
+					raw: rawText
+				},
+				model: chatOptions.model,
+				timestamp: Date.now()
+			};
+			yield {
+				...finished,
+				timestamp: Date.now()
+			};
+		} catch (error) {
+			const rawEvent = toRunErrorRawEvent(error);
+			const message = error instanceof Error ? error.message : "An unknown error occurred during structured output streaming.";
+			chatOptions.logger.errors("gemini.structuredOutputStream fatal", {
+				error,
+				source: "gemini.structuredOutputStream"
+			});
+			yield {
+				...structuredStreamError(chatOptions, message, "provider-error"),
+				...rawEvent !== void 0 && { rawEvent }
+			};
+		}
+	}
+	/**
+	* Extract text content from a non-streaming response
+	*/
+	extractTextFromResponse(response) {
+		let textContent = "";
+		if (response.candidates?.[0]?.content?.parts) {
+			for (const part of response.candidates[0].content.parts) if (part.text) textContent += part.text;
+		}
+		return textContent;
+	}
+	async *processStreamChunks(result, options, logger) {
+		const model = options.model;
+		let responseId;
+		let reportedModel;
+		let accumulatedContent = "";
+		let accumulatedThinking = "";
+		const toolCallMap = /* @__PURE__ */ new Map();
+		let nextToolIndex = 0;
+		const runId = options.runId ?? generateId(this.name);
+		const threadId = options.threadId ?? generateId(this.name);
+		const messageId = generateId(this.name);
+		let stepId = null;
+		let reasoningMessageId = null;
+		let hasClosedReasoning = false;
+		let hasEmittedRunStarted = false;
+		let hasEmittedTextMessageStart = false;
+		let hasEmittedStepStarted = false;
+		let groundingMetadata;
+		let groundingCallEmitted = false;
+		const adapterName = this.name;
+		const emitGroundingToolCall = function* () {
+			if (!groundingMetadata || groundingCallEmitted) return;
+			const sources = getGroundingSources(groundingMetadata);
+			if (!(sources.length > 0 || (groundingMetadata.webSearchQueries?.length ?? 0) > 0 || groundingMetadata.searchEntryPoint !== void 0)) return;
+			groundingCallEmitted = true;
+			const toolCallId = generateId(adapterName);
+			const metadata = {
+				providerExecuted: true,
+				sources,
+				gemini: { groundingMetadata }
+			};
+			yield {
+				type: EventType.TOOL_CALL_START,
+				toolCallId,
+				toolCallName: "google_search",
+				toolName: "google_search",
+				parentMessageId: messageId,
+				model,
+				timestamp: Date.now(),
+				index: toolCallMap.size,
+				metadata
+			};
+			yield {
+				type: EventType.TOOL_CALL_END,
+				toolCallId,
+				toolCallName: "google_search",
+				toolName: "google_search",
+				model,
+				timestamp: Date.now(),
+				input: { ...groundingMetadata.webSearchQueries && { queries: groundingMetadata.webSearchQueries } }
+			};
+		};
+		for await (const chunk of result) {
+			if (chunk.responseId) responseId = chunk.responseId;
+			if (chunk.modelVersion) reportedModel = chunk.modelVersion;
+			logger.provider(`provider=gemini`, { chunk });
+			if (!hasEmittedRunStarted) {
+				hasEmittedRunStarted = true;
+				yield {
+					type: EventType.RUN_STARTED,
+					metadata: { tanstack: {
+						...responseId && { responseId },
+						...reportedModel && { model: reportedModel }
+					} },
+					runId,
+					threadId,
+					model,
+					timestamp: Date.now(),
+					parentRunId: options.parentRunId
+				};
+			}
+			if (chunk.candidates?.[0]?.groundingMetadata) groundingMetadata = chunk.candidates[0].groundingMetadata;
+			if (chunk.candidates?.[0]?.content?.parts) {
+				const parts = chunk.candidates[0].content.parts;
+				for (const part of parts) {
+					if (part.text) {
+						if (part.thought) {
+							if (!hasEmittedStepStarted) {
+								hasEmittedStepStarted = true;
+								stepId = generateId(this.name);
+								reasoningMessageId = generateId(this.name);
+								yield {
+									type: EventType.REASONING_START,
+									messageId: reasoningMessageId,
+									model,
+									timestamp: Date.now()
+								};
+								yield {
+									type: EventType.REASONING_MESSAGE_START,
+									messageId: reasoningMessageId,
+									role: "reasoning",
+									model,
+									timestamp: Date.now()
+								};
+								yield {
+									type: EventType.STEP_STARTED,
+									stepName: stepId,
+									stepId,
+									model,
+									timestamp: Date.now(),
+									stepType: "thinking"
+								};
+							}
+							accumulatedThinking += part.text;
+							if (!reasoningMessageId) continue;
+							yield {
+								type: EventType.REASONING_MESSAGE_CONTENT,
+								messageId: reasoningMessageId,
+								delta: part.text,
+								model,
+								timestamp: Date.now()
+							};
+							yield {
+								type: EventType.STEP_FINISHED,
+								stepName: stepId || generateId(this.name),
+								stepId: stepId || generateId(this.name),
+								model,
+								timestamp: Date.now(),
+								delta: part.text,
+								content: accumulatedThinking
+							};
+						} else if (part.text.trim()) {
+							if (reasoningMessageId && !hasClosedReasoning) {
+								hasClosedReasoning = true;
+								yield {
+									type: EventType.REASONING_MESSAGE_END,
+									messageId: reasoningMessageId,
+									model,
+									timestamp: Date.now()
+								};
+								yield {
+									type: EventType.REASONING_END,
+									messageId: reasoningMessageId,
+									model,
+									timestamp: Date.now()
+								};
+							}
+							if (!hasEmittedTextMessageStart) {
+								hasEmittedTextMessageStart = true;
+								yield {
+									type: EventType.TEXT_MESSAGE_START,
+									messageId,
+									model,
+									timestamp: Date.now(),
+									role: "assistant"
+								};
+							}
+							accumulatedContent += part.text;
+							yield {
+								type: EventType.TEXT_MESSAGE_CONTENT,
+								messageId,
+								model,
+								timestamp: Date.now(),
+								delta: part.text,
+								content: accumulatedContent
+							};
+						}
+					}
+					const functionCall = part.functionCall;
+					if (functionCall) {
+						const toolCallId = functionCall.id || `${functionCall.name}_${Date.now()}_${nextToolIndex}`;
+						const functionArgs = functionCall.args !== void 0 ? functionCall.args : {};
+						const partThoughtSignature = part.thoughtSignature || void 0;
+						let toolCallData = toolCallMap.get(toolCallId);
+						if (!toolCallData) {
+							toolCallData = {
+								name: functionCall.name || "",
+								args: JSON.stringify(functionArgs),
+								index: nextToolIndex++,
+								started: false,
+								...partThoughtSignature !== void 0 && { thoughtSignature: partThoughtSignature }
+							};
+							toolCallMap.set(toolCallId, toolCallData);
+						} else {
+							if (!toolCallData.thoughtSignature && partThoughtSignature) toolCallData.thoughtSignature = partThoughtSignature;
+							try {
+								const existingArgs = JSON.parse(toolCallData.args);
+								const newArgs = functionArgs;
+								const mergedArgs = existingArgs !== null && typeof existingArgs === "object" && !Array.isArray(existingArgs) && newArgs !== null && typeof newArgs === "object" && !Array.isArray(newArgs) ? {
+									...existingArgs,
+									...newArgs
+								} : newArgs;
+								toolCallData.args = JSON.stringify(mergedArgs);
+							} catch {
+								toolCallData.args = JSON.stringify(functionArgs);
+							}
+						}
+						if (!toolCallData.started) {
+							toolCallData.started = true;
+							yield {
+								type: EventType.TOOL_CALL_START,
+								toolCallId,
+								toolCallName: toolCallData.name,
+								toolName: toolCallData.name,
+								parentMessageId: messageId,
+								model,
+								timestamp: Date.now(),
+								index: toolCallData.index,
+								...toolCallData.thoughtSignature && { metadata: { thoughtSignature: toolCallData.thoughtSignature } }
+							};
+						}
+						yield {
+							type: EventType.TOOL_CALL_ARGS,
+							toolCallId,
+							model,
+							timestamp: Date.now(),
+							delta: toolCallData.args,
+							args: toolCallData.args
+						};
+					}
+				}
+			} else if (chunk.data && chunk.data.trim()) {
+				if (!hasEmittedTextMessageStart) {
+					hasEmittedTextMessageStart = true;
+					yield {
+						type: EventType.TEXT_MESSAGE_START,
+						messageId,
+						model,
+						timestamp: Date.now(),
+						role: "assistant"
+					};
+				}
+				accumulatedContent += chunk.data;
+				yield {
+					type: EventType.TEXT_MESSAGE_CONTENT,
+					messageId,
+					model,
+					timestamp: Date.now(),
+					delta: chunk.data,
+					content: accumulatedContent
+				};
+			}
+			if (chunk.candidates?.[0]?.finishReason) {
+				yield* emitGroundingToolCall();
+				const finishReason = chunk.candidates[0].finishReason;
+				for (const [toolCallId, toolCallData] of toolCallMap.entries()) {
+					let parsedInput;
+					try {
+						parsedInput = JSON.parse(toolCallData.args);
+					} catch {
+						parsedInput = void 0;
+					}
+					yield {
+						type: EventType.TOOL_CALL_END,
+						toolCallId,
+						toolCallName: toolCallData.name,
+						toolName: toolCallData.name,
+						model,
+						timestamp: Date.now(),
+						args: toolCallData.args,
+						...parsedInput !== void 0 && { input: parsedInput }
+					};
+				}
+				if (toolCallMap.size > 0) hasEmittedTextMessageStart = false;
+				if (finishReason === FinishReason.MAX_TOKENS) yield {
+					type: EventType.RUN_ERROR,
+					runId,
+					model,
+					timestamp: Date.now(),
+					message: "The response was cut off because the maximum token limit was reached.",
+					code: "max_tokens",
+					error: {
+						message: "The response was cut off because the maximum token limit was reached.",
+						code: "max_tokens"
+					}
+				};
+				if (reasoningMessageId && !hasClosedReasoning) {
+					hasClosedReasoning = true;
+					yield {
+						type: EventType.REASONING_MESSAGE_END,
+						messageId: reasoningMessageId,
+						model,
+						timestamp: Date.now()
+					};
+					yield {
+						type: EventType.REASONING_END,
+						messageId: reasoningMessageId,
+						model,
+						timestamp: Date.now()
+					};
+				}
+				if (hasEmittedTextMessageStart) yield {
+					type: EventType.TEXT_MESSAGE_END,
+					messageId,
+					model,
+					timestamp: Date.now()
+				};
+				yield {
+					type: EventType.RUN_FINISHED,
+					metadata: { tanstack: {
+						...responseId && { responseId },
+						...reportedModel && { model: reportedModel }
+					} },
+					runId,
+					threadId,
+					model,
+					timestamp: Date.now(),
+					finishReason: toolCallMap.size > 0 ? "tool_calls" : "stop",
+					...chunk.usageMetadata && { usage: buildGeminiUsage(chunk.usageMetadata) }
+				};
+			}
+		}
+		yield* emitGroundingToolCall();
+	}
+	convertContentPartToGemini(part) {
+		switch (part.type) {
+			case "text": return { text: sanitizeUnicode(part.content) };
+			case "image":
+			case "audio":
+			case "video":
+			case "document": {
+				const fileUri = isFileSource(part.source) ? fileReferenceFor(part.source, this.name) : part.source.value;
+				const geminiPart = part.source.type === "data" ? { inlineData: {
+					data: part.source.value,
+					mimeType: part.source.mimeType
+				} } : { fileData: {
+					fileUri,
+					mimeType: part.source.mimeType ?? DEFAULT_MEDIA_MIME_TYPES[part.type]
+				} };
+				if (part.type === "video") {
+					const meta = part.metadata;
+					const videoMetadata = {
+						...meta?.fps !== void 0 && { fps: meta.fps },
+						...meta?.startOffset !== void 0 && { startOffset: meta.startOffset },
+						...meta?.endOffset !== void 0 && { endOffset: meta.endOffset }
+					};
+					if (Object.keys(videoMetadata).length > 0) geminiPart.videoMetadata = videoMetadata;
+				}
+				return geminiPart;
+			}
+			default: throw new Error(`Unsupported content part type: ${part.type}`);
+		}
+	}
+	formatMessages(messages) {
+		const toolCallIdToName = /* @__PURE__ */ new Map();
+		for (const msg of messages) if (msg.role === "assistant" && msg.toolCalls) for (const tc of msg.toolCalls) toolCallIdToName.set(tc.id, tc.function.name);
+		const formatted = messages.map((msg) => {
+			const role = msg.role === "assistant" ? "model" : "user";
+			const parts = [];
+			if (Array.isArray(msg.content)) for (const contentPart of msg.content) parts.push(this.convertContentPartToGemini(contentPart));
+			else if (msg.content && msg.role !== "tool") parts.push({ text: sanitizeUnicode(msg.content) });
+			if (msg.role === "assistant" && msg.toolCalls?.length) for (const toolCall of msg.toolCalls) {
+				const metadata = toolCall.metadata;
+				if (metadata?.providerExecuted) continue;
+				let parsedArgs = {};
+				try {
+					parsedArgs = toolCall.function.arguments ? JSON.parse(sanitizeJsonArguments(toolCall.function.arguments)) : {};
+				} catch {
+					parsedArgs = {};
+				}
+				const thoughtSignature = metadata?.thoughtSignature;
+				const part = { functionCall: {
+					id: toolCall.id,
+					name: toolCall.function.name,
+					args: parsedArgs
+				} };
+				if (thoughtSignature) part.thoughtSignature = thoughtSignature;
+				parts.push(part);
+			}
+			if (msg.role === "tool" && msg.toolCallId) {
+				const functionName = toolCallIdToName.get(msg.toolCallId) || msg.toolCallId;
+				const toolContent = msg.content;
+				if (Array.isArray(toolContent)) {
+					const textChunks = [];
+					const mediaParts = [];
+					for (const part of toolContent) if (part.type === "text") textChunks.push(part.content);
+					else if (part.source.type === "data") mediaParts.push({ inlineData: {
+						data: part.source.value,
+						mimeType: part.source.mimeType
+					} });
+					else {
+						const fileUri = isFileSource(part.source) ? fileReferenceFor(part.source, this.name) : part.source.value;
+						const defaultMimeType = {
+							image: "image/jpeg",
+							audio: "audio/mp3",
+							video: "video/mp4",
+							document: "application/pdf"
+						}[part.type];
+						mediaParts.push({ fileData: {
+							fileUri,
+							mimeType: part.source.mimeType ?? defaultMimeType
+						} });
+					}
+					parts.push({ functionResponse: {
+						id: msg.toolCallId,
+						name: functionName,
+						response: { content: sanitizeJsonArguments(sanitizeUnicode(textChunks.join("\n"))) },
+						...mediaParts.length > 0 && { parts: mediaParts }
+					} });
+				} else parts.push({ functionResponse: {
+					id: msg.toolCallId,
+					name: functionName,
+					response: { content: sanitizeJsonArguments(sanitizeUnicode(toolContent || "")) }
+				} });
+			}
+			if (msg.role === "assistant") {
+				const thoughtPart = (thinking) => ({
+					thought: true,
+					text: sanitizeUnicode(thinking.content),
+					...thinking.signature && { thoughtSignature: thinking.signature }
+				});
+				const ordered = orderedAssistantBlocks(msg);
+				if (ordered) {
+					const calls = new Map(parts.flatMap((part) => part.functionCall?.id ? [[part.functionCall.id, part]] : []));
+					parts.length = 0;
+					for (const block of ordered) if (block.type === "text") parts.push({ text: sanitizeUnicode(block.text) });
+					else if (block.type === "thinking") parts.push(thoughtPart(block.thinking));
+					else {
+						const call = calls.get(block.toolCall.id);
+						if (call) parts.push(call);
+					}
+				} else parts.unshift(...(msg.thinking ?? []).filter((thinking) => thinking.content || thinking.signature).map(thoughtPart));
+			}
+			return {
+				role,
+				parts: parts.length > 0 ? parts : [{ text: "" }]
+			};
+		});
+		return this.mergeConsecutiveSameRoleMessages(formatted);
+	}
+	/**
+	* Merge consecutive messages of the same role into a single message.
+	* Gemini's API requires strictly alternating user/model roles.
+	* Tool results are mapped to role:'user', which can collide with actual
+	* user messages in multi-turn conversations.
+	*
+	* Also filters out empty model messages (e.g., from a previous failed request)
+	* and deduplicates functionResponse parts with the same id (tool call ID).
+	*/
+	mergeConsecutiveSameRoleMessages(messages) {
+		const merged = [];
+		for (const msg of messages) {
+			const parts = msg.parts || [];
+			if (msg.role === "model") {
+				if (!(parts.length > 0 && !parts.every((p) => p.text === "" && !p.thoughtSignature))) continue;
+			}
+			const prev = merged[merged.length - 1];
+			if (prev && prev.role === msg.role) prev.parts = [...prev.parts || [], ...parts];
+			else merged.push({
+				...msg,
+				parts: [...parts]
+			});
+		}
+		for (const msg of merged) {
+			if (!msg.parts) continue;
+			const seenFunctionResponseIds = /* @__PURE__ */ new Set();
+			msg.parts = msg.parts.filter((part) => {
+				if ("functionResponse" in part && part.functionResponse?.id) {
+					if (seenFunctionResponseIds.has(part.functionResponse.id)) return false;
+					seenFunctionResponseIds.add(part.functionResponse.id);
+				}
+				return true;
+			});
+		}
+		return merged;
+	}
+	mapCommonOptionsToGemini(options) {
+		const modelOpts = options.modelOptions ?? {};
+		const mappedThinkingConfig = geminiThinkingConfig(options.model, options.reasoning, this.configReasoning ?? GEMINI_MODEL_REASONING[options.model]);
+		const normalizedPrompts = normalizeSystemPrompts(options.systemPrompts);
+		const systemInstruction = normalizedPrompts.length > 0 ? sanitizeUnicode(normalizedPrompts.map((p) => p.content).join("\n")) : void 0;
+		const combinedSchema = options.outputSchema;
+		const combinedSchemaConfig = combinedSchema ? {
+			responseMimeType: "application/json",
+			responseSchema: combinedSchema
+		} : void 0;
+		const tools = convertToolsToProviderFormat(options.tools);
+		const functionCallingConfig = options.toolChoice !== void 0 && tools.some((tool) => "functionDeclarations" in tool) ? toGeminiFunctionCallingConfig(options.toolChoice) : void 0;
+		return {
+			model: options.model,
+			contents: this.formatMessages(prepareGeminiMessagesForReplay(options.messages, {
+				provider: this.provider,
+				api: this.api,
+				model: options.model
+			})),
+			config: {
+				...modelOpts,
+				...functionCallingConfig !== void 0 && { toolConfig: {
+					functionCallingConfig,
+					...options.modelOptions?.toolConfig
+				} },
+				...mappedThinkingConfig !== void 0 && { thinkingConfig: mappedThinkingConfig },
+				...systemInstruction !== void 0 && { systemInstruction },
+				tools,
+				...combinedSchemaConfig ?? {},
+				...options.request?.signal != null && { abortSignal: options.request.signal }
+			}
+		};
+	}
+	/**
+	* Gemini 3.x natively combines `tools` + `responseSchema` in a single
+	* streaming `generateContentStream` call (issue #605). Gemini 2.x is
+	* documented as brittle for the combination and keeps the engine's
+	* legacy finalization path.
+	*/
+	supportsCombinedToolsAndSchema() {
+		return GEMINI_COMBINED_TOOLS_AND_SCHEMA_MODELS.has(this.model);
+	}
+};
+function jsonContentParseError(rawText, label) {
+	return `Failed to parse ${label} as JSON. Content: ${rawText.slice(0, 200)}${rawText.length > 200 ? "..." : ""}`;
+}
+function structuredStreamError(options, message, code) {
+	return {
+		type: EventType.RUN_ERROR,
+		runId: options.runId,
+		model: options.model,
+		timestamp: Date.now(),
+		message,
+		code,
+		error: {
+			message,
+			code
+		}
+	};
+}
+/**
+* Creates a Gemini text adapter with explicit API key.
+* Type resolution happens here at the call site.
+*/
+function createGeminiChat(model, apiKey, config) {
+	return new GeminiTextAdapter({
+		apiKey,
+		...config
+	}, model);
+}
+/**
+* Creates a Gemini text adapter with automatic API key detection.
+* Type resolution happens here at the call site.
+*/
+function geminiText(model, config) {
+	return createGeminiChat(model, getGeminiApiKeyFromEnv(), config);
+}
+//#endregion
+export { GeminiTextAdapter, createGeminiChat, geminiText, prepareGeminiMessagesForReplay, withGeminiSource };
+
+//# sourceMappingURL=text.js.map

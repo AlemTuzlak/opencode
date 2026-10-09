@@ -1,0 +1,60 @@
+{
+  "name": "@tanstack/ai-mistral",
+  "version": "0.6.14",
+  "type": "module",
+  "description": "Mistral adapter for TanStack AI",
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TanStack/ai.git",
+    "directory": "packages/ai-mistral"
+  },
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js"
+    },
+    "./byok": {
+      "types": "./dist/esm/byok.d.ts",
+      "import": "./dist/esm/byok.js"
+    },
+    "./adapters/text": {
+      "types": "./dist/esm/adapters/text.d.ts",
+      "import": "./dist/esm/adapters/text.js"
+    },
+    "./adapters/embedding": {
+      "types": "./dist/esm/adapters/embedding.d.ts",
+      "import": "./dist/esm/adapters/embedding.js"
+    },
+    "./vertex": {
+      "types": "./dist/esm/vertex/index.d.ts",
+      "import": "./dist/esm/vertex/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "ai",
+    "mistral",
+    "tanstack",
+    "adapter"
+  ],
+  "peerDependencies": {
+    "google-auth-library": "^10.5.0",
+    "@tanstack/ai": "^0.65.1"
+  },
+  "peerDependenciesMeta": {
+    "google-auth-library": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@mistralai/mistralai": "2.2.0",
+    "@tanstack/ai-utils": "workspace:*"
+  }
+}

@@ -1,0 +1,1 @@
+{"version":3,"file":"errors.js","names":[],"sources":["../../src/errors.ts"],"sourcesContent":["export class VertexAuthError extends Error {\n  constructor(message: string) {\n    super(message)\n    this.name = 'VertexAuthError'\n  }\n}\n"],"mappings":";AAAA,IAAa,kBAAb,cAAqC,MAAM;CACzC,YAAY,SAAiB;EAC3B,MAAM,OAAO;EACb,KAAK,OAAO;CACd;AACF"}

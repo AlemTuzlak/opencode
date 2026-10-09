@@ -1,0 +1,11 @@
+export { AnthropicTextAdapter, anthropicText, createAnthropicChat, createAnthropicChatWithClient, type AnthropicModelId, type AnthropicTextAdapterConfig, type AnthropicTextAdapterFor, type AnthropicTextConfig, type AnthropicTextProviderOptions, } from './adapters/text.js';
+export type { AnthropicMessagesClient } from './utils/client.js';
+export type { AnthropicSystemPromptMetadata } from './text/text-provider-options.js';
+export { anthropicSummarize, createAnthropicSummarize, type AnthropicSummarizeConfig, type AnthropicSummarizeModel, } from './adapters/summarize.js';
+export { AnthropicFilesAdapter, createAnthropicFiles, anthropicFiles, type AnthropicFilesConfig, } from './adapters/files.js';
+export type { AnthropicChatModel, AnthropicVertexChatModel, AnthropicChatModelProviderOptionsByName, AnthropicChatModelToolCapabilitiesByName, AnthropicModelInputModalitiesByName, } from './model-meta.js';
+export { ANTHROPIC_MODELS, ANTHROPIC_VERTEX_CHAT_MODELS, ANTHROPIC_COMBINED_TOOLS_AND_SCHEMA_MODELS, } from './model-meta.js';
+export type { AnthropicTextMetadata, AnthropicImageMetadata, AnthropicDocumentMetadata, AnthropicAudioMetadata, AnthropicVideoMetadata, AnthropicMessageMetadataByModality, } from './message-types.js';
+export { convertToolsToProviderFormat } from './tools/tool-converter.js';
+export type { AnthropicTool, CustomTool } from './tools/index.js';
+export type { AnthropicProviderUsageDetails } from './usage.js';

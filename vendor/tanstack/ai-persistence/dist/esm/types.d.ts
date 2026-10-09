@@ -1,0 +1,983 @@
+import { ActivityRecord, ModelMessage, MetadataStore, PersistedArtifactRef, RunStatus, RunStore, Scope, TokenUsage } from '@tanstack/ai';
+export type { ActivityRecord, MetadataStore, Scope };
+/**
+ * One page of a thread from {@link MessageStore.loadThread} when the caller
+ * passed a paging hint.
+ *
+ * Middleware omits the hint and always gets a full `Array<ModelMessage>`,
+ * never this shape.
+ *
+ * `truncated: true` requires `cursor`. Without a cursor the client cannot
+ * request the next older window, so `reconstructChat` treats that page as
+ * complete.
+ */
+export type MessagePage = {
+    messages: Array<ModelMessage>;
+    truncated: false;
+    cursor?: never;
+} | {
+    messages: Array<ModelMessage>;
+    truncated: true;
+    cursor: string;
+};
+/**
+ * Durable store for a thread's full message transcript.
+ *
+ * A "thread" is the unit of conversation history. The key is
+ * {@link Scope.threadId} (the same conversation id as
+ * `ChatMiddlewareContext.threadId`). Store methods take a bare string for
+ * adapter simplicity; multi-user isolation is the **host's** job — authorize
+ * against `Scope.userId` / `Scope.tenantId` (derived server-side from session)
+ * before calling load/save, and never treat a client-supplied thread id alone
+ * as an ownership proof (see `Scope` security notes in `@tanstack/ai`).
+ *
+ * `saveThread` always receives and persists the **complete, authoritative**
+ * message list — it is an overwrite, never an append. The middleware snapshots
+ * `ctx.messages` (the full running transcript) into it.
+ */
+export interface MessageStore {
+    /**
+     * Return the stored transcript for `threadId` ({@link Scope.threadId}),
+     * in insertion order.
+     *
+     * Call with only `threadId` (middleware, `onStart`, `onFinish`) and this
+     * MUST return the full transcript as an `Array<ModelMessage>`. Never a
+     * {@link MessagePage}.
+     *
+     * `options.limit` and `options.before` are an optional paging hint for
+     * hydrate. Adapters may ignore them and still return the full array. An
+     * adapter that pages returns a {@link MessagePage}.
+     *
+     * INVARIANT: returns an empty array (never `null`/`undefined`) for a thread
+     * that was never saved. Callers treat `[]` as "no history".
+     */
+    loadThread: {
+        (threadId: string): Promise<Array<ModelMessage>>;
+        (threadId: string, options: {
+            limit?: number;
+            before?: string;
+        }): Promise<Array<ModelMessage> | MessagePage>;
+    };
+    /**
+     * Overwrite the stored transcript for `threadId` with `messages`.
+     *
+     * INVARIANT: this is a full replace. `messages` is the complete authoritative
+     * history; the previous contents are discarded (not merged or appended).
+     */
+    saveThread: (threadId: string, messages: Array<ModelMessage>) => Promise<void>;
+}
+/**
+ * Durable sidecar for frontend-only AG-UI activity.
+ *
+ * Activity is never a {@link ModelMessage} and must not live in
+ * {@link MessageStore}. This store is optional: backends that omit it keep
+ * today's behavior (activity is not durable on the server).
+ *
+ * `saveActivities` always receives and persists the **complete, authoritative**
+ * activity list — it is an overwrite, never an append.
+ */
+export interface ActivityStore {
+    /**
+     * Return the stored activity rows for `threadId`, in the order they were
+     * last saved.
+     *
+     * INVARIANT: returns an empty array (never `null`/`undefined`) for a thread
+     * that was never saved. Callers treat `[]` as "no activity".
+     */
+    loadActivities: (threadId: string) => Promise<Array<ActivityRecord>>;
+    /**
+     * Overwrite the stored activity rows for `threadId` with `activities`.
+     *
+     * INVARIANT: this is a full replace. `activities` is the complete
+     * authoritative list; the previous contents are discarded.
+     */
+    saveActivities: (threadId: string, activities: Array<ActivityRecord>) => Promise<void>;
+}
+export type { RunStatus, TerminalRunStatus, RunRecord, RunStore, } from '@tanstack/ai';
+export { isTerminalRunStatus, defineRunStore } from '@tanstack/ai';
+/**
+ * Lifecycle status of a generation run. Deliberately the same vocabulary as
+ * {@link RunStatus}, so an adapter that stores both kinds of run can share one
+ * status column and one set of checks.
+ */
+export type GenerationRunStatus = RunStatus;
+/**
+ * A single generation run (one `generateImage` / `generateVideo` / … call).
+ *
+ * Its primary identity is `runId`: the run/request id the activity mints, the
+ * same AG-UI run id the client sends on the wire. `threadId` is the SLOT the
+ * run fills, a stable app-chosen name that groups successive runs of the same
+ * thing, and it is what a server-driven client hydrates by. Generation state is
+ * kept here, never in the chat {@link RunStore}.
+ *
+ * `result` holds terminal result METADATA (ids, model, urls, a provider video
+ * job id), never the media bytes — those live in a {@link BlobStore}.
+ * `artifacts` are the durable {@link PersistedArtifactRef}s, present only when
+ * byte storage is on.
+ *
+ * @property startedAt - Epoch ms when the run was first created.
+ * @property finishedAt - Epoch ms when the run reached a terminal status.
+ */
+export interface GenerationRunRecord {
+    runId: string;
+    /**
+     * The scope this run belongs to: a stable, app-chosen name for the slot
+     * successive runs fill (`product-123-hero`, `video-9-start-frame`).
+     *
+     * REQUIRED, per the store-contract rule at the top of this file.
+     * {@link GenerationRunStore.findLatestForThread} is the only query that
+     * hydrates a run, and it keys on this — so a record without one can be
+     * written and then never found again. `withGenerationPersistence` already
+     * refuses to start a run without a scope, and a server-driven client
+     * discards a snapshot that arrives without one, so an optional field here
+     * only described a record no path could produce and no client would accept.
+     */
+    threadId: string;
+    /** `'image' | 'audio' | 'tts' | 'video' | 'transcription'`. */
+    activity: string;
+    provider: string;
+    model: string;
+    status: GenerationRunStatus;
+    startedAt: number;
+    finishedAt?: number;
+    error?: {
+        message: string;
+        code?: string;
+    };
+    /** Terminal result metadata (ids, model, urls). Never the media bytes. */
+    result?: unknown;
+    /** Durable artifact references, when an artifacts + blobs backend is used. */
+    artifacts?: Array<PersistedArtifactRef>;
+    usage?: TokenUsage;
+}
+/**
+ * Durable store for generation run records, the generation counterpart to
+ * {@link RunStore}. Keyed by its own `runId`, with `threadId` the slot
+ * {@link GenerationRunStore.findLatestForThread} looks runs up by.
+ */
+export interface GenerationRunStore {
+    /**
+     * Create a run record, or return the existing one if `runId` is already
+     * present (resume).
+     *
+     * INVARIANT (idempotency): a second call for a `runId` returns the existing
+     * record unchanged; `startedAt`/`activity`/`provider`/`model`/`threadId` are
+     * not mutated. `status` defaults to `'running'` on first creation.
+     */
+    createOrResume: (input: Pick<GenerationRunRecord, 'runId' | 'threadId' | 'activity' | 'provider' | 'model' | 'startedAt'> & {
+        status?: GenerationRunStatus;
+    }) => Promise<GenerationRunRecord>;
+    /**
+     * Patch a run record's mutable fields.
+     *
+     * INVARIANT: patching a `runId` that does not exist is a **no-op** — it must
+     * not throw and must not create a record.
+     */
+    update: (runId: string, patch: Partial<Pick<GenerationRunRecord, 'status' | 'finishedAt' | 'error' | 'result' | 'artifacts' | 'usage'>>) => Promise<void>;
+    /** Return the run record for `runId`, or `null` if none exists. */
+    get: (runId: string) => Promise<GenerationRunRecord | null>;
+    /**
+     * The most recent run linked to `threadId`, or `null`.
+     *
+     * REQUIRED, per the store-contract rule at the top of this file: a
+     * server-authoritative client hydrates by the stable thread id on every
+     * mount, so an adapter without this would be indistinguishable from one that
+     * legitimately has no run — `persistence: true` would silently restore
+     * nothing, forever. `null` is the correct answer only when the thread really
+     * has no runs. The chat parallel is {@link RunStore.findActiveRun}.
+     */
+    findLatestForThread: (threadId: string) => Promise<GenerationRunRecord | null>;
+}
+/** Lifecycle status of a human-in-the-loop interrupt. */
+export type InterruptStatus = 'pending' | 'resolved' | 'cancelled';
+/**
+ * A human-in-the-loop interrupt (tool approval, client-tool input request, …).
+ *
+ * @property requestedAt - Epoch ms when the interrupt was created.
+ * @property resolvedAt - Epoch ms when the interrupt was resolved/cancelled;
+ *   absent while pending.
+ */
+export interface InterruptRecord {
+    interruptId: string;
+    runId: string;
+    threadId: string;
+    status: InterruptStatus;
+    requestedAt: number;
+    resolvedAt?: number;
+    payload: Record<string, unknown>;
+    response?: unknown;
+}
+/** A terminal interrupt write for {@link InterruptStore.commitBatch}. */
+export type InterruptCommitEntry = {
+    interruptId: string;
+    status: 'resolved';
+    response?: unknown;
+} | {
+    interruptId: string;
+    status: 'cancelled';
+};
+/** Durable store for human-in-the-loop interrupts. */
+export interface InterruptStore {
+    /**
+     * Persist a new interrupt in the `'pending'` state.
+     *
+     * The record is accepted without `status`/`resolvedAt` so a "born resolved"
+     * interrupt is unrepresentable — every interrupt begins pending and only
+     * `resolve`/`cancel` may move it to a terminal state.
+     *
+     * INVARIANT (insert-if-absent): if an interrupt with the same `interruptId`
+     * already exists, `create` is a **no-op** — it must NOT overwrite the
+     * existing record. This is the canonical behaviour (SQL backends implement it
+     * via `ON CONFLICT DO NOTHING` / upsert-with-empty-update), so a duplicate
+     * create can never clobber a resolved interrupt back to pending.
+     */
+    create: (record: Omit<InterruptRecord, 'status' | 'resolvedAt'>) => Promise<void>;
+    /**
+     * Move an interrupt to `'resolved'`, stamping `resolvedAt` and storing
+     * `response`. A no-op if `interruptId` does not exist.
+     */
+    resolve: (interruptId: string, response?: unknown) => Promise<void>;
+    /**
+     * Move an interrupt to `'cancelled'`, stamping `resolvedAt`. A no-op if
+     * `interruptId` does not exist.
+     */
+    cancel: (interruptId: string) => Promise<void>;
+    /**
+     * Commit terminal writes for a validated resume batch.
+     *
+     * Optional. When present, `withPersistence` calls it once instead of
+     * calling `resolve` and `cancel` for each entry. Apply every entry or none.
+     *
+     * Reject the whole batch (throw, writing nothing) when any entry has a
+     * duplicate `interruptId`, references an `interruptId` that does not exist,
+     * or references an interrupt whose status is not `'pending'`. This is
+     * stricter than `resolve` / `cancel`, which are no-ops for a missing
+     * `interruptId`.
+     */
+    commitBatch?: (entries: ReadonlyArray<InterruptCommitEntry>) => Promise<void>;
+    /** Return the interrupt for `interruptId`, or `null` if none exists. */
+    get: (interruptId: string) => Promise<InterruptRecord | null>;
+    /**
+     * All interrupts for a thread.
+     *
+     * INVARIANT: ordered by insertion (equivalently `requestedAt` ascending). SQL
+     * backends MUST `ORDER BY requested_at` — the middleware and testkit rely on
+     * this stable ordering.
+     */
+    list: (threadId: string) => Promise<Array<InterruptRecord>>;
+    /** Pending interrupts for a thread, ordered by `requestedAt` ascending. */
+    listPending: (threadId: string) => Promise<Array<InterruptRecord>>;
+    /** All interrupts for a run, ordered by `requestedAt` ascending. */
+    listByRun: (runId: string) => Promise<Array<InterruptRecord>>;
+    /** Pending interrupts for a run, ordered by `requestedAt` ascending. */
+    listPendingByRun: (runId: string) => Promise<Array<InterruptRecord>>;
+}
+/** Type a {@link MessageStore} implementation inline. */
+export declare function defineMessageStore(store: MessageStore): MessageStore;
+/** Type an {@link ActivityStore} implementation inline. */
+export declare function defineActivityStore(store: ActivityStore): ActivityStore;
+/** Type an {@link InterruptStore} implementation inline. */
+export declare function defineInterruptStore(store: InterruptStore): InterruptStore;
+/** Type a {@link MetadataStore} implementation inline. */
+export declare function defineMetadataStore(store: MetadataStore): MetadataStore;
+/** Lifecycle of one inbox entry. */
+export type InboxStatus = 'pending' | 'applied' | 'rejected' | 'expired';
+/**
+ * One input a client sent to a harness session (a prompt, a steer message, a
+ * follow-up, an interrupt answer, an agent run, a command). Written before the
+ * session answers with a receipt, so an accepted input survives a crash.
+ */
+export interface InboxEntry {
+    /** Idempotency key. A second append with the same id is a no-op. */
+    inputId: string;
+    threadId: string;
+    /** Who sent it, from the host's `authorize`. */
+    principal?: {
+        id: string;
+        tenantId?: string;
+    };
+    /** The input itself. Storage holds it as-is. The harness validates it. */
+    input: unknown;
+    status: InboxStatus;
+    createdAt: number;
+    expiresAt?: number;
+    /** The operation that applied the input. */
+    operationId?: string;
+    /** Why the input was rejected. */
+    reason?: string;
+}
+/** Durable store for harness session inputs. */
+export interface InboxStore {
+    /**
+     * Store a new entry as `'pending'`, or return the existing entry unchanged
+     * when `inputId` is already present.
+     */
+    append: (entry: Omit<InboxEntry, 'status'>) => Promise<InboxEntry>;
+    /** Pending entries of a thread, oldest first. */
+    listPending: (threadId: string) => Promise<Array<InboxEntry>>;
+    /** Mark an entry applied by `operationId`. A no-op for an unknown id. */
+    markApplied: (inputId: string, operationId: string) => Promise<void>;
+    /** Mark an entry rejected with `reason`. A no-op for an unknown id. */
+    markRejected: (inputId: string, reason: string) => Promise<void>;
+    /** The entry for `inputId`, or `null`. */
+    get: (inputId: string) => Promise<InboxEntry | null>;
+}
+/** Type an {@link InboxStore} implementation inline. */
+export declare function defineInboxStore(store: InboxStore): InboxStore;
+/**
+ * One record of a session log. `type` names the kind of record. The other
+ * fields are JSON. Records with a `type` that starts with `harness.` belong
+ * to `@tanstack/ai-harness`. A host adds its own records with other types.
+ */
+export interface LogRecord {
+    type: string;
+    [key: string]: unknown;
+}
+/** A {@link LogRecord} and its position in the log. */
+export interface LogEntry {
+    /** The position of the record. The first record of a thread is at 1. */
+    seq: number;
+    record: LogRecord;
+}
+/**
+ * The error {@link LogStore.append} rejects with when `seq` is not the next
+ * free position of the thread. It means that another writer appended first.
+ * Nothing of the rejected batch is written.
+ */
+export declare class LogConflictError extends Error {
+    readonly threadId: string;
+    readonly seq: number;
+    constructor(threadId: string, seq: number);
+}
+/**
+ * Durable append-only log of a harness session, one log per thread. A durable
+ * harness host keeps the events, the transcript, the inputs, and the tool
+ * steps of a thread in it.
+ *
+ * The log has one writer at a time. `append` is a compare-and-append: the
+ * writer names the position of the first record, and the store refuses the
+ * batch when another writer took that position first. In SQL, a primary key
+ * on `(thread_id, seq)` and one transaction per batch give this.
+ */
+export interface LogStore {
+    /**
+     * Write `records` at positions `seq`, `seq + 1`, and so on.
+     *
+     * INVARIANT (atomic): the whole batch is written, or none of it is. A crash
+     * or an error never leaves a part of the batch.
+     *
+     * INVARIANT (compare-and-append): `seq` must be the next free position (the
+     * last position of the thread plus 1, or 1 for a new thread). For any other
+     * `seq`, a position that is taken or a gap, reject with
+     * {@link LogConflictError} and write nothing.
+     *
+     * An empty batch writes nothing and resolves.
+     */
+    append: (threadId: string, seq: number, records: ReadonlyArray<LogRecord>) => Promise<void>;
+    /**
+     * The entries of `threadId` with `seq` greater than `after` (default 0), in
+     * ascending order, at most `limit` of them. `limit: 0` gives `[]`.
+     *
+     * INVARIANT: a thread that has no records gives `[]`. The returned records
+     * are copies: a change to them does not change the log.
+     */
+    read: (threadId: string, options?: {
+        after?: number;
+        limit?: number;
+    }) => Promise<Array<LogEntry>>;
+    /**
+     * Call `listener` after each append to `threadId` that this store can see.
+     * A store that cannot see appends from other processes can poll. Returns a
+     * function that stops the calls.
+     */
+    subscribe: (threadId: string, listener: () => void) => () => void;
+}
+/** Type a {@link LogStore} implementation inline. */
+export declare function defineLogStore(store: LogStore): LogStore;
+/**
+ * Claims on threads that have pending work, for a harness host. A host
+ * claims a thread while it works on it and renews the claim. When the host
+ * stops, the claim expires, and another host's sweep finds the thread with
+ * `listExpired` and takes it over with `claim`. Optional store: only harness
+ * hosts read it.
+ */
+export interface WorkClaimStore {
+    /**
+     * Claim `threadId` for `ownerId` until `until` (epoch ms). Renews when the
+     * owner already holds it. Returns false when another owner holds a claim
+     * that has not expired. Atomic: two callers never both get true for one
+     * thread and one moment.
+     */
+    claim: (entry: {
+        threadId: string;
+        harness: string;
+        ownerId: string;
+        until: number;
+    }) => Promise<boolean>;
+    /** The thread is idle: remove the claim. Only its owner can. */
+    release: (threadId: string, ownerId: string) => Promise<void>;
+    /** Claims that expired before `now`: their host stopped. Oldest first. */
+    listExpired: (options: {
+        now: number;
+        limit?: number;
+    }) => Promise<Array<{
+        threadId: string;
+        harness: string;
+    }>>;
+}
+/**
+ * Type a {@link WorkClaimStore} implementation inline.
+ *
+ * @param store - The store implementation.
+ * @example
+ * const workClaims = defineWorkClaimStore({ claim, release, listExpired })
+ */
+export declare function defineWorkClaimStore(store: WorkClaimStore): WorkClaimStore;
+/**
+ * One entry of the session index: what a list of sessions shows for one
+ * thread. The index holds no messages. The thread data stays in the stores
+ * that hold it.
+ *
+ * @property createdAt - Epoch ms when the thread was first opened.
+ * @property updatedAt - Epoch ms of the last change. {@link SessionIndexStore.list}
+ *   sorts by it.
+ */
+export interface SessionIndexEntry {
+    threadId: string;
+    /** The `name` of the harness that runs the thread. */
+    harness?: string;
+    title?: string;
+    /**
+     * The thread that started this one. A subagent child has the thread id
+     * `subagent:<runId>` and the thread of its parent here.
+     */
+    parentThreadId?: string;
+    /** The tool call in the parent thread that started this thread. */
+    parentToolCallId?: string;
+    createdAt: number;
+    updatedAt: number;
+    pinned?: boolean;
+    /** Who owns the thread, from the host's `authorize`. */
+    principal?: {
+        id: string;
+        tenantId?: string;
+    };
+    /**
+     * Token totals of the thread. The harness writes the counts from its core
+     * usage (`session.usage().total`) at the end of each turn.
+     */
+    usage?: {
+        /** Model calls: `calls` in the harness usage. */
+        turns: number;
+        promptTokens: number;
+        completionTokens: number;
+        totalTokens: number;
+        /** Input tokens the provider read from its prompt cache. */
+        cachedTokens: number;
+        /** Input tokens the provider wrote to its prompt cache. */
+        cacheWriteTokens: number;
+        /** Cost in USD, when a usage plugin writes it. */
+        cost?: number;
+    };
+    metadata?: Record<string, unknown>;
+}
+/** Options for {@link SessionIndexStore.list}. */
+export interface SessionIndexListOptions {
+    /** The most entries in one page. Without it, the page has all entries. */
+    limit?: number;
+    /** The `cursor` of the previous page. */
+    cursor?: string;
+    /**
+     * Only the entries whose `parentThreadId` is this thread. `null`: only the
+     * entries with no parent (the top-level sessions).
+     */
+    parentThreadId?: string | null;
+    /**
+     * Only the entries owned by this principal id. With `tenantId`, the
+     * tenant must match too. An entry without a principal never matches.
+     */
+    principal?: {
+        id: string;
+        tenantId?: string;
+    };
+    /**
+     * Only the entries whose `title` contains this text, without case. An entry
+     * without a title never matches.
+     */
+    search?: string;
+    /** Only the entries whose `harness` is exactly this name. */
+    harness?: string;
+    /**
+     * Only the entries whose `metadata` has each key with exactly this string
+     * value.
+     */
+    metadata?: Record<string, string>;
+}
+/**
+ * One page of a {@link SessionIndexStore.list} scan.
+ *
+ * @property cursor - The token for the next page. Only when `truncated`.
+ * @property truncated - `true` when more entries match after this page.
+ */
+export interface SessionIndexPage {
+    entries: Array<SessionIndexEntry>;
+    cursor?: string;
+    truncated?: boolean;
+}
+/** Durable index of harness sessions, one entry per thread. */
+export interface SessionIndexStore {
+    /**
+     * Write the entry for `entry.threadId`.
+     *
+     * INVARIANT (full replace): a second upsert for the same thread replaces
+     * the whole entry. A field that the new entry does not have is gone. To
+     * change one field, `get` the entry and upsert a changed copy.
+     */
+    upsert: (entry: SessionIndexEntry) => Promise<void>;
+    /** The entry for `threadId`, or `undefined`. */
+    get: (threadId: string) => Promise<SessionIndexEntry | undefined>;
+    /**
+     * The entries that match the filters, newest `updatedAt` first. Entries with
+     * the same `updatedAt` are in `threadId` order. Pinned entries get no
+     * special place.
+     *
+     * CURSOR SEMANTICS: when `limit` is given and more entries match, the page
+     * is `truncated: true` with a `cursor`. Pass that `cursor` back to get the
+     * entries that follow the last entry of the page. An entry that changes
+     * between two pages can move in the order.
+     */
+    list: (options?: SessionIndexListOptions) => Promise<SessionIndexPage>;
+    /**
+     * Remove the index entry for `threadId`. A no-op for an unknown id.
+     *
+     * This removes the entry only. The messages, the log, and the other data of
+     * the thread stay. The stores that hold that data remove it.
+     */
+    delete: (threadId: string) => Promise<void>;
+}
+/** Type a {@link SessionIndexStore} implementation inline. */
+export declare function defineSessionIndexStore(store: SessionIndexStore): SessionIndexStore;
+/** A secret a user or an organization saved: an API key or OAuth tokens. */
+export type Credential = {
+    type: 'api_key';
+    value: string;
+} | {
+    type: 'oauth';
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    scopes?: Array<string>;
+    /**
+     * The OAuth client these tokens belong to (for example one made by
+     * dynamic client registration). A refresh needs it. `issuer` is the
+     * authorization server that issued the client and the tokens.
+     */
+    client?: {
+        clientId: string;
+        clientSecret?: string;
+        redirectUri?: string;
+        issuer?: string;
+    };
+};
+/**
+ * Durable store for credentials, keyed by scope and credential id (for
+ * example `'github'`). A credential saved without `scope.userId` belongs to
+ * the tenant. Encrypt at rest in your implementation.
+ */
+export interface CredentialStore {
+    get: (scope: Scope, id: string) => Promise<Credential | null>;
+    set: (scope: Scope, id: string, credential: Credential) => Promise<void>;
+    delete: (scope: Scope, id: string) => Promise<void>;
+    /** Ids and types only. `list` never returns secret values. */
+    list: (scope: Scope) => Promise<Array<{
+        id: string;
+        type: Credential['type'];
+        expiresAt?: number;
+    }>>;
+}
+/** Type a {@link CredentialStore} implementation inline. */
+export declare function defineCredentialStore(store: CredentialStore): CredentialStore;
+/** Type a {@link GenerationRunStore} implementation inline. */
+export declare function defineGenerationRunStore(store: GenerationRunStore): GenerationRunStore;
+/** Type an {@link ArtifactStore} implementation inline. */
+export declare function defineArtifactStore(store: ArtifactStore): ArtifactStore;
+/** Type a {@link BlobStore} implementation inline. */
+export declare function defineBlobStore(store: BlobStore): BlobStore;
+/**
+ * Metadata row describing a persisted artifact (generated media, tool output).
+ *
+ * The bytes themselves live in a {@link BlobStore}; this record holds the
+ * descriptive metadata and an optional `sourceUrl` for reference-only
+ * backends.
+ *
+ * @property createdAt - Epoch ms. (Core's wire-facing `PersistedArtifactRef`
+ *   exposes the same instant as an ISO string; see the timestamp convention.)
+ */
+export interface ArtifactRecord {
+    artifactId: string;
+    runId: string;
+    threadId: string;
+    /**
+     * The blob-store key these bytes actually live under.
+     *
+     * Optional for backwards compatibility: records written before this existed
+     * resolve via the default `artifacts/<runId>/<artifactId>` convention. New
+     * records always carry it, which is what lets `storageKey` put bytes anywhere
+     * — a reader can no longer recompute the path, so it has to be remembered.
+     * Use `resolveArtifactBlobKey(record)` rather than reading it directly.
+     */
+    blobKey?: string;
+    name: string;
+    mimeType: string;
+    size: number;
+    sourceUrl?: string;
+    createdAt: number;
+}
+/** Durable store for artifact metadata records. */
+export interface ArtifactStore {
+    /** Insert or overwrite the artifact metadata record. */
+    save: (record: ArtifactRecord) => Promise<void>;
+    /** Return the artifact for `artifactId`, or `null` if none exists. */
+    get: (artifactId: string) => Promise<ArtifactRecord | null>;
+    /**
+     * All artifacts for a run in deterministic snapshot order: `createdAt`
+     * ascending, then `artifactId` ascending by the unsigned UTF-8 bytes of
+     * each string (compare bytes left-to-right; shorter equal prefixes first).
+     * Returns `[]` when the run has none.
+     */
+    list: (runId: string) => Promise<Array<ArtifactRecord>>;
+    /**
+     * All artifacts for a thread in deterministic snapshot order.
+     * Records are ordered by `createdAt` ascending, then by `artifactId` using
+     * the unsigned UTF-8 bytes of each string (compare bytes left-to-right; shorter
+     * equal prefixes first).
+     */
+    listForThread: (threadId: string) => Promise<Array<ArtifactRecord>>;
+    /**
+     * Delete a single artifact by id. A no-op if absent, mirroring
+     * {@link BlobStore.delete} — the two are written and deleted as a pair, so
+     * their contracts match.
+     */
+    delete: (artifactId: string) => Promise<void>;
+    /**
+     * Delete every artifact belonging to `runId`. A no-op when the run has none.
+     *
+     * Required rather than feature-detected: retention and erasure are the point
+     * of storing media durably, and an adapter silently lacking deletion is
+     * indistinguishable from one where there was nothing to delete.
+     */
+    deleteForRun: (runId: string) => Promise<void>;
+}
+/**
+ * Accepted body shapes for {@link BlobStore.put}. `ArrayBufferView` already
+ * covers `Uint8Array` and every other typed-array/`DataView`, so no separate
+ * `Uint8Array` member is needed.
+ */
+export type BlobBody = ReadableStream<Uint8Array> | ArrayBuffer | ArrayBufferView | string | Blob;
+/**
+ * Metadata for a stored blob.
+ *
+ * @property size - Byte length, when known.
+ * @property createdAt - Epoch ms first written.
+ * @property updatedAt - Epoch ms last overwritten.
+ */
+export interface BlobRecord {
+    key: string;
+    size?: number;
+    etag?: string;
+    contentType?: string;
+    customMetadata?: Record<string, string>;
+    createdAt?: number;
+    updatedAt?: number;
+}
+/**
+ * A byte range to read, in the shape an HTTP `Range` header resolves to.
+ *
+ * `offset` is measured from the start of the object and must be inside it;
+ * `length` defaults to "everything from `offset` to the end" and is clamped to
+ * the end when it overshoots. Suffix ranges (`bytes=-500`) are the caller's to
+ * resolve against the known size — a serve route has the size on the artifact
+ * record, and has to compare against it anyway to answer `416` before reading.
+ */
+export interface BlobRange {
+    offset: number;
+    length?: number;
+}
+/** Options for {@link BlobStore.get}. */
+export interface BlobGetOptions {
+    /**
+     * Read only this slice of the object. `body`, `arrayBuffer()` and `text()`
+     * then cover the slice, `size` still reports the WHOLE object, and `range`
+     * reports the slice actually served — the three numbers a `206` response
+     * needs (`Content-Range: bytes <offset>-<offset+length-1>/<size>`).
+     */
+    range?: BlobRange;
+}
+/** A stored blob's metadata plus lazy accessors for its bytes. */
+export interface BlobObject extends BlobRecord {
+    arrayBuffer: () => Promise<ArrayBuffer>;
+    text: () => Promise<string>;
+    body?: ReadableStream<Uint8Array>;
+    /**
+     * The slice this object exposes, when a {@link BlobGetOptions.range} was
+     * requested and honoured: `offset` as asked, `length` as actually served
+     * (clamped to the end of the object). Absent on a whole-object read.
+     */
+    range?: {
+        offset: number;
+        length: number;
+    };
+}
+/**
+ * One page of a {@link BlobStore.list} scan.
+ *
+ * @property cursor - Opaque continuation token; present only when `truncated`.
+ * @property truncated - `true` when more objects match beyond this page.
+ */
+export interface BlobListPage {
+    objects: Array<BlobRecord>;
+    cursor?: string;
+    truncated?: boolean;
+}
+export interface BlobPutOptions {
+    contentType?: string;
+    customMetadata?: Record<string, string>;
+    /**
+     * The exact byte length of `body`, when the producer knows it up front.
+     *
+     * Advisory, not a contract the store must honor: it exists so a store can
+     * pick an upload strategy knowingly instead of discovering the length by
+     * buffering. Most useful to an SDK that wants the length as a separate
+     * argument rather than reading it off the stream — S3's `PutObject`
+     * (`ContentLength`) is the archetype — and to a runtime that can re-attach
+     * one (workerd's `FixedLengthStream` ahead of `R2Bucket.put`).
+     *
+     * Only ever set when the length is exact — a wrong value is worse than none,
+     * since runtimes that enforce declared lengths fail the write. Absent means
+     * unknown, and a store must accept a length-less stream regardless:
+     * producers hand one over whenever the origin does not declare a length.
+     */
+    expectedLength?: number;
+}
+export interface BlobListOptions {
+    prefix?: string;
+    cursor?: string;
+    limit?: number;
+}
+/** Durable object/blob store (byte-storing or reference-only backends). */
+export interface BlobStore {
+    /** Insert or overwrite the object at `key`, returning its metadata. */
+    put: (key: string, body: BlobBody, options?: BlobPutOptions) => Promise<BlobRecord>;
+    /**
+     * Return the object at `key` (metadata + byte accessors), or `null`.
+     *
+     * RANGE SEMANTICS: with `options.range`, return only that slice — the bytes
+     * a `206` response carries — and report it back as `range`. `size` still
+     * reports the whole object, so the caller can build `Content-Range` without
+     * a second `head`. The reported `length` is what was actually served: a
+     * requested `length` past the end clamps. An `offset` at or past the end is
+     * a caller error, not a store one — the size is on the artifact record, so a
+     * serve route answers `416` before ever asking the store.
+     *
+     * Range support is part of the contract for any store that holds bytes (the
+     * conformance testkit asserts it): serving a whole file where a slice was
+     * asked for is what makes `<video>` seeking, and Safari playback at all,
+     * fail. A reference-only backend that stores no bytes skips `blobs`
+     * entirely rather than half-implementing it.
+     */
+    get: (key: string, options?: BlobGetOptions) => Promise<BlobObject | null>;
+    /** Return only the metadata for `key`, or `null`. */
+    head: (key: string) => Promise<BlobRecord | null>;
+    /** Remove the object at `key`. A no-op if absent. */
+    delete: (key: string) => Promise<void>;
+    /**
+     * List objects, optionally filtered by `prefix`, in ascending key order.
+     *
+     * CURSOR SEMANTICS: `prefix` matches literally and case-sensitively (SQL
+     * backends must escape LIKE metacharacters, so `run_` matches only the exact
+     * bytes `run_`, not `_` as a wildcard). When `limit` is given and more keys
+     * match, the page is `truncated: true` with a `cursor`; passing that `cursor`
+     * back returns the strictly-following keys (keys `> cursor`). Cursor ordering
+     * is the same byte ordering as the sort, so paging visits every key exactly
+     * once with no gaps or repeats. `limit: 0` yields an empty, untruncated page
+     * with no cursor.
+     */
+    list: (options?: BlobListOptions) => Promise<BlobListPage>;
+}
+/** The id of one attempt of a harness turn. */
+export interface TurnLeaseKey {
+    threadId: string;
+    inputId: string;
+    /** The operation that runs the attempt. Also the AG-UI run id. */
+    operationId: string;
+    /** 1 for the first run of the input, then 1 more after each crash. */
+    attempt: number;
+}
+/** A lease on one attempt of a harness turn. */
+export interface TurnLease extends TurnLeaseKey {
+    /** The host that runs the attempt. */
+    ownerId: string;
+    /** Epoch milliseconds. */
+    expiresAt: number;
+}
+/**
+ * Leases for harness turns, from a system that already has them (a job
+ * queue, a submission table). A durable harness host takes a lease when an
+ * attempt starts, renews it while the attempt runs, and releases it when the
+ * attempt ends. After a crash, a host asks `isAlive` to find the attempts
+ * that nobody runs any more.
+ */
+export interface LeaseStore {
+    acquire: (lease: TurnLease) => Promise<void>;
+    renew: (lease: TurnLease) => Promise<void>;
+    release: (lease: TurnLease) => Promise<void>;
+    /** True while another host still runs the attempt. */
+    isAlive: (key: TurnLeaseKey) => Promise<boolean>;
+}
+/**
+ * Sparse bag of **state** store keys — composition / validation only.
+ *
+ * **Not a public product shape.** Prefer the named chat shapes below
+ * ({@link ChatTranscriptStores}, {@link ChatPersistenceStores},
+ * {@link ChatWithInterruptsStores}). Locks are not included — use
+ * `withLocks` from `@tanstack/ai`.
+ *
+ * @internal Exported from this module for generics; the package root does not
+ * re-export this type — use a named shape or `AIPersistence<{ … }>` instead.
+ */
+export interface AIPersistenceStores {
+    messages?: MessageStore;
+    activities?: ActivityStore;
+    runs?: RunStore;
+    interrupts?: InterruptStore;
+    metadata?: MetadataStore;
+    generationRuns?: GenerationRunStore;
+    artifacts?: ArtifactStore;
+    blobs?: BlobStore;
+    /** Harness session inputs. Optional: only harness hosts read it. */
+    inbox?: InboxStore;
+    /** User and tenant credentials. Optional: only harness hosts read it. */
+    credentials?: CredentialStore;
+    /** The harness session log. Optional: only durable harness hosts read it. */
+    log?: LogStore;
+    /** Turn leases. Optional: only durable harness hosts read it. */
+    leases?: LeaseStore;
+    /** Claims on busy threads. Optional: only harness hosts read it. */
+    workClaims?: WorkClaimStore;
+    /** The session index. Optional: only harness hosts read it. */
+    sessions?: SessionIndexStore;
+}
+/**
+ * Chat floor: durable transcript. `messages` is required.
+ *
+ * `runs` / `interrupts` / `metadata` remain optional. If `interrupts` is set,
+ * `runs` is required (enforced by `withPersistence` / validators).
+ */
+export interface ChatTranscriptStores {
+    messages: MessageStore;
+    activities?: ActivityStore;
+    runs?: RunStore;
+    interrupts?: InterruptStore;
+    metadata?: MetadataStore;
+}
+/**
+ * Full chat durability — all four state stores are present. This is what
+ * `memoryPersistence()` returns, and the shape most adapters should declare.
+ *
+ * Backends that only need a transcript should use
+ * {@link ChatTranscriptStores} instead.
+ */
+export interface ChatPersistenceStores {
+    messages: MessageStore;
+    activities?: ActivityStore;
+    runs: RunStore;
+    interrupts: InterruptStore;
+    metadata: MetadataStore;
+}
+/**
+ * Chat with durable human-in-the-loop interrupts (and optional metadata).
+ * Implies `runs` (interrupt records are run-scoped).
+ *
+ * Prefer {@link ChatPersistenceStores} when you also have metadata (packaged
+ * backends). Use this when interrupts are required but metadata is not.
+ */
+export interface ChatWithInterruptsStores {
+    messages: MessageStore;
+    runs: RunStore;
+    interrupts: InterruptStore;
+    metadata?: MetadataStore;
+}
+/**
+ * Persistence aggregate. Parameterize with a named store shape, or a sparse
+ * map for composition (`defineAIPersistence` / `composePersistence`).
+ *
+ * Default is the sparse bag so untyped / dynamic bags still type-check;
+ * prefer {@link ChatTranscriptPersistence} or {@link ChatPersistence} at
+ * call sites.
+ */
+export interface AIPersistence<TStores extends AIPersistenceStores = AIPersistenceStores> {
+    stores: ExactStoreKeys<TStores>;
+}
+/** {@link AIPersistence} for {@link ChatTranscriptStores}. */
+export type ChatTranscriptPersistence = AIPersistence<ChatTranscriptStores>;
+/** {@link AIPersistence} for {@link ChatPersistenceStores}. */
+export type ChatPersistence = AIPersistence<ChatPersistenceStores>;
+/** {@link AIPersistence} for {@link ChatWithInterruptsStores}. */
+export type ChatWithInterruptsPersistence = AIPersistence<ChatWithInterruptsStores>;
+type StoreKey = keyof AIPersistenceStores;
+type ExactStoreKeys<TStores> = Exclude<keyof TStores, StoreKey> extends never ? TStores : TStores & Record<Exclude<keyof TStores, StoreKey>, never>;
+export type AIPersistenceOverrides = {
+    [TKey in StoreKey]?: AIPersistenceStores[TKey] | false;
+};
+type BaseStoreValue<TBase extends AIPersistenceStores, TKey extends StoreKey> = TKey extends keyof TBase ? TBase[TKey] : never;
+type OverrideStoreValue<TOverrides extends AIPersistenceOverrides, TKey extends StoreKey> = TKey extends keyof TOverrides ? TOverrides[TKey] : never;
+type ResolvedStoreValue<TBase extends AIPersistenceStores, TOverrides extends AIPersistenceOverrides, TKey extends StoreKey> = TKey extends keyof TOverrides ? Exclude<OverrideStoreValue<TOverrides, TKey>, false | undefined> | (undefined extends OverrideStoreValue<TOverrides, TKey> ? Exclude<BaseStoreValue<TBase, TKey>, undefined> : never) : Exclude<BaseStoreValue<TBase, TKey>, undefined>;
+type BaseStoreIsRequired<TBase extends AIPersistenceStores, TKey extends StoreKey> = TKey extends keyof TBase ? object extends Pick<TBase, TKey> ? false : true : false;
+type ResolvedStoreIsRequired<TBase extends AIPersistenceStores, TOverrides extends AIPersistenceOverrides, TKey extends StoreKey> = TKey extends keyof TOverrides ? false extends OverrideStoreValue<TOverrides, TKey> ? false : undefined extends OverrideStoreValue<TOverrides, TKey> ? BaseStoreIsRequired<TBase, TKey> : true : BaseStoreIsRequired<TBase, TKey>;
+type ResolvedRequiredKeys<TBase extends AIPersistenceStores, TOverrides extends AIPersistenceOverrides> = {
+    [TKey in StoreKey]-?: [ResolvedStoreValue<TBase, TOverrides, TKey>] extends [
+        never
+    ] ? never : ResolvedStoreIsRequired<TBase, TOverrides, TKey> extends true ? TKey : never;
+}[StoreKey];
+type ResolvedOptionalKeys<TBase extends AIPersistenceStores, TOverrides extends AIPersistenceOverrides> = {
+    [TKey in StoreKey]-?: [ResolvedStoreValue<TBase, TOverrides, TKey>] extends [
+        never
+    ] ? never : ResolvedStoreIsRequired<TBase, TOverrides, TKey> extends true ? never : TKey;
+}[StoreKey];
+type Simplify<T> = {
+    [TKey in keyof T]: T[TKey];
+};
+export type ComposedAIPersistenceStores<TBase extends AIPersistenceStores, TOverrides extends AIPersistenceOverrides> = Simplify<{
+    [TKey in ResolvedRequiredKeys<TBase, TOverrides>]: ResolvedStoreValue<TBase, TOverrides, TKey>;
+} & {
+    [TKey in ResolvedOptionalKeys<TBase, TOverrides>]?: ResolvedStoreValue<TBase, TOverrides, TKey>;
+}>;
+export declare function validatePersistenceStoreKeys(persistence: AIPersistence): void;
+/**
+ * Chat middleware entrypoint rules:
+ * - `messages` is required (chat persistence means a durable transcript)
+ * - `interrupts` requires `runs` (interrupt records are run-scoped)
+ */
+export declare function validateChatPersistenceStores(persistence: AIPersistence): void;
+/**
+ * Generation middleware entrypoint rule: `generationRuns` is required (the
+ * generation run lifecycle is keyed on its own `runId`, not a chat conversation
+ * `threadId`). When artifact persistence is used, `artifacts` and `blobs` must
+ * be provided together.
+ */
+export declare function validateGenerationPersistenceStores(persistence: AIPersistence): void;
+/**
+ * Server hydrate entrypoint rule: `messages` is required.
+ */
+export declare function validateReconstructChatStores(persistence: AIPersistence): void;
+/**
+ * Server hydrate entrypoint rule for generation: `generationRuns` is required.
+ * The run store resolves the latest generation for a thread (or a specific run
+ * id), so a server-authoritative client can hydrate the last generation's
+ * status, result, and artifact refs on load.
+ */
+export declare function validateReconstructGenerationStores(persistence: AIPersistence): void;
+export declare function defineAIPersistence<TStores extends AIPersistenceStores>(persistence: AIPersistence<ExactStoreKeys<TStores>>): AIPersistence<TStores>;
+export declare function composePersistence<TBase extends AIPersistenceStores, TOverrides extends AIPersistenceOverrides>(base: AIPersistence<TBase>, config: {
+    overrides: ExactStoreKeys<TOverrides>;
+}): AIPersistence<ComposedAIPersistenceStores<TBase, TOverrides>>;

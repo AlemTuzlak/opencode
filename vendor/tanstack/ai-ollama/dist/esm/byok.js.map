@@ -1,0 +1,1 @@
+{"version":3,"file":"byok.js","names":[],"sources":["../../src/byok.ts"],"sourcesContent":["import { defineByokProvider } from '@tanstack/ai/byok'\n\nexport const ollamaByok = defineByokProvider({\n  id: 'ollama',\n  label: 'Ollama',\n})\n"],"mappings":";;AAEA,IAAa,aAAa,mBAAmB;CAC3C,IAAI;CACJ,OAAO;AACT,CAAC"}

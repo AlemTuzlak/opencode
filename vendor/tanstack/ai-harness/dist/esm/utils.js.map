@@ -1,0 +1,1 @@
+{"version":3,"file":"utils.js","names":[],"sources":["../../src/utils.ts"],"sourcesContent":["export function isRecord(value: unknown): value is Record<string, unknown> {\n  return typeof value === 'object' && value !== null\n}\n"],"mappings":";AAAA,SAAgB,SAAS,OAAkD;CACzE,OAAO,OAAO,UAAU,YAAY,UAAU;AAChD"}
