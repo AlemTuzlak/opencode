@@ -60,6 +60,28 @@ export function toOpencodeName(name: string) {
   return BY_HARNESS.get(name)?.name ?? name
 }
 
+/** The harness tool names of the D2 table. */
+export const harnessToolNames: ReadonlyArray<string> = [...BY_HARNESS.keys()]
+
+const EDIT_TOOLS: ReadonlySet<string> = new Set(["write_file", "edit_file", "patch"])
+
+/** The harness tools that change a file: their opencode tools all assert the `edit` permission. */
+export function isEditTool(name: string) {
+  return EDIT_TOOLS.has(name)
+}
+
+/**
+ * The opencode permission action that the opencode tool of a harness tool asserts. `write_file` and
+ * `patch` assert `edit`, as opencode's write and patch tools do. Other names map as in `toOpencodeName`.
+ *
+ * ```ts
+ * permissionAction("write_file") // "edit"
+ * ```
+ */
+export function permissionAction(name: string) {
+  return isEditTool(name) ? "edit" : toOpencodeName(name)
+}
+
 /**
  * The harness tool name for an opencode tool id. A name that is not in the
  * table comes back unchanged.
@@ -193,16 +215,26 @@ export function toOpencodeResult(call: HarnessToolResult) {
  * // [{ tool: "read", status: "running", input: { path: "a.ts" } }]
  * ```
  */
-export function executeToolCalls(calls: ReadonlyArray<ExecuteCall>, event: { readonly name: string; readonly value: unknown }) {
+export function executeToolCalls(
+  calls: ReadonlyArray<ExecuteCall>,
+  event: { readonly name: string; readonly value: unknown },
+) {
   if (event.name === "code_mode:external_call") {
     const started = Option.getOrUndefined(decodeExternalCall(event.value))
     if (started === undefined) return calls
     const name = started.function.replace(/^external_/, "")
     const input = displayInput(name, started.args)
-    return [...calls, { tool: toOpencodeName(name), status: "running", ...(input ? { input } : {}) } satisfies ExecuteCall]
+    return [
+      ...calls,
+      { tool: toOpencodeName(name), status: "running", ...(input ? { input } : {}) } satisfies ExecuteCall,
+    ]
   }
   const status =
-    event.name === "code_mode:external_result" ? "completed" : event.name === "code_mode:external_error" ? "error" : undefined
+    event.name === "code_mode:external_result"
+      ? "completed"
+      : event.name === "code_mode:external_error"
+        ? "error"
+        : undefined
   const ended = Option.getOrUndefined(decodeExternalEnd(event.value))
   if (status === undefined || ended === undefined) return calls
   // The end events carry no call id. Calls of one tool end in start order.
@@ -273,7 +305,9 @@ function readResult(call: HarnessToolResult) {
   if (!isContentPartArray(parts)) return toolResult(textContent(call.result), truncation(call.name, call.result))
   // The harness sends an image or a PDF as one media part.
   const files = parts.flatMap((part) => mediaContent(part, call.input.path))
-  const note = files.some((file) => file.mime === "application/pdf") ? "PDF read successfully" : "Image read successfully"
+  const note = files.some((file) => file.mime === "application/pdf")
+    ? "PDF read successfully"
+    : "Image read successfully"
   return toolResult([text(note), ...files], { truncated: false })
 }
 
@@ -428,7 +462,8 @@ const decodeExecute = Schema.decodeUnknownOption(
 /** The `execute` output text: the value or the error, then the logs, like opencode's Code Mode. */
 function executeResult(value: string, toolCalls: ReadonlyArray<ExecuteCall>) {
   const run = Option.getOrUndefined(decodeExecute(value))
-  if (run === undefined) return toolResult(textContent(value), { toolCalls, ...truncation("execute_typescript", value) })
+  if (run === undefined)
+    return toolResult(textContent(value), { toolCalls, ...truncation("execute_typescript", value) })
   const answer = run.success ? formatValue(run.result) : (run.error?.message ?? "Unknown execution error")
   const logs = run.logs && run.logs.length > 0 ? `Logs:\n${run.logs.join("\n")}` : ""
   const output = [answer, logs].filter((part) => part !== "").join("\n\n")

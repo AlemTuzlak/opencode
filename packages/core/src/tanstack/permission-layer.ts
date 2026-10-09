@@ -19,7 +19,7 @@ import { SessionStore } from "../session/store.js"
 import { Wildcard } from "../util/wildcard.js"
 import type { EventMapper, Output, Published } from "./events.js"
 import { TanstackStores } from "./stores.js"
-import { toOpencodeName } from "./tool-names.js"
+import { permissionAction } from "./tool-names.js"
 
 /** What the facades use of a harness session. */
 export type LiveSession = Pick<
@@ -392,14 +392,6 @@ function declined(message: string | undefined) {
   return message ? new Permission.CorrectedError({ feedback: message }) : new Permission.DeclinedError()
 }
 
-// The harness tools that change files. opencode checks them with its one `edit` permission.
-const EDIT_TOOLS = new Set(["write_file", "edit_file", "patch"])
-
-/** The opencode permission action of a harness tool, as the event mapper names it in `permission.asked`. */
-export function opencodeAction(tool: string) {
-  return EDIT_TOOLS.has(tool) ? "edit" : toOpencodeName(tool)
-}
-
 /**
  * opencode's `PermissionSaved.Service` on the rules that `always` answers save in the harness. Keeps the
  * routes `GET /api/permission/saved` and `DELETE /api/permission/saved/:id` working.
@@ -455,7 +447,7 @@ function savedInfo(location: Location.Interface, rule: PermissionRule) {
   return {
     id: PermissionSaved.ID.make(`psv_${Hash.fast(`${rule.tool}\n${resource}`)}`),
     projectID: location.project.id,
-    action: opencodeAction(rule.tool),
+    action: permissionAction(rule.tool),
     resource,
     time: { created: time, updated: time },
   } satisfies PermissionSaved.Info

@@ -20,7 +20,14 @@ import type { SessionInbox } from "@opencode/schema/session-inbox"
 import { SessionMessage } from "@opencode/schema/session-message"
 import type { TokenUsage } from "@opencode/schema/token-usage"
 import { Option, Schema } from "effect"
-import { executeToolCalls, toOpencodeInput, toOpencodeName, toOpencodeResult } from "./tool-names.js"
+import {
+  executeToolCalls,
+  isEditTool,
+  permissionAction,
+  toOpencodeInput,
+  toOpencodeName,
+  toOpencodeResult,
+} from "./tool-names.js"
 import type { ExecuteCall } from "./tool-names.js"
 
 /**
@@ -103,7 +110,6 @@ const STEP_INTERRUPTED = { type: "aborted", message: "Step interrupted" }
 const TOOLS_INTERRUPTED = { type: "aborted", message: "Tool execution interrupted" }
 const TURN_FAILED = { type: "unknown", message: "The turn failed." }
 // The harness tools that change files. opencode checks them with the one `edit` permission.
-const EDIT_TOOLS = new Set(["write_file", "edit_file", "patch"])
 
 /**
  * Turns the harness event stream of one session into opencode session events,
@@ -453,9 +459,9 @@ export function createEventMapper(options: MapperOptions) {
     emit(Permission.Event.Asked, {
       id,
       sessionID: run.sessionID,
-      action: tool === undefined ? "unknown" : EDIT_TOOLS.has(tool) ? "edit" : toOpencodeName(tool),
+      action: tool === undefined ? "unknown" : permissionAction(tool),
       resources,
-      save: tool !== undefined && EDIT_TOOLS.has(tool) ? ["*"] : resources,
+      save: tool !== undefined && isEditTool(tool) ? ["*"] : resources,
       ...(found ? { source: { type: "tool" as const, messageID: found.step.messageID, id: found.id } } : {}),
     })
   }
@@ -834,8 +840,8 @@ export function createEventMapper(options: MapperOptions) {
      */
     fileChanged: (diff: FileDiff.Info) => {
       const found =
-        findCall((call) => EDIT_TOOLS.has(call.name) && call.input.path === diff.file) ??
-        findCall((call) => EDIT_TOOLS.has(call.name))
+        findCall((call) => isEditTool(call.name) && call.input.path === diff.file) ??
+        findCall((call) => isEditTool(call.name))
       found?.call.diffs.push(diff)
     },
     /** The agent and the model of the next model calls. */
