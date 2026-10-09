@@ -30,7 +30,26 @@ interface Failures extends Record<keyof Domains, unknown> {
 }
 
 type Callback<Event, Error> = (event: Event) => Effect.Effect<void, Error>
-type Entry = { readonly callback: Function; readonly options?: ModelHookOptions }
+type Entry = { readonly callback: Function; readonly options?: ModelHookOptions; readonly origin: Origin }
+
+/** Who registered a hook: one of opencode's own plugins (`builtin`), or another plugin (`external`). */
+export type Origin = "builtin" | "external"
+
+/**
+ * The origin of the hooks that an Effect registers. Plugin loading sets `external` around the setup of a plugin that
+ * is not built in. A hook registered without it is `builtin`.
+ */
+export const CurrentOrigin = Context.Reference<Origin>("@opencode/PluginHooks/CurrentOrigin", {
+  defaultValue: () => "builtin",
+})
+
+/**
+ * When `true`, `has` and `trigger` skip the hooks of opencode's own plugins. The TanStack runtime sets it for the
+ * hooks that the built-in plugins use to change opencode's own requests.
+ */
+export const ExternalOnly = Context.Reference<boolean>("@opencode/PluginHooks/ExternalOnly", {
+  defaultValue: () => false,
+})
 
 const eventProviderID = (event: unknown) => {
   if (typeof event !== "object" || event === null || !("model" in event)) return undefined
@@ -71,7 +90,7 @@ const layer = Layer.effect(
         const scope = yield* Scope.Scope
         const id = key(domain, name)
         let active = true
-        const entry = { callback, options }
+        const entry = { callback, options, origin: yield* CurrentOrigin }
         callbacks.set(id, [...(callbacks.get(id) ?? []), entry])
         const dispose = Effect.sync(() => {
           if (!active) return
@@ -86,7 +105,9 @@ const layer = Layer.effect(
     )
 
     const trigger: Interface["trigger"] = Effect.fnUntraced(function* (domain, name, event) {
+      const isExternalOnly = yield* ExternalOnly
       for (const entry of callbacks.get(key(domain, name)) ?? []) {
+        if (isExternalOnly && entry.origin === "builtin") continue
         if (entry.options?.providerID !== undefined && entry.options.providerID !== eventProviderID(event)) continue
         const result: Effect.Effect<void, Failures[typeof domain][typeof name]> = entry.callback(event)
         yield* result
@@ -94,12 +115,14 @@ const layer = Layer.effect(
       return event
     })
 
-    const has: Interface["has"] = (domain, name, providerID) =>
-      Effect.sync(() =>
-        (callbacks.get(key(domain, name)) ?? []).some(
-          (entry) => entry.options?.providerID === undefined || entry.options.providerID === providerID,
-        ),
+    const has: Interface["has"] = Effect.fnUntraced(function* (domain, name, providerID) {
+      const isExternalOnly = yield* ExternalOnly
+      return (callbacks.get(key(domain, name)) ?? []).some(
+        (entry) =>
+          !(isExternalOnly && entry.origin === "builtin") &&
+          (entry.options?.providerID === undefined || entry.options.providerID === providerID),
       )
+    })
 
     return Service.of({ has, register, trigger })
   }),

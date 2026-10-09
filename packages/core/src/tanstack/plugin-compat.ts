@@ -3,24 +3,38 @@ export * as TanStackPluginCompat from "./plugin-compat.js"
 import { AsyncLocalStorage } from "node:async_hooks"
 import path from "node:path"
 import { isRecord } from "@opencode/ai/utils/record"
-import type { SessionModelRequest } from "@opencode/plugin/effect/session"
+import { Media, Message, SystemPart, ToolCallPart } from "@opencode/ai"
+import type { ToolResultValue } from "@opencode/ai"
+import type {
+  SessionContext,
+  SessionModelRequest,
+  SessionRequest,
+} from "@opencode/plugin/effect/session"
 import type { ShellCreateBefore } from "@opencode/plugin/effect/shell"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
+import { convertSchemaToJsonSchema, EventType } from "@tanstack/ai"
 import type {
+  AdapterYieldChunk,
   AfterToolCallInfo,
+  AnyTextAdapter,
   AnyTool,
   ChatMiddleware,
+  ChatMiddlewareConfig,
   ChatMiddlewareContext,
   ContentPart,
+  ModelMessage,
+  SystemPrompt,
+  TextOptions,
   ToolCallHookContext,
 } from "@tanstack/ai"
 import { definePlugin, isTransientModelError, retryTransientErrors } from "@tanstack/ai-harness"
 import type { ModelErrorContext } from "@tanstack/ai-harness"
-import { PermissionDecisionCapability, PermissionResources } from "@tanstack/ai-harness/plugins"
+import { PermissionDecisionCapability, PermissionResources, title } from "@tanstack/ai-harness/plugins"
 import type { ToolResources } from "@tanstack/ai-harness/plugins"
 import type { WorkspaceBackend } from "@tanstack/ai-harness/plugins/coding"
 import { Effect, Layer, Option, Result, Schema } from "effect"
+import type { JsonSchema } from "effect"
 import { Agent } from "../agent.js"
 import { App } from "../app.js"
 import type { Model } from "../model.js"
@@ -31,7 +45,15 @@ import { SessionAffinity } from "../session/affinity.js"
 import { SessionMessage } from "../session/message.js"
 import { Tool } from "../tool.js"
 import { definition } from "../tool/runtime.js"
-import { permissionAction, toHarnessInput, toOpencodeInput, toOpencodeName, toOpencodeResult } from "./tool-names.js"
+import { modelResult } from "./opencode-tools.js"
+import {
+  permissionAction,
+  toHarnessInput,
+  toHarnessName,
+  toOpencodeInput,
+  toOpencodeName,
+  toOpencodeResult,
+} from "./tool-names.js"
 
 /** What the hooks need from the harness builder. */
 export interface Options {
@@ -68,6 +90,15 @@ const MAX_RETRY_AFTER_MS = 15 * 60_000
  * - `backend(base, root)`: `shell.create.before` for each command of a `bash` call.
  * - `tools`: `tool.execute.before` and `tool.execute.after`, with opencode tool names and inputs. Put it last.
  * - `onModelError`: `session.retry`, for `turn.onModelError`.
+ * - `context`: `session.context` before each model call. Put it after the plugins that build the request.
+ * - `title(adapter)`: the harness `title()` plugin, with `session.title`.
+ * - `compaction(middleware)` and `summaryAdapter(adapter)`: the compaction middleware and the adapter of its
+ *   summaries, with `session.compaction`.
+ *
+ * The `session.context`, `session.compaction`, and `session.title` hooks run only for plugins that are not built in
+ * (`PluginHooks.ExternalOnly`). The built-in plugins use them to change opencode's own system prompt and tools, which
+ * the harness does not have. `session.generate` does not run: `Session.generate` of the TanStack runtime calls the
+ * model without these parts.
  *
  * `session.prompt` runs in the session layer, before the harness admits the prompt.
  *
@@ -396,7 +427,148 @@ export const make = Effect.fn("TanStackPluginCompat.make")(function* (options: O
     return ctx.partial ? ("continue" as const) : ("retry" as const)
   }
 
-  return { requests, network, permissions, shell, backend, tools, onModelError }
+  // Only the hooks of plugins that are not built in. The built-in plugins use the `session.*` request hooks to shape
+  // opencode's own system prompt and tools by opencode tool names. The harness builds its prompt and tools itself.
+  const external = <A, E>(effect: Effect.Effect<A, E>) =>
+    Effect.runPromise(effect.pipe(Effect.provideService(PluginHooks.ExternalOnly, true)))
+  const isHooked = (name: "context" | "compaction" | "title", model: Model.Ref) =>
+    external(hooks.has("session", name, model.providerID))
+  // The session of a compaction that runs. Its summary model call runs inside the `onConfig` of the compaction.
+  const compacting = new AsyncLocalStorage<Session.ID>()
+
+  /**
+   * `session.context` before each model call of a session and of its agent runs. The hook sees the request with
+   * opencode names: the system prompts, the messages, the provider options, and the tools. Its changes apply to that
+   * model call only.
+   */
+  const context = definePlugin({
+    name: "opencode/session-context",
+    setup: (ctx) => {
+      const sessionID = Session.ID.make(ctx.session.threadId)
+      // The system prompts of a run before the hook changed them. A run keeps the changed prompts between its model
+      // calls, so the next call starts again from the prompts before the change.
+      const bases = new WeakMap<ChatMiddlewareContext, { readonly base: Array<SystemPrompt>; readonly applied: string }>()
+      const middleware: ChatMiddleware = {
+        name: "opencode/session-context",
+        onConfig: async (run, config) => {
+          const model = options.resolve(run.model)?.ref
+          if (run.phase !== "beforeModel" || model === undefined || !(await isHooked("context", model))) return undefined
+          const prior = bases.get(run)
+          const isApplied = prior !== undefined && JSON.stringify(config.systemPrompts) === prior.applied
+          const base = isApplied ? prior.base : config.systemPrompts
+          const request = requestView({
+            systemPrompts: base,
+            messages: config.providerMessages ?? config.messages,
+            modelOptions: config.modelOptions,
+          })
+          const tools = toolView(config.tools)
+          const event: PluginHooks.Domains["session"]["context"] = {
+            ...request.event,
+            sessionID,
+            agent: await agentOf(sessionID, run),
+            model,
+            tools: tools.definitions,
+          }
+          await external(hooks.trigger("session", "context", event))
+          const changed = request.read(event)
+          const hookedTools = tools.read(event.tools)
+          bases.set(run, { base, applied: JSON.stringify(changed.systemPrompts) })
+          return {
+            systemPrompts: changed.systemPrompts,
+            ...(changed.messages ? { providerMessages: changed.messages } : {}),
+            ...(changed.modelOptions ? { modelOptions: changed.modelOptions } : {}),
+            ...(hookedTools ? { tools: hookedTools } : {}),
+          }
+        },
+      }
+      return { middleware: [middleware], agentMiddleware: [middleware] }
+    },
+  })
+
+  /**
+   * `adapter` with a `session.title` or `session.compaction` hook before each model call. The hook sees the request
+   * with opencode names and can change it. A `result` that the hook sets is the answer, and no model call runs.
+   */
+  const hookedAdapter = (
+    adapter: AnyTextAdapter,
+    kind: "title" | "compaction",
+    sessionOf: () => Session.ID | undefined,
+  ) => {
+    async function* chatStream(request: TextOptions) {
+      const sessionID = sessionOf()
+      const model = options.resolve(adapter.model)?.ref
+      if (sessionID === undefined || model === undefined || !(await isHooked(kind, model)))
+        return yield* adapter.chatStream(request)
+      const view = requestView(request)
+      if (kind === "title") {
+        const event: PluginHooks.Domains["session"]["title"] = { ...view.event, sessionID, model }
+        await external(hooks.trigger("session", "title", event))
+        if (event.result !== undefined) return yield* answer(adapter.model, request, event.result)
+        return yield* adapter.chatStream(withRequest(request, view.read(event)))
+      }
+      const event: PluginHooks.Domains["session"]["compaction"] = {
+        ...view.event,
+        sessionID,
+        agent: await agentOf(sessionID, {}),
+        model,
+        tools: {},
+      }
+      await external(hooks.trigger("session", "compaction", event))
+      if (event.result !== undefined) return yield* answer(adapter.model, request, event.result.summary)
+      return yield* adapter.chatStream(withRequest(request, view.read(event)))
+    }
+    return new Proxy(adapter, {
+      get: (target, key) => {
+        if (key === "chatStream") return chatStream
+        const value = Reflect.get(target, key)
+        // Bound, so an adapter with private fields still reads them.
+        return typeof value === "function" ? value.bind(target) : value
+      },
+    })
+  }
+
+  /** The harness `title()` plugin, with `session.title` on its model call. */
+  const titlePlugin = (adapter: AnyTextAdapter) =>
+    definePlugin({
+      name: "tanstack/title",
+      setup: (ctx) => {
+        const sessionID = Session.ID.make(ctx.session.threadId)
+        return title({ adapter: hookedAdapter(adapter, "title", () => sessionID) }).setup?.(ctx)
+      },
+    })
+
+  /**
+   * The compaction middleware, run with the session of each run, so that the summary model call of `summaryAdapter`
+   * runs `session.compaction` for that session.
+   */
+  const compaction = (middleware: ChatMiddleware) => {
+    const onConfig = middleware.onConfig
+    const onFinish = middleware.onFinish
+    const scoped: ChatMiddleware = {
+      ...middleware,
+      onConfig: (run, config) =>
+        onConfig && compacting.run(Session.ID.make(run.threadId), () => onConfig(run, config)),
+      onFinish: (run, info) => onFinish && compacting.run(Session.ID.make(run.threadId), () => onFinish(run, info)),
+    }
+    return scoped
+  }
+
+  /** The adapter of the compaction summaries, with `session.compaction`. Use it with `compaction`. */
+  const summaryAdapter = (adapter: AnyTextAdapter) => hookedAdapter(adapter, "compaction", () => compacting.getStore())
+
+  return {
+    requests,
+    network,
+    permissions,
+    shell,
+    backend,
+    tools,
+    onModelError,
+    context,
+    title: titlePlugin,
+    compaction,
+    summaryAdapter,
+  }
 })
 
 /** opencode's `Plugin` service, as the original layer builds it. The TanStack layer wraps it. */
@@ -406,6 +578,9 @@ const originalPlugin = Plugin.node.mapLayer((implementation) => implementation)
  * opencode's `Plugin` service, where a plugin that is not built in fails to load when it registers an `aisdk.sdk`
  * or `aisdk.language` hook. The TanStack runtime has no Vercel AI SDK, so these hooks would never run (D10). The
  * built-in provider plugins keep their hooks: they only serve the opencode runtime.
+ *
+ * The other hooks of a plugin that is not built in are `external` (`PluginHooks.CurrentOrigin`), so the harness runs
+ * its `session.context`, `session.compaction`, and `session.title` hooks, and not the ones of the built-in plugins.
  *
  * @example
  * Plugin.node.replace(TanStackPluginCompat.pluginNode)
@@ -418,7 +593,7 @@ export const pluginNode = makeLocationNode({
       const base = yield* Plugin.Service
       return Plugin.Service.of({
         ...base,
-        activate: (plugins, failures) => base.activate(plugins.map(withoutAISDKHooks), failures),
+        activate: (plugins, failures) => base.activate(plugins.map(withTanStackHooks), failures),
       })
     }),
   ),
@@ -430,16 +605,19 @@ export function unsupportedHookMessage(pluginID: string, hook: string) {
   return `Plugin ${pluginID} uses the ${hook} hook. The TanStack runtime (OPENCODE_RUNTIME=tanstack) has no Vercel AI SDK, so it does not run aisdk hooks. Remove the hook from the plugin, or run opencode without OPENCODE_RUNTIME=tanstack.`
 }
 
-function withoutAISDKHooks(plugin: Plugin.Generation) {
+/** A plugin that is not built in: its `aisdk` hooks fail to load, and its other hooks are `external`. */
+function withTanStackHooks(plugin: Plugin.Generation) {
   const isBuiltIn = plugin.source === undefined || plugin.source.type === "builtin"
   if (isBuiltIn) return plugin
   return {
     ...plugin,
     effect: (context: Parameters<Plugin.Generation["effect"]>[0]) =>
-      plugin.effect({
-        ...context,
-        aisdk: { hook: (name) => Effect.die(new Error(unsupportedHookMessage(plugin.id, `aisdk.${name}`))) },
-      }),
+      plugin
+        .effect({
+          ...context,
+          aisdk: { hook: (name) => Effect.die(new Error(unsupportedHookMessage(plugin.id, `aisdk.${name}`))) },
+        })
+        .pipe(Effect.provideService(PluginHooks.CurrentOrigin, "external")),
   }
 }
 
@@ -524,22 +702,6 @@ function parseArguments(text: string) {
   return Option.getOrElse(decodeJson(text), () => text)
 }
 
-/** The result that the model gets for an opencode tool result: its text, or its text and files. */
-function modelResult(result: Tool.Result) {
-  if (typeof result.content === "string") return result.content
-  const content = result.content ?? []
-  if (content.length === 0) return JSON.stringify(result.output ?? null)
-  if (content.every((part) => part.type === "text")) return content.map((part) => part.text).join("\n")
-  return content.map(contentPart)
-}
-
-function contentPart(part: Tool.Content): ContentPart {
-  if (part.type === "text") return { type: "text", content: part.text }
-  const data = /^data:[^,]*;base64,(.*)$/s.exec(part.uri)?.[1]
-  const source = data === undefined ? { type: "url" as const, value: part.uri } : { type: "data" as const, value: data, mimeType: part.mime }
-  return part.mime.startsWith("image/") ? { type: "image", source } : { type: "document", source }
-}
-
 /**
  * What a call touches, as the tool plugins tell `permissions()`. `undefined` for a tool that declares nothing.
  * `"invalid"` when the input does not give its resources: `permissions()` then refuses the call.
@@ -588,4 +750,292 @@ function wait(ms: number, signal: AbortSignal) {
     const timer = setTimeout(done, ms)
     signal.addEventListener("abort", done, { once: true })
   })
+}
+
+type RequestInput = {
+  readonly systemPrompts?: ReadonlyArray<SystemPrompt> | undefined
+  readonly messages: ReadonlyArray<ModelMessage>
+  readonly modelOptions?: Record<string, unknown> | undefined
+}
+
+/**
+ * The opencode view of a harness model request, for a `session.*` request hook, and `read` to take the changes of the
+ * hook back. A system prompt or a message that the hook kept stays the harness one. `read` gives `undefined` for the
+ * messages and the options when the hook did not change them.
+ */
+function requestView(request: RequestInput) {
+  const prompts = new Map(
+    (request.systemPrompts ?? []).map((prompt) => [SystemPart.make(promptText(prompt)), prompt] as const),
+  )
+  // The harness tool name of each call, for the tool results after it.
+  const names = new Map<string, string>()
+  const messages = new Map(
+    request.messages.map((message) => {
+      const converted = opencodeMessage(message, names)
+      return [converted, { message, json: JSON.stringify(converted) }] as const
+    }),
+  )
+  const options = JSON.stringify(request.modelOptions ?? {})
+  return {
+    // The hooks get the provider options: the harness request has no generation options.
+    event: { system: [...prompts.keys()], messages: [...messages.keys()], options: { ...request.modelOptions } },
+    read: (event: SessionRequest) => {
+      const kept = (message: Message) => {
+        const entry = messages.get(message)
+        return entry !== undefined && JSON.stringify(message) === entry.json ? entry.message : undefined
+      }
+      const isSameMessages =
+        event.messages.length === request.messages.length &&
+        event.messages.every((message, index) => kept(message) === request.messages[index])
+      return {
+        systemPrompts: event.system.map((part) => {
+          const prompt = prompts.get(part)
+          return prompt !== undefined && promptText(prompt) === part.text ? prompt : part.text
+        }),
+        messages: isSameMessages
+          ? undefined
+          : event.messages.flatMap((message) => {
+              const original = kept(message)
+              return original === undefined ? modelMessages(message) : [original]
+            }),
+        modelOptions: JSON.stringify(event.options) === options ? undefined : { ...event.options },
+      }
+    },
+  }
+}
+
+/** The tools of a model call by opencode name, for `session.context`, and `read` to take the changes back. */
+function toolView(tools: ChatMiddlewareConfig["tools"]) {
+  const entries = tools.map((tool) => ({
+    tool,
+    definition: { description: tool.description, input: inputSchema(tool.inputSchema) },
+  }))
+  const byDefinition = new Map(entries.map((entry) => [entry.definition, entry] as const))
+  const byName = new Map(entries.map((entry) => [entry.tool.name, entry] as const))
+  return {
+    definitions: Object.fromEntries(entries.map((entry) => [toOpencodeName(entry.tool.name), entry.definition])),
+    /**
+     * The tools after the hook: a tool that the hook removed is left out, and a tool that it renamed or described
+     * again is a copy with the new name or description. `undefined` when nothing changed.
+     */
+    read: (hooked: SessionContext["tools"]) => {
+      const next = Object.entries(hooked).flatMap(([name, definition]) => {
+        // As on the opencode runtime: the definition object first, so a hook can rename a tool by moving it.
+        const entry = byDefinition.get(definition) ?? byName.get(toHarnessName(name))
+        if (entry === undefined) return []
+        const harnessName = toHarnessName(name)
+        const isInputChanged = JSON.stringify(definition.input) !== JSON.stringify(entry.definition.input)
+        const isSame =
+          harnessName === entry.tool.name && definition.description === entry.tool.description && !isInputChanged
+        if (isSame) return [entry.tool]
+        return [
+          {
+            ...entry.tool,
+            name: harnessName,
+            description: definition.description,
+            ...(isInputChanged ? { inputSchema: definition.input } : {}),
+          },
+        ]
+      })
+      const isSame = next.length === tools.length && next.every((tool, index) => tool === tools[index])
+      return isSame ? undefined : next
+    },
+  }
+}
+
+/** The JSON Schema of a tool input, as opencode gives it to the hooks. */
+function inputSchema(schema: ChatMiddlewareConfig["tools"][number]["inputSchema"]) {
+  return { ...(convertSchemaToJsonSchema(schema) ?? { type: "object", properties: {} }) } satisfies JsonSchema.JsonSchema
+}
+
+function promptText(prompt: SystemPrompt) {
+  return typeof prompt === "string" ? prompt : prompt.content
+}
+
+/** `request` with the changes that a hook made. */
+function withRequest(request: TextOptions, changed: ReturnType<ReturnType<typeof requestView>["read"]>) {
+  return {
+    ...request,
+    systemPrompts: changed.systemPrompts,
+    ...(changed.messages ? { messages: changed.messages } : {}),
+    ...(changed.modelOptions ? { modelOptions: changed.modelOptions } : {}),
+  }
+}
+
+/** A harness message as an opencode message, with opencode tool names and inputs. */
+function opencodeMessage(message: ModelMessage, names: Map<string, string>) {
+  switch (message.role) {
+    case "user":
+      return Message.user(opencodeParts(message.content))
+    case "assistant": {
+      const calls = message.toolCalls ?? []
+      calls.forEach((call) => names.set(call.id, call.function.name))
+      return Message.assistant([
+        ...(message.thinking ?? []).map((thinking) => ({
+          type: "reasoning" as const,
+          text: thinking.content,
+          ...(thinking.signature === undefined ? {} : { encrypted: thinking.signature }),
+        })),
+        ...opencodeParts(message.content).filter((part) => part.type === "text"),
+        ...calls.map((call) => {
+          const input = parseArguments(call.function.arguments)
+          return ToolCallPart.make({
+            id: call.id,
+            name: toOpencodeName(call.function.name),
+            input: isRecord(input) ? toOpencodeInput(call.function.name, input) : input,
+          })
+        }),
+      ])
+    }
+    case "tool": {
+      const id = message.toolCallId ?? ""
+      return Message.tool({
+        id,
+        name: toOpencodeName(names.get(id) ?? ""),
+        result: harnessText(message.content),
+        resultType: message.error === undefined ? "text" : "error",
+      })
+    }
+  }
+}
+
+/** The opencode parts of harness content: text, and media with inline data or a URL. */
+function opencodeParts(content: ModelMessage["content"]) {
+  if (content === null) return []
+  if (typeof content === "string") return content === "" ? [] : [Message.text(content)]
+  return content.flatMap((part) => {
+    if (part.type === "text") return [Message.text(part.content)]
+    const source = part.source
+    if (source.type === "data")
+      return [
+        Message.media(new Media.Asset({ source: { type: "base64", data: source.value, mediaType: source.mimeType } })),
+      ]
+    if (source.type === "url")
+      return [
+        Message.media(
+          new Media.Asset({
+            source: { type: "url", url: source.value, ...(source.mimeType ? { mediaType: source.mimeType } : {}) },
+          }),
+        ),
+      ]
+    return []
+  })
+}
+
+/**
+ * An opencode message that a hook added or changed, as harness messages. The harness keeps no system message in the
+ * history, so a system message goes to the model as a user message.
+ */
+function modelMessages(message: Message) {
+  const text = message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
+  switch (message.role) {
+    case "system":
+      return [{ role: "user", content: text }] satisfies Array<ModelMessage>
+    case "user":
+      return [{ role: "user", content: message.content.flatMap(harnessPart) }] satisfies Array<ModelMessage>
+    case "assistant": {
+      const toolCalls = message.content.flatMap((part) => {
+        if (part.type !== "tool-call") return []
+        const name = toHarnessName(part.name)
+        const input = isRecord(part.input) ? toHarnessInput(name, part.input) : (part.input ?? {})
+        return [{ id: part.id, type: "function" as const, function: { name, arguments: JSON.stringify(input) } }]
+      })
+      const thinking = message.content.flatMap((part) =>
+        part.type === "reasoning"
+          ? [{ content: part.text, ...(part.encrypted === undefined ? {} : { signature: part.encrypted }) }]
+          : [],
+      )
+      return [
+        {
+          role: "assistant",
+          content: text === "" ? null : text,
+          ...(toolCalls.length > 0 ? { toolCalls } : {}),
+          ...(thinking.length > 0 ? { thinking } : {}),
+        },
+      ] satisfies Array<ModelMessage>
+    }
+    case "tool":
+      return message.content.flatMap((part) =>
+        part.type === "tool-result"
+          ? ([{ role: "tool", toolCallId: part.id, content: resultText(part.result) }] satisfies Array<ModelMessage>)
+          : [],
+      )
+  }
+}
+
+/** A harness content part for an opencode part: text, or media with inline data or a URL. */
+function harnessPart(part: Message["content"][number]) {
+  const parts: Array<ContentPart> = []
+  if (part.type === "text") parts.push({ type: "text", content: part.text })
+  const source = part.type === "media" ? mediaSource(part.media) : undefined
+  if (part.type !== "media" || source === undefined) return parts
+  switch (part.media.kind) {
+    case "image":
+      parts.push({ type: "image", source })
+      break
+    case "audio":
+      parts.push({ type: "audio", source })
+      break
+    case "video":
+      parts.push({ type: "video", source })
+      break
+    case "document":
+    case "other":
+      parts.push({ type: "document", source })
+  }
+  return parts
+}
+
+/** The harness source of an opencode media asset: inline data or a URL. `undefined` for a provider reference. */
+function mediaSource(asset: Media.Asset) {
+  switch (asset.source.type) {
+    case "base64":
+      return { type: "data" as const, value: asset.source.data, mimeType: asset.mediaType }
+    case "bytes":
+      return { type: "data" as const, value: Buffer.from(asset.source.data).toString("base64"), mimeType: asset.mediaType }
+    case "url":
+      return { type: "url" as const, value: asset.source.url, mimeType: asset.mediaType }
+    case "ref":
+      return undefined
+  }
+}
+
+/** The text of harness content. */
+function harnessText(content: ModelMessage["content"]) {
+  if (content === null) return ""
+  if (typeof content === "string") return content
+  return content.flatMap((part) => (part.type === "text" ? [part.content] : [])).join("\n")
+}
+
+/** The text that the model gets for an opencode tool result. */
+function resultText(result: ToolResultValue) {
+  if (result.type === "content")
+    return result.value.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
+  return typeof result.value === "string" ? result.value : JSON.stringify(result.value ?? null)
+}
+
+/** The stream of a model call whose answer a hook gave: one text message. */
+async function* answer(model: string, request: TextOptions, text: string) {
+  const runId = request.runId ?? crypto.randomUUID()
+  const threadId = request.threadId ?? runId
+  const messageId = crypto.randomUUID()
+  const timestamp = Date.now()
+  yield { type: EventType.RUN_STARTED, runId, threadId, model, timestamp } satisfies AdapterYieldChunk
+  yield {
+    type: EventType.TEXT_MESSAGE_START,
+    messageId,
+    role: "assistant",
+    model,
+    timestamp,
+  } satisfies AdapterYieldChunk
+  yield { type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: text, model, timestamp } satisfies AdapterYieldChunk
+  yield { type: EventType.TEXT_MESSAGE_END, messageId, model, timestamp } satisfies AdapterYieldChunk
+  yield {
+    type: EventType.RUN_FINISHED,
+    runId,
+    threadId,
+    model,
+    timestamp,
+    finishReason: "stop",
+  } satisfies AdapterYieldChunk
 }
