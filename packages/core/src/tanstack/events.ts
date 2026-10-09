@@ -437,9 +437,14 @@ export function createEventMapper(options: MapperOptions) {
   }
 
   const askPermission = (entry: HarnessEvent, question: Question) => {
-    // The permissions plugin asks "Allow <tool> <input>?". The question names no tool call.
-    const tool = /^Allow (\S+) /.exec(question.message)?.[1]
-    const found = tool === undefined ? undefined : findCall((call) => call.name === tool)
+    // The permissions plugin asks "Allow <tool> <input>?", with the input as JSON cut at 300
+    // characters. The question names no tool call, so match the call by its name and that exact
+    // input. A match by name only could show the user the resources of another call.
+    const asked = /^Allow (\S+) ([\s\S]*)\?(?: Answer once, always, or reject\.)?$/.exec(question.message)
+    const tool = asked?.[1]
+    const found = asked
+      ? findCall((call) => call.name === asked[1] && JSON.stringify(call.input).slice(0, 300) === asked[2])
+      : undefined
     const run = found?.run ?? parentRun(entry.operationId)
     streamed(run)
     const id = make.permission()
