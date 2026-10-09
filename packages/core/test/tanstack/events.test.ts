@@ -779,6 +779,26 @@ describe("event mapper rules", () => {
     expect(mapper.questionID("per_1")).toBe("q-1")
   })
 
+  test("a permission ask names the call whose input it shows, not the newest call of that tool", () => {
+    const { feed } = scripted()
+    const schema = { type: "object", properties: { answer: { type: "string", enum: ["once", "always", "reject"] } } }
+    const events = feed(
+      chunks.started(),
+      chunks.runStarted(),
+      ...chunks.toolCall("call-1", "bash", { command: "rm -rf build" }),
+      ...chunks.toolCall("call-2", "bash", { command: "git status" }),
+      chunks.custom(HARNESS_EVENTS.question, {
+        questionId: "q-1",
+        message: 'Allow bash {"command":"rm -rf build"}? Answer once, always, or reject.',
+        schema,
+      }),
+    )
+    expect(events.at(-1)).toMatchObject([
+      "permission.asked",
+      { resources: ["rm -rf build"], source: { type: "tool", id: "call-1" } },
+    ])
+  })
+
   test("a failed compaction maps, and a successful one sends nothing without its summary", () => {
     const { feed } = scripted()
     const failed = feed(
