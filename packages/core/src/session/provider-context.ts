@@ -6,7 +6,7 @@ import { Predicate, Schema } from "effect"
 import { isDeepStrictEqual } from "node:util"
 import { Hash } from "@opencode/util/hash"
 import type { SessionMessage } from "./message.js"
-import type { SessionRunnerModel } from "./runner/model.js"
+import type { SessionRunnerModel } from "./runner-model.js"
 
 export type Provenance = SessionProviderContext.Provenance
 export const Info = SessionProviderContext.Info

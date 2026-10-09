@@ -18,7 +18,7 @@ import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { SessionModelRequest } from "@opencode/core/session/model-request"
 import { SessionModelTransport } from "@opencode/core/session/model-transport"
-import { SessionRunnerModel } from "@opencode/core/session/runner/model"
+import { SessionRunnerModel } from "@opencode/core/session/runner-model"
 import { testEffect } from "../lib/effect"
 import { PluginTestLayer } from "./fixture"
 

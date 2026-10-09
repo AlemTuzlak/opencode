@@ -1,7 +1,7 @@
 /**
  * The parity sweep: the golden traces and the other runtime scenarios on the TanStack runtime.
  *
- * The tests build the app graph as the server does with `OPENCODE_RUNTIME=tanstack` (see `slice.test.ts`), and
+ * The tests build the app graph as the server does (see `slice.test.ts`), and
  * drive it through the services that the HTTP routes call. Only the model is fake: an OpenAI-compatible endpoint
  * on loopback that streams scripted steps and records each request.
  *
@@ -187,7 +187,7 @@ const config = {
   },
 }
 
-// The app graph of the server with OPENCODE_RUNTIME=tanstack.
+// The app graph of the server.
 const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([
@@ -206,7 +206,7 @@ const it = testEffect(
       InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: false, global: false })),
       offlineModels,
       Watcher.node.replace(Watcher.configured({ enabled: false })),
-      ...TanStackOverrides.forRuntime("tanstack"),
+      ...TanStackOverrides.replacements,
     ],
   ),
 )
@@ -309,7 +309,7 @@ const readNotes = (context: Context) =>
 // Prints `done` once a `release` file exists in the working directory: the command of the golden trace.
 const HOLD_COMMAND = `bun -e "const fs=require('fs');for(let i=0;i<3000;i++){if(fs.existsSync('release'))break;Bun.sleepSync(10)}console.log('done')"`
 
-describe("parity sweep: golden traces on the server graph with OPENCODE_RUNTIME=tanstack", () => {
+describe("parity sweep: golden traces on the server graph", () => {
   it.live(
     "subagent",
     () =>
@@ -739,6 +739,7 @@ describe("parity sweep: scenarios with no golden trace", () => {
         expect(typesFrom(trace, "session.inbox.enqueued")).toEqual([
           "session.inbox.enqueued",
           "session.execution.started",
+          "session.inbox.delivered",
           "session.execution.failed",
         ])
         expect(dataOf(trace, "session.execution.failed")).toMatchObject([
@@ -746,12 +747,12 @@ describe("parity sweep: scenarios with no golden trace", () => {
             error: {
               type: "provider.no-route",
               message:
-                'openai/gpt-5.5 does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack): the ChatGPT Codex backend has no TanStack AI adapter. Run /connect, choose OpenAI, and select "Sign in with ChatGPT"',
+                'openai/gpt-5.5 does not work on the TanStack runtime: the ChatGPT Codex backend has no TanStack AI adapter. Run /connect, choose OpenAI, and select "Sign in with ChatGPT"',
             },
           },
         ])
-        // As on opencode's runtime, the prompt stays in the inbox.
-        expect((yield* context.sessions.inbox(context.sessionID)).map((item) => item.id)).toEqual([message.id])
+        // As on opencode's runtime, the prompt is delivered before the turn fails.
+        expect((yield* context.sessions.inbox(context.sessionID)).map((item) => item.id)).not.toContain(message.id)
       }),
     60_000,
   )

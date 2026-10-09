@@ -6,7 +6,7 @@ import { Provider } from "./provider.js"
 import { Command } from "./command.js"
 import { Config } from "./config.js"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Node } from "@opencode/util/effect/app-node"
+import { makeLocationNode, Node } from "@opencode/util/effect/app-node"
 import { FileMutation } from "./file-mutation.js"
 import { Environment } from "./environment/index.js"
 import { Formatter } from "./formatter.js"
@@ -35,8 +35,7 @@ import { Reference } from "./reference.js"
 import { Rpc } from "./rpc.js"
 import { WebSearch } from "./websearch.js"
 import { ReferenceInstructions } from "./reference/instructions.js"
-import { SessionRunnerLLM } from "./session/runner/llm.js"
-import { SessionRunnerModel } from "./session/runner/model.js"
+import { SessionRunnerModel } from "./session/runner-model.js"
 import { SessionCompaction } from "./session/compaction.js"
 import { SessionTitle } from "./session/title.js"
 import { SessionContext } from "./session/context.js"
@@ -55,6 +54,12 @@ import { Vcs } from "./vcs.js"
 
 export * as Instance from "./instance.js"
 export { Service, node, type Interface } from "./instance/service.js"
+
+/**
+ * The location slot of the session runtime. It builds nothing by default: `TanStackOverrides.replacements` puts the
+ * location's `TanStackHost` in it. The runtime runs on the location's plugins, so the slot can fail as they can.
+ */
+export const runtimeNode = makeLocationNode({ name: "SessionRuntime", layer: Layer.empty, deps: [Plugin.node] })
 
 const nodes = [
   Location.node,
@@ -105,7 +110,7 @@ const nodes = [
   SessionTitle.node,
   SessionContext.node,
   Snapshot.node,
-  SessionRunnerLLM.node,
+  runtimeNode,
   Vcs.node,
   // Start repository watches only after boot-critical filesystem and Git work.
   LocationWatcher.node,

@@ -8,6 +8,7 @@ import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { TanStackOpencodeTools } from "@opencode/core/tanstack/opencode-tools"
+import { TanStackOverrides } from "@opencode/core/tanstack/overrides"
 import { Tool } from "@opencode/core/tool"
 import { McpResourceTools } from "@opencode/core/tool/plugin/mcp-resource"
 import { OpenCodeTools } from "@opencode/core/tool/plugin/opencode"
@@ -28,7 +29,8 @@ import { PluginTestLayer } from "../plugin/fixture"
 
 const it = testEffect(PluginTestLayer)
 
-// A move runs the session in its new location, so the models catalog of every location must stay offline.
+// A move runs the session in its new location, so the models catalog of every location must stay offline. The
+// TanStack session layer runs the move.
 const itMoves = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([Session.node, SessionExecution.node, Location.node, Provider.node, Model.node, Mcp.node]),
@@ -37,6 +39,7 @@ const itMoves = testEffect(
       Location.node.replace(tempLocationLayer),
       Mcp.node.replace(emptyMcpLayer),
       offlineModels,
+      ...TanStackOverrides.replacements,
     ],
   ),
 )

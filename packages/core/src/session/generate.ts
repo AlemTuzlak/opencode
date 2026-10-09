@@ -12,7 +12,7 @@ import type { AgentNotFoundError } from "./error.js"
 import { SessionHistory } from "./history.js"
 import { SessionProviderContext } from "./provider-context.js"
 import { SessionModelRequest } from "./model-request.js"
-import type { SessionRunnerModel } from "./runner/model.js"
+import type { SessionRunnerModel } from "./runner-model.js"
 import type { SessionSchema } from "./schema.js"
 
 export type Error =

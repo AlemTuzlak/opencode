@@ -1,7 +1,7 @@
 /**
  * Crash recovery and cancel on the TanStack runtime.
  *
- * Each test builds the server's app graph with `OPENCODE_RUNTIME=tanstack` on a SQLite file. A "process" is one
+ * Each test builds the server's app graph on a SQLite file. A "process" is one
  * build of that graph. A crash closes it, as a stop for a deploy does (the hosts close with `recoverable: true`),
  * and a second process on the same file boots and runs `SessionRestart`, as the server does. Only the model is fake:
  * an OpenAI-compatible endpoint on loopback that streams scripted steps.
@@ -155,7 +155,7 @@ const config = {
   },
 }
 
-/** The server's app graph with `OPENCODE_RUNTIME=tanstack`, on the SQLite file and the folders under `root`. */
+/** The server's app graph, on the SQLite file and the folders under `root`. */
 function app(root: string) {
   const data = path.join(root, "data")
   const cache = path.join(root, "cache")
@@ -191,7 +191,7 @@ function app(root: string) {
       InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: false, global: false })),
       offlineModels,
       Watcher.node.replace(Watcher.configured({ enabled: false })),
-      ...TanStackOverrides.forRuntime("tanstack"),
+      ...TanStackOverrides.replacements,
     ],
   )
 }

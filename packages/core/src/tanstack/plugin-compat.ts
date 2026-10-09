@@ -602,7 +602,7 @@ export const pluginNode = makeLocationNode({
 
 /** The error of a plugin that registers an `aisdk` hook on the TanStack runtime. */
 export function unsupportedHookMessage(pluginID: string, hook: string) {
-  return `Plugin ${pluginID} uses the ${hook} hook. The TanStack runtime (OPENCODE_RUNTIME=tanstack) has no Vercel AI SDK, so it does not run aisdk hooks. Remove the hook from the plugin, or run opencode without OPENCODE_RUNTIME=tanstack.`
+  return `Plugin ${pluginID} uses the ${hook} hook. The TanStack runtime has no Vercel AI SDK, so it does not run aisdk hooks. Remove the hook from the plugin.`
 }
 
 /** A plugin that is not built in: its `aisdk` hooks fail to load, and its other hooks are `external`. */

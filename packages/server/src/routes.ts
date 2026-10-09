@@ -143,8 +143,8 @@ function makeRoutes<AuthError, AuthServices>(
   const build = (overrides: LayerNode.Replacements) => {
     const replacements: LayerNode.Replacements = [
       ...standard,
-      // OPENCODE_RUNTIME=tanstack runs the sessions on the TanStack AI harness. Every host builds its graph here.
-      ...TanStackOverrides.forRuntime(process.env.OPENCODE_RUNTIME),
+      // The sessions run on the TanStack AI harness. Every host builds its graph here.
+      ...TanStackOverrides.replacements,
       // Private instances resolve this list lazily so they inherit the complete host graph, including the selector.
       ...(instances ? [Instance.node.replace(instances(() => replacements))] : []),
       ...overrides,

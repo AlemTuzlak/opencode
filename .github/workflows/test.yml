@@ -117,17 +117,6 @@ jobs:
           TURBO_SCM_BASE: ${{ github.event_name == 'pull_request' && format('{0}^1', github.sha) || github.event.before }}
           TURBO_SCM_HEAD: ${{ github.sha }}
 
-      # The server tests again, with the sessions on the TanStack AI harness. Turbo does not pass OPENCODE_RUNTIME
-      # to its tasks, so the tests run in the package after Turbo builds the dependencies.
-      - name: Run server tests on the TanStack runtime
-        timeout-minutes: 15
-        run: |
-          bun turbo build --filter=@opencode/server^...
-          GITHUB_ACTIONS=false bun run --cwd packages/server test
-        env:
-          OPENCODE_RUNTIME: tanstack
-          OPENCODE_EXPERIMENTAL_DISABLE_FILEWATCHER: ${{ runner.os == 'Windows' && 'true' || 'false' }}
-
       - name: Verify published codemode package
         if: runner.os == 'Linux'
         working-directory: packages/codemode

@@ -1,6 +1,6 @@
 export * as SessionSystemPrompt from "./system-prompt.js"
 
-import PROMPT from "./runner/prompt/system.txt"
+import PROMPT from "./system-prompt.txt"
 
 export function make(tools: string[]) {
   return render(PROMPT, tools)

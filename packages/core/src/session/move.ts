@@ -19,7 +19,6 @@ import { SessionExecution } from "./execution.js"
 import { SessionInbox } from "./inbox.js"
 import { SessionMessage } from "./message.js"
 import { SessionProjector } from "./projector.js"
-import { SessionRunner } from "./runner/index.js"
 import { SessionStore } from "./store.js"
 
 export class DestinationNotFoundError extends Schema.TaggedError<DestinationNotFoundError>()(
@@ -104,7 +103,7 @@ const layer = Layer.effect(
     const sourceUnavailable = Effect.fn("SessionMove.sourceUnavailable")(function* (session: Session.Info) {
       if (yield* execution.isActive(session.id)) return false
       if (!(yield* fs.isDir(session.location.directory))) return true
-      return yield* SessionRunner.Service.pipe(
+      return yield* Location.Service.pipe(
         instances.provide(session),
         Effect.as(false),
         Effect.catchCause((cause) =>

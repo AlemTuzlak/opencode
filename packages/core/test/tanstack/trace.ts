@@ -139,11 +139,6 @@ export function readTrace(name: string) {
   return Bun.file(path.join(TRACE_DIRECTORY, `${name}.json`)).json() as Promise<Trace>
 }
 
-/** Writes `traces/<name>.json`. Only the golden-traces test calls this, with `UPDATE_TRACES=1`. */
-export async function writeTrace(name: string, trace: Trace) {
-  await Bun.write(path.join(TRACE_DIRECTORY, `${name}.json`), JSON.stringify(trace, null, 2) + "\n")
-}
-
 function numbered(seen: Map<string, number>, value: string) {
   const existing = seen.get(value)
   if (existing !== undefined) return existing

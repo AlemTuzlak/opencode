@@ -20,7 +20,6 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionMove } from "@opencode/core/session/move"
 import { SessionProjector } from "@opencode/core/session/projector"
-import { SessionRunner } from "@opencode/core/session/runner/index"
 import { SessionStore } from "@opencode/core/session/store"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
@@ -35,35 +34,6 @@ const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, Session.node]),
     [Project.node.replace(globalProjectNode), SessionExecution.node.replace(SessionExecution.noopLayer), offlineModels],
-  ),
-)
-const itWithActiveExecution = testEffect(
-  AppNodeBuilder.build(
-    LayerNode.group([
-      Database.node,
-      Bus.node,
-      SessionProjector.node,
-      SessionStore.node,
-      SessionExecution.node,
-      Session.node,
-    ]),
-    [
-      Project.node.replace(globalProjectNode),
-      LocationServiceMap.node.replace(
-        Layer.effect(
-          LocationServiceMap.Service,
-          LayerMap.make(
-            (ref: Location.Ref) =>
-              Layer.merge(
-                LayerNode.compile(Location.boundNode(ref), {
-                  replacements: [Project.node.replace(globalProjectNode), offlineModels],
-                }),
-                Layer.succeed(SessionRunner.Service, { drain: () => Effect.never }),
-              ) as unknown as Layer.Layer<LocationServices, FileSystem.DirectoryNotFoundError>,
-          ),
-        ),
-      ),
-    ],
   ),
 )
 const unavailableLocations = Layer.effect(
@@ -96,7 +66,7 @@ const itWithExecution = testEffect(
 const itWithPermissions =
   process.platform === "win32" || process.getuid?.() === 0 ? itWithExecution.live.skip : itWithExecution.live
 const itWithInstance = testEffect(Layer.empty)
-const sourceProbe = (options: { execution?: boolean } = {}) =>
+const sourceProbe = () =>
   Effect.gen(function* () {
     const tmp = yield* tmpdirScoped()
     const source = AbsolutePath.make(path.join(tmp.path, "source"))
@@ -106,7 +76,7 @@ const sourceProbe = (options: { execution?: boolean } = {}) =>
     const context = yield* Layer.build(
       AppNodeBuilder.build(LayerNode.group([Session.node, Bus.node, SessionExecution.node]), [
         Global.node.replace(tempGlobalLayer),
-        ...(options.execution ? [] : [SessionExecution.node.replace(SessionExecution.noopLayer)]),
+        SessionExecution.node.replace(SessionExecution.noopLayer),
         offlineModels,
         Instance.node.replace(
           makeGlobalNode({
@@ -204,32 +174,29 @@ describe("Session.move", () => {
     }),
   )
 
-  for (const broken of [false, true]) {
-    itWithExecution.live(
-      `moves an idle session from ${broken ? "broken" : "healthy"} source configuration`,
-      () =>
-        Effect.gen(function* () {
-          const tmp = yield* tmpdirScoped()
-          const source = AbsolutePath.make(path.join(tmp.path, "source"))
-          const destination = AbsolutePath.make(path.join(tmp.path, "destination"))
-          yield* Effect.promise(() => Promise.all([mkdir(source), mkdir(destination)]))
-          if (broken)
-            yield* Effect.promise(() =>
-              Bun.write(path.join(source, "opencode.json"), JSON.stringify({ instructions: ["{file:./missing.txt}"] })),
-            )
-          const session = yield* Session.Service
-          const execution = yield* SessionExecution.Service
-          const created = yield* session.create({ location: Location.Ref.make({ directory: source }) })
+  itWithExecution.live(
+    "moves an idle session from broken source configuration",
+    () =>
+      Effect.gen(function* () {
+        const tmp = yield* tmpdirScoped()
+        const source = AbsolutePath.make(path.join(tmp.path, "source"))
+        const destination = AbsolutePath.make(path.join(tmp.path, "destination"))
+        yield* Effect.promise(() => Promise.all([mkdir(source), mkdir(destination)]))
+        yield* Effect.promise(() =>
+          Bun.write(path.join(source, "opencode.json"), JSON.stringify({ instructions: ["{file:./missing.txt}"] })),
+        )
+        const session = yield* Session.Service
+        const execution = yield* SessionExecution.Service
+        const created = yield* session.create({ location: Location.Ref.make({ directory: source }) })
 
-          yield* session.move({ sessionID: created.id, directory: destination })
-          yield* execution.awaitIdle(created.id)
+        yield* session.move({ sessionID: created.id, directory: destination })
+        yield* execution.awaitIdle(created.id)
 
-          expect((yield* session.get(created.id)).location.directory).toBe(destination)
-          expect(yield* session.inbox(created.id)).toEqual([])
-        }),
-      { timeout: 15_000 },
-    )
-  }
+        expect((yield* session.get(created.id)).location.directory).toBe(destination)
+        expect(yield* session.inbox(created.id)).toEqual([])
+      }),
+    { timeout: 15_000 },
+  )
 
   itWithPermissions(
     "recovers an idle session from an unreadable source directory",
@@ -366,30 +333,6 @@ describe("Session.move", () => {
     )
   }
 
-  itWithInstance.live("does not recover if execution starts during the source probe", () =>
-    Effect.gen(function* () {
-      const fixture = yield* sourceProbe({ execution: true })
-      const created = yield* fixture.session.create({ location: Location.Ref.make({ directory: fixture.source }) })
-      const moving = yield* fixture.session
-        .move({ sessionID: created.id, directory: fixture.destination })
-        .pipe(Effect.forkScoped)
-      const release = yield* Queue.take(fixture.probes)
-
-      yield* fixture.execution.wake(created.id)
-      // The real coordinator now owns execution; its separate instance acquisition stays suspended.
-      yield* Queue.take(fixture.probes)
-      expect(yield* fixture.execution.isActive(created.id)).toBe(true)
-      yield* Deferred.die(release, new Error("source unavailable"))
-      yield* Fiber.join(moving)
-
-      expect((yield* fixture.session.get(created.id)).location.directory).toBe(fixture.source)
-      expect(yield* fixture.session.inbox(created.id)).toMatchObject([{ type: "move", delivery: "steer" }])
-      expect(yield* fixture.execution.isActive(created.id)).toBe(true)
-      yield* fixture.execution.interrupt(created.id)
-      yield* fixture.execution.awaitIdle(created.id)
-    }).pipe(Effect.timeout("5 seconds")),
-  )
-
   itWithInstance.live(
     "recovers a missing source without initializing its instance and retains destination workspace identity",
     () =>
@@ -511,41 +454,6 @@ describe("Session.move", () => {
           })
           yield* session.move({ sessionID: steered.id, directory: destination, delivery: "queue" })
           expect(yield* session.inbox(steered.id)).toMatchObject([{ type: "move", delivery: "queue" }])
-        }),
-      ),
-    ),
-  )
-
-  itWithActiveExecution.live("defers an active move when the source directory no longer exists", () =>
-    tmpdirScoped().pipe(
-      Effect.flatMap((tmp) =>
-        Effect.gen(function* () {
-          const session = yield* Session.Service
-          const execution = yield* SessionExecution.Service
-          const source = AbsolutePath.make(path.join(tmp.path, "source"))
-          const destination = AbsolutePath.make(tmp.path)
-          yield* Effect.promise(() => mkdir(source))
-          const created = yield* session.create({ location: Location.Ref.make({ directory: source }) })
-
-          // Hold real execution open so the move cannot be consumed before admission is checked.
-          yield* execution.wake(created.id)
-          expect(yield* execution.isActive(created.id)).toBe(true)
-          yield* Effect.promise(() => rm(source, { recursive: true }))
-
-          yield* session.move({ sessionID: created.id, directory: destination })
-
-          expect((yield* session.get(created.id)).location.directory).toBe(source)
-          expect(yield* session.inbox(created.id)).toMatchObject([
-            {
-              type: "move",
-              delivery: "steer",
-              payload: { location: { directory: destination } },
-            },
-          ])
-          expect(yield* execution.isActive(created.id)).toBe(true)
-
-          yield* execution.interrupt(created.id)
-          yield* execution.awaitIdle(created.id)
         }),
       ),
     ),

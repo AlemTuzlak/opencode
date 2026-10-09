@@ -67,42 +67,34 @@ export class NotSupportedError extends Schema.TaggedError<NotSupportedError>()("
 }
 
 export interface HostsInterface {
-  /** The TanStack host of a location. */
-  readonly get: (location: Location.Ref) => Effect.Effect<TanStackHost.Interface>
+  /** The TanStack host of a session. */
+  readonly get: (session: SessionSchema.Info) => Effect.Effect<TanStackHost.Interface>
 }
 
-/** Finds the `TanStackHost` of a location. The session layer runs each session on the host of its location. */
+/** Finds the `TanStackHost` of a session. The session layer runs each session on the host of its instance. */
 export class Hosts extends Context.Service<Hosts, HostsInterface>()("@opencode/TanStackSession/Hosts") {}
 
 /**
- * The hosts from the location graph: the `TanStackHost.node` of each location. It dies when the location graph
- * has no `TanStackHost.node`. The layer keeps each location it used open until it closes.
+ * The hosts from the instance graph of each session: its location graph, or an SDK instance with its own plugins,
+ * as on opencode's runtime. Both keep their graphs open, so the host stays open after the lookup. It dies when the
+ * graph has no `TanStackHost.node`.
  */
 export const locatedHosts = Layer.effect(
   Hosts,
   Effect.gen(function* () {
-    const locations = yield* LocationServiceMap.Service
-    const scope = yield* Scope.Scope
-    const cache = new Map<string, TanStackHost.Interface>()
+    const instances = yield* Instance.Service
     return Hosts.of({
-      get: Effect.fn("TanStackSession.Hosts.get")(function* (location) {
-        const key = locationKey(location)
-        const cached = cache.get(key)
-        if (cached) return cached
-        const context = yield* locations
-          .contextEffect(LocationServiceMap.canonical(location))
-          .pipe(Effect.provideService(Scope.Scope, scope), Effect.orDie)
-        const found = Context.getOption(context, TanStackHost.Service)
+      get: Effect.fn("TanStackSession.Hosts.get")(function* (session) {
+        const found = yield* instances.provide(session)(Effect.serviceOption(TanStackHost.Service)).pipe(Effect.orDie)
         if (Option.isNone(found))
-          return yield* Effect.die(new Error(`The location ${location.directory} has no TanStackHost.node.`))
-        cache.set(key, found.value)
+          return yield* Effect.die(new Error(`The location ${session.location.directory} has no TanStackHost.node.`))
         return found.value
       }),
     })
   }),
 )
 
-export const hostsNode = makeGlobalNode({ service: Hosts, layer: locatedHosts, deps: [LocationServiceMap.node] })
+export const hostsNode = makeGlobalNode({ service: Hosts, layer: locatedHosts, deps: [Instance.node] })
 
 // The metadata namespace of the saved id links of each session.
 const LINKS = "opencode/tanstack-links"
@@ -259,11 +251,7 @@ export const layer = Layer.effect(
           (fallback && Model.Ref.make({ providerID: fallback.providerID, id: fallback.id }))
         const costs = model === undefined ? [] : ((yield* models.get(model.providerID, model.id))?.cost ?? [])
         return { agent, model, costs }
-      }).pipe(
-        Effect.provide(LocationServiceMap.Service.get(info.location)),
-        Effect.provideService(LocationServiceMap.Service, locations),
-        Effect.orDie,
-      )
+      }).pipe(instances.provide(info), Effect.orDie)
       const model = selected.model
       if (model === undefined)
         return yield* Effect.die(new Error(`The session ${info.id} has no model, and its location has no default.`))
@@ -275,7 +263,7 @@ export const layer = Layer.effect(
         Effect.gen(function* () {
           const existing = entries.get(info.id)
           if (existing) return existing
-          const host = yield* hosts.get(info.location)
+          const host = yield* hosts.get(info)
           yield* watch(host)
           const session = yield* host.open(info.id).pipe(Effect.orDie)
           const saved = decodeLinks(yield* Effect.promise(() => metadata.get(LINKS, info.id)))
@@ -490,8 +478,7 @@ export const layer = Layer.effect(
     const createChild = Effect.fn("TanStackSession.createChild")(function* (entry: Entry, output: ChildSession) {
       const parent = yield* base.get(output.parentID).pipe(Effect.orDie)
       const agent = yield* Agent.Service.use((agents) => agents.get(output.agent)).pipe(
-        Effect.provide(LocationServiceMap.Service.get(entry.location)),
-        Effect.provideService(LocationServiceMap.Service, locations),
+        instances.provide(parent),
         Effect.orDie,
       )
       yield* base
@@ -614,12 +601,14 @@ export const layer = Layer.effect(
         return "accepted"
       }
       const overrides = yield* Effect.result(turn(entry, info))
-      // The model cannot run, for example a provider with no TanStack adapter. As on opencode's runtime, the input
-      // stays in the inbox, and the busy period fails with the error before it delivers the input.
+      // The model cannot run, for example an unknown model or a provider with no TanStack adapter. As on opencode's
+      // runtime, the busy period delivers the inputs and then fails with the error. They go to the harness with the
+      // next input.
       if (Result.isFailure(overrides)) {
         yield* hold(entry, info, input)
         if (isIdle) {
           yield* bus.publish(SessionEvent.Execution.Started, { sessionID: info.id })
+          yield* deliver(entry, info)
           yield* bus.publish(SessionEvent.Execution.Failed, { sessionID: info.id, error: modelError(overrides.failure) })
         }
         return "accepted"
@@ -641,20 +630,26 @@ export const layer = Layer.effect(
       return receipt.status
     })
 
+    /** Delivers the inbox items of the held inputs. The inputs stay held, with no inbox item. */
+    const deliver = Effect.fn("TanStackSession.deliver")(function* (entry: Entry, info: SessionSchema.Info) {
+      yield* Effect.forEach(
+        entry.held.flatMap((item) => (item.inboxID === undefined ? [] : [item.inboxID])),
+        (inboxID) =>
+          bus.publish(SessionEvent.InboxDelivered, { sessionID: info.id, inboxID }, { location: info.location }),
+        { discard: true },
+      )
+      entry.held.splice(0, entry.held.length, ...entry.held.map((item) => ({ inboxID: undefined, text: item.text })))
+    })
+
     /** The held inputs go in front of `message`. Their inbox items are delivered now. */
     const release = Effect.fn("TanStackSession.release")(function* (
       entry: Entry,
       info: SessionSchema.Info,
       message: UserInput,
     ) {
+      yield* deliver(entry, info)
       const held = entry.held.splice(0)
       if (held.length === 0) return message
-      yield* Effect.forEach(
-        held.flatMap((item) => (item.inboxID === undefined ? [] : [item.inboxID])),
-        (inboxID) =>
-          bus.publish(SessionEvent.InboxDelivered, { sessionID: info.id, inboxID }, { location: info.location }),
-        { discard: true },
-      )
       const parts: ContentPart[] = [
         ...held.map((item) => ({ type: "text" as const, content: item.text })),
         ...(typeof message === "string" ? [{ type: "text" as const, content: message }] : message),
@@ -716,7 +711,10 @@ export const layer = Layer.effect(
         resume: input.resume !== false && info.revert === undefined,
       })
       if (status === "rejected") return yield* new SyntheticConflictError({ sessionID: info.id, inputID: inboxID })
-      return SessionInbox.Synthetic.make({ id: inboxID, sessionID: info.id, time: now(), ...item })
+      const stored = yield* admission
+        .reconcile({ id: inboxID, sessionID: info.id, type: "synthetic", delivery: item.delivery })
+        .pipe(Effect.orDie)
+      return stored ?? SessionInbox.Synthetic.make({ id: inboxID, sessionID: info.id, time: now(), ...item })
     })
 
     /** Runs an inbox change on the harness. The harness refuses an input that does not wait. */
@@ -826,7 +824,7 @@ export const layer = Layer.effect(
         const info = yield* base.get(sessionID)
         yield* close(sessionID)
         yield* base.remove(sessionID)
-        const host = yield* hosts.get(info.location)
+        const host = yield* hosts.get(info)
         yield* Effect.promise(() => host.host.sessions.delete(sessionID))
         yield* Effect.promise(() => metadata.delete(LINKS, sessionID))
       }),
@@ -897,7 +895,11 @@ export const layer = Layer.effect(
           resume: input.resume !== false,
         })
         if (status === "rejected") return yield* new PromptConflictError({ sessionID: info.id, messageID })
-        return SessionInbox.User.make({ id: messageID, sessionID: info.id, time: now(), ...item })
+        // The stored item has the time of the inbox or of its delivered message.
+        const stored = yield* admission
+          .reconcile({ id: messageID, sessionID: info.id, type: "user", delivery })
+          .pipe(Effect.orDie)
+        return stored ?? SessionInbox.User.make({ id: messageID, sessionID: info.id, time: now(), ...item })
       }),
       generate: Effect.fn("TanStackSession.generate")(function* (input) {
         const info = yield* base.get(input.sessionID)
@@ -1269,10 +1271,6 @@ const decodeOperationID = Schema.decodeUnknownOption(
   Schema.Struct({ operationId: Schema.String, kind: Schema.optionalKey(Schema.String) }),
 )
 const decodeInboxID = Schema.decodeUnknownOption(Schema.Struct({ inboxID: Schema.String }))
-
-function locationKey(location: Location.Ref) {
-  return `${location.workspaceID ?? ""}\n${LocationServiceMap.canonical(location).directory}`
-}
 
 const decodeLinks = (value: unknown) =>
   Option.getOrElse(

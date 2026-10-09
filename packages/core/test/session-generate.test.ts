@@ -35,7 +35,7 @@ import { SessionGenerate } from "@opencode/core/session/generate"
 import { InstructionState } from "@opencode/core/session/instruction-state"
 import { SessionMessage } from "@opencode/core/session/message"
 import { SessionProjector } from "@opencode/core/session/projector"
-import { SessionRunnerModel } from "@opencode/core/session/runner/model"
+import { SessionRunnerModel } from "@opencode/core/session/runner-model"
 import { SessionSchema } from "@opencode/core/session/schema"
 import {
   InstructionBlobTable,
