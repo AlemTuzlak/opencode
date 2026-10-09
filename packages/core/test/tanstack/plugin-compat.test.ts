@@ -9,6 +9,7 @@
 import { afterAll, describe, expect } from "bun:test"
 import { mkdir } from "node:fs/promises"
 import path from "node:path"
+import { SystemPart } from "@opencode/ai"
 import { define } from "@opencode/plugin/effect/plugin"
 import type { Plugin as PluginDefinition } from "@opencode/plugin/effect/plugin"
 import { Agent } from "@opencode/core/agent"
@@ -25,6 +26,7 @@ import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { PermissionSaved } from "@opencode/core/permission/saved"
 import { PersistentPty } from "@opencode/core/persistent-pty"
 import { Plugin } from "@opencode/core/plugin"
+import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { PluginHost } from "@opencode/core/plugin/host"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
@@ -37,7 +39,7 @@ import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { createHarnessHost } from "@tanstack/ai-harness"
 import { memoryPersistence } from "@tanstack/ai-persistence"
-import { Effect, Schema } from "effect"
+import { Effect, Schedule, Schema } from "effect"
 import { tempGlobalLayer } from "../fixture/global"
 import { offlineModels } from "../fixture/models"
 import { tmpdirScoped } from "../fixture/tmpdir"
@@ -55,6 +57,8 @@ interface Received {
   readonly path: string
   readonly headers: Headers
   readonly messages: ReadonlyArray<typeof Message.Type>
+  /** The names of the tools of the request. */
+  readonly tools: ReadonlyArray<string>
 }
 
 const Message = Schema.Struct({
@@ -66,7 +70,7 @@ const decodeRequest = Schema.decodeUnknownSync(
   Schema.Struct({
     messages: Schema.Array(Message),
     stream: Schema.optional(Schema.Boolean),
-    tools: Schema.optional(Schema.Array(Schema.Unknown)),
+    tools: Schema.optional(Schema.Array(Schema.Struct({ function: Schema.Struct({ name: Schema.String }) }))),
   }),
 )
 
@@ -81,7 +85,13 @@ const server = Bun.serve({
   fetch: async (request) => {
     const body = decodeRequest(await request.json())
     const isTurn = (body.tools?.length ?? 0) > 0
-    if (isTurn) received.push({ path: new URL(request.url).pathname, headers: request.headers, messages: body.messages })
+    if (isTurn)
+      received.push({
+        path: new URL(request.url).pathname,
+        headers: request.headers,
+        messages: body.messages,
+        tools: (body.tools ?? []).map((tool) => tool.function.name),
+      })
     const step = isTurn ? steps.shift() : { text: "Title" }
     if (!step) return new Response("No scripted step left", { status: 500 })
     if (step.status !== undefined)
@@ -207,24 +217,58 @@ const project = Effect.gen(function* () {
   return { directory: tmp.path, sessionID: session.id, location: LocationServiceMap.Service.get(ref) }
 })
 
-/** Loads `plugin` in the location as the plugin registry does, for the rest of the test. */
-const load = (location: Effect.Success<typeof project>["location"], plugin: PluginDefinition) =>
+/**
+ * Loads `plugin` in the location for the rest of the test, as the plugin registry of the TanStack runtime loads a
+ * plugin that is not built in (`external`), or one of opencode's own plugins (`builtin`).
+ */
+const load = (
+  location: Effect.Success<typeof project>["location"],
+  plugin: PluginDefinition,
+  origin: PluginHooks.Origin = "external",
+) =>
   Effect.gen(function* () {
     yield* plugin.effect(yield* PluginHost.make(yield* Plugin.Service, plugin.id))
-  }).pipe(Effect.provide(location))
+  }).pipe(Effect.provideService(PluginHooks.CurrentOrigin, origin), Effect.provide(location))
 
-/** Loads `plugin`, builds the harness of the project, and runs one turn with the scripted model. */
-const turn = (input: { readonly plugin: PluginDefinition; readonly prompt: string }) =>
+/** Loads `plugin`, builds the harness of the project, and opens the harness session of the opencode session. */
+const open = (input: { readonly plugin: PluginDefinition; readonly origin?: PluginHooks.Origin }) =>
   Effect.gen(function* () {
     const context = yield* project
-    yield* load(context.location, input.plugin)
+    yield* load(context.location, input.plugin, input.origin)
     const built = yield* TanStackHarness.make().pipe(Effect.provide(context.location))
     const host = createHarnessHost({ persistence: memoryPersistence() })
     yield* Effect.addFinalizer(() => Effect.promise(() => host.close()))
     const session = yield* Effect.promise(() => host.open(built.harness, { threadId: context.sessionID }))
-    const result = yield* Effect.promise(() => session.prompt(input.prompt))
-    return { ...context, text: result.text }
+    return { ...context, built, host, session }
   })
+
+/** Loads `plugin`, builds the harness of the project, and runs one turn with the scripted model. */
+const turn = (input: {
+  readonly plugin: PluginDefinition
+  readonly prompt: string
+  readonly origin?: PluginHooks.Origin
+}) =>
+  Effect.gen(function* () {
+    const opened = yield* open(input)
+    const result = yield* Effect.promise(() => opened.session.prompt(input.prompt))
+    return { ...opened, text: result.text }
+  })
+
+/** The title of a harness session, after the `title()` plugin, which does not block the turn, wrote it. */
+const titleOf = (host: ReturnType<typeof createHarnessHost>, threadId: string) =>
+  Effect.promise(() => host.sessions.get(threadId)).pipe(
+    Effect.flatMap((entry) => (entry?.title ? Effect.succeed(entry.title) : Effect.fail("untitled" as const))),
+    Effect.retry(Schedule.spaced("10 millis")),
+    Effect.timeout("5 seconds"),
+  )
+
+/** The system prompts of the turn request `index`. */
+function systemOf(index: number) {
+  return (received[index]?.messages ?? [])
+    .filter((message) => message.role === "system")
+    .map((message) => (typeof message.content === "string" ? message.content : JSON.stringify(message.content)))
+    .join("\n")
+}
 
 /** The content of the tool result that the model got for `toolCallId`. */
 function toolResult(toolCallId: string) {
@@ -450,6 +494,168 @@ describe("TanStackPluginCompat", () => {
 
         expect(seen).toEqual([{ attempt: 2, status: 400, decision: { retry: false } }])
         expect(context.text).toBe("Recovered")
+      }),
+    60_000,
+  )
+
+  it.live(
+    "session.context of a plugin that is not built in changes the system prompts and the tools",
+    () =>
+      Effect.gen(function* () {
+        const seen: Array<{ agent: string; model: string; user: string; tools: boolean }> = []
+        script({ text: "Bonjour" })
+        const context = yield* turn({
+          prompt: "Say hello",
+          plugin: define({
+            id: "test.context",
+            effect: (ctx) =>
+              ctx.session
+                .hook("context", (event) =>
+                  Effect.sync(() => {
+                    const user = event.messages.findLast((message) => message.role === "user")
+                    seen.push({
+                      agent: event.agent,
+                      model: `${event.model.providerID}/${event.model.id}`,
+                      user: user?.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("") ?? "",
+                      tools: Object.hasOwn(event.tools, "read") && Object.hasOwn(event.tools, "shell"),
+                    })
+                    event.system.push(SystemPart.make("Plugin rule: answer in French."))
+                    delete event.tools.shell
+                  }),
+                )
+                .pipe(Effect.asVoid),
+          }),
+        })
+
+        expect(context.text).toBe("Bonjour")
+        expect(seen).toEqual([{ agent: "build", model: "test/fake", user: "Say hello", tools: true }])
+        expect(systemOf(0)).toContain("Plugin rule: answer in French.")
+        expect(received[0]?.tools).toContain("read_file")
+        expect(received[0]?.tools).not.toContain("bash")
+      }),
+    60_000,
+  )
+
+  it.live(
+    "session.context of a built-in plugin does not run on the harness",
+    () =>
+      Effect.gen(function* () {
+        const seen: string[] = []
+        script({ text: "Hello" })
+        yield* turn({
+          prompt: "Say hello",
+          origin: "builtin",
+          plugin: define({
+            id: "test.builtin-context",
+            effect: (ctx) =>
+              ctx.session
+                .hook("context", (event) =>
+                  Effect.sync(() => {
+                    seen.push(event.agent)
+                    event.system.push(SystemPart.make("Built-in rule."))
+                  }),
+                )
+                .pipe(Effect.asVoid),
+          }),
+        })
+
+        expect(seen).toEqual([])
+        expect(systemOf(0)).not.toContain("Built-in rule.")
+      }),
+    60_000,
+  )
+
+  it.live(
+    "session.title of a plugin that is not built in gives the session title",
+    () =>
+      Effect.gen(function* () {
+        const seen: string[] = []
+        script({ text: "Hello" })
+        const context = yield* turn({
+          prompt: "Say hello",
+          plugin: define({
+            id: "test.title",
+            effect: (ctx) =>
+              ctx.session
+                .hook("title", (event) =>
+                  Effect.sync(() => {
+                    seen.push(JSON.stringify(event.messages.map((message) => message.content)))
+                    event.result = "Greeting from the plugin"
+                  }),
+                )
+                .pipe(Effect.asVoid),
+          }),
+        })
+
+        expect(yield* titleOf(context.host, context.sessionID)).toBe("Greeting from the plugin")
+        expect(seen).toHaveLength(1)
+        expect(seen[0]).toContain("Say hello")
+      }),
+    60_000,
+  )
+
+  it.live(
+    "session.compaction of a plugin that is not built in gives the summary of a compaction",
+    () =>
+      Effect.gen(function* () {
+        const seen: string[] = []
+        script({ text: "Noted." }, { text: "Done." })
+        const context = yield* open({
+          plugin: define({
+            id: "test.compaction",
+            effect: (ctx) =>
+              ctx.session
+                .hook("compaction", (event) =>
+                  Effect.sync(() => {
+                    seen.push(event.agent)
+                    event.result = { summary: "The user sent a long note." }
+                  }),
+                )
+                .pipe(Effect.asVoid),
+          }),
+        })
+        // More than the 15,000 tokens that a compaction keeps, so the first turn is summarized.
+        yield* Effect.promise(() => context.session.prompt(`Keep this note: ${"lorem ipsum ".repeat(8_000)}`))
+        context.built.compaction?.compactNext(context.sessionID)
+        yield* Effect.promise(() => context.session.prompt("Continue"))
+
+        expect(seen).toEqual(["build"])
+        expect(JSON.stringify(received[1]?.messages)).toContain("The user sent a long note.")
+        expect(JSON.stringify(received[1]?.messages)).not.toContain("lorem ipsum")
+      }),
+    60_000,
+  )
+
+  it.live(
+    "a tool that a plugin adds to the tool registry is a tool of the harness",
+    () =>
+      Effect.gen(function* () {
+        script(
+          { toolCalls: [{ id: "call-greet", name: "greet", input: { name: "Ada" } }] },
+          { text: "Greeted." },
+        )
+        const context = yield* turn({
+          prompt: "Greet Ada",
+          plugin: define({
+            id: "test.tool",
+            effect: (ctx) =>
+              ctx.tool
+                .transform((editor) =>
+                  editor.add({
+                    name: "greet",
+                    description: "Greet a person by name.",
+                    input: Schema.Struct({ name: Schema.String }),
+                    options: { codemode: false },
+                    execute: (input) => Effect.succeed({ content: `Hello, ${input.name}!` }),
+                  }),
+                )
+                .pipe(Effect.asVoid),
+          }),
+        })
+
+        expect(context.text).toBe("Greeted.")
+        expect(received[0]?.tools).toContain("greet")
+        expect(toolResult("call-greet")).toBe("Hello, Ada!")
       }),
     60_000,
   )

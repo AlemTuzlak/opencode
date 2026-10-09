@@ -6,7 +6,7 @@ import { isRecord } from "@opencode/ai/utils/record"
 import type { FileDiff } from "@opencode/schema/file-diff"
 import { Global } from "@opencode/util/global"
 import { toolDefinition } from "@tanstack/ai"
-import type { AnyTool, ChatMiddleware, ContentPart } from "@tanstack/ai"
+import type { ChatMiddleware, ContentPart } from "@tanstack/ai"
 import { codeMode } from "@tanstack/ai-code-mode/harness"
 import { conversationSummarizer, summarizeOldest, withCompaction } from "@tanstack/ai-compaction"
 import { defineHarness, definePlugin } from "@tanstack/ai-harness"
@@ -16,7 +16,6 @@ import {
   permissions,
   projectInstructions,
   question,
-  title,
   usage,
 } from "@tanstack/ai-harness/plugins"
 import type { AgentProfile } from "@tanstack/ai-harness/plugins"
@@ -39,9 +38,10 @@ import { Provider } from "../provider.js"
 import { Session } from "../session.js"
 import { Skill } from "../skill.js"
 import { ToolOutput } from "../tool-output.js"
+import { Tool } from "../tool.js"
 import { McpTool } from "../tool/mcp.js"
 import { TanStackAdapters } from "./adapters.js"
-import { TanStackOpencodeTools } from "./opencode-tools.js"
+import { TanStackOpencodeTools, inCodeMode } from "./opencode-tools.js"
 import { TanStackPluginCompat } from "./plugin-compat.js"
 import { TanStackRules } from "./rules.js"
 
@@ -115,6 +115,8 @@ type Resolved = Effect.Success<ReturnType<typeof TanStackAdapters.adapterFor>> &
  *   `title`, `usage`, and `projectInstructions` from opencode's instruction files.
  * - opencode's skill folders, plus the `skills` folders of `.claude` and `.agents`.
  * - opencode's MCP tools and the `opencode_*` tools, in Code Mode.
+ * - the tools that plugins add to opencode's tool registry, such as the `browser.*` tools: in Code Mode when opencode
+ *   runs them in Code Mode, else tool calls.
  * - compaction that keeps 15,000 tokens, natively when the model has native compaction, and
  *   `retryTransientErrors()` for model errors.
  * - opencode's plugin hooks, from `TanStackPluginCompat`.
@@ -145,7 +147,9 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
   const mcp = yield* Mcp.Service
   const hooks = yield* PluginHooks.Service
   const run = Effect.runPromiseWith(
-    yield* Effect.context<Session.Service | Provider.Service | Model.Service | Mcp.Service>(),
+    yield* Effect.context<
+      Session.Service | Provider.Service | Model.Service | Mcp.Service | Tool.Service | Agent.Service
+    >(),
   )
   const root = location.directory
   // The model of each resolved adapter, by `provider/model#variant` and by the adapter's model id.
@@ -251,7 +255,7 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     }),
   )
   const spillDir = path.join(global.data, ToolOutput.DIRECTORY)
-  const compaction = summaryModel && compactionMiddleware(summaryModel, fallback)
+  const compaction = summaryModel && compactionMiddleware(summaryModel, fallback, compat.summaryAdapter)
 
   /** The adapter for a model id of `agents()`: a subagent's `provider/model`, or the model id of the main turn. */
   const adapterOf = (model: string) => {
@@ -302,6 +306,17 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     },
   })
 
+  // The tools that plugins add to opencode's tool registry, such as the `browser.*` tools. After `opencode/mcp`, so
+  // an MCP tool, which the registry has too, comes from `opencode/mcp`. The list is new for each turn: a desktop
+  // browser that attaches to the session shows the `browser.*` tools.
+  const registeredTools = definePlugin({
+    name: "opencode/registered-tools",
+    setup: (ctx) => {
+      const sessionID = Session.ID.make(ctx.session.threadId)
+      return { discoverTools: () => run(TanStackOpencodeTools.registered({ sessionID })) }
+    },
+  })
+
   const isShellHooked = yield* hooks.has("shell", "create.before")
   const outside = TanStackRules.workspaceOutside(
     opencodeAgents.find((agent) => agent.id === selected.id)?.permissions ?? [],
@@ -311,7 +326,8 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     name: "opencode",
     ...(fallback ? { adapter: fallback.adapter } : {}),
     ...(fallback?.reasoning ? { reasoning: fallback.reasoning } : {}),
-    ...(compaction ? { middleware: [compaction.middleware] } : {}),
+    // The summaries of the compaction run the `session.compaction` hooks of the session.
+    ...(compaction ? { middleware: [compat.compaction(compaction.middleware)] } : {}),
     // One `subagent` tool for every subagent, as opencode has.
     subagents: { agents: [], tool: "single" },
     turn: { onModelError: compat.onModelError },
@@ -344,10 +360,12 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
         question(),
         opencodeTools,
         mcpTools,
+        registeredTools,
         skills({ dirs: skillFolders }),
-        // Only the marked tools move: MCP tools and the `opencode_*` tools. The other tools stay tool calls.
+        // Only the marked tools move: MCP tools, the `opencode_*` tools, and the registry tools that opencode runs in
+        // Code Mode, such as the `browser.*` tools. The other tools stay tool calls.
         codeMode({ driver: createQuickJSIsolateDriver(), include: () => false }),
-        ...(titleModel ? [title({ adapter: titleModel.adapter })] : []),
+        ...(titleModel ? [compat.title(titleModel.adapter)] : []),
         usage({ model: (id) => prices.get(Model.ID.make(id)) }),
         // After the tool plugins, so the agent rules come after their default rules and win.
         agents({
@@ -358,6 +376,8 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
         }),
         // Last, so a changed instruction file keeps the prompt cache.
         projectInstructions({ root, global: globalInstructions, files: [] }),
+        // `session.context` sees the request after the other plugins built it.
+        compat.context,
         // After every plugin that checks or changes a tool call, so `tool.execute.before` sees the call that runs,
         // and `tool.execute.after` sees the result that the model gets.
         compat.tools,
@@ -411,7 +431,11 @@ function agentProfile(agent: Agent.Info) {
  * opencode's compaction: summarize all but the newest 15,000 tokens before the context of the default model is
  * full. With native compaction on the default model, its endpoint compacts. `model` is the model that compacts.
  */
-function compactionMiddleware(summary: Resolved, fallback: Resolved | undefined) {
+function compactionMiddleware(
+  summary: Resolved,
+  fallback: Resolved | undefined,
+  hooked: (adapter: Resolved["adapter"]) => Resolved["adapter"],
+) {
   const limit = (fallback ?? summary).info.limit
   const window = limit.input || limit.context || UNKNOWN_WINDOW
   const isNative = fallback?.compaction?.type === "native"
@@ -424,16 +448,11 @@ function compactionMiddleware(summary: Resolved, fallback: Resolved | undefined)
     strategy: summarizeOldest({
       cut: "turn",
       keepRecentTokens: KEEP_TOKENS,
-      summarize: conversationSummarizer({ adapter: summary.adapter }),
+      summarize: conversationSummarizer({ adapter: hooked(summary.adapter) }),
     }),
     ...(isNative && fallback ? { native: fallback.adapter } : {}),
   })
   return { middleware, model: isNative && fallback ? fallback.ref : summary.ref }
-}
-
-/** A tool that Code Mode takes when it is safe to run without a question. */
-function inCodeMode<Tool extends AnyTool>(tool: Tool) {
-  return { ...tool, metadata: { ...tool.metadata, codeMode: true } }
 }
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))

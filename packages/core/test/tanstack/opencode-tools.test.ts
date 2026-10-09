@@ -16,7 +16,7 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { Global } from "@opencode/util/global"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Effect } from "effect"
+import { Effect, Schema } from "effect"
 import { tempGlobalLayer } from "../fixture/global"
 import { tempLocationLayer } from "../fixture/location"
 import { emptyMcp, emptyMcpLayer } from "../fixture/mcp"
@@ -423,6 +423,39 @@ describe("TanStackOpencodeTools", () => {
           )
         }),
       ),
+    )
+  })
+
+  describe("registered", () => {
+    it.effect("gives the registry tools of plugins, without the tools that the harness replaces or the rules hide", () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const location = yield* Location.Service
+        const registry = yield* Tool.Service
+        const tool = (name: string, permission?: string) => ({
+          name,
+          description: `The ${name} tool.`,
+          input: Schema.Struct({}),
+          options: { codemode: false, ...(permission === undefined ? {} : { permission }) },
+          execute: () => Effect.succeed({ content: `${name} ran` }),
+        })
+        yield* registry.transform((editor) => {
+          editor.add(tool("read"))
+          editor.add(tool("greet"))
+          editor.add(tool("secret", "secret"))
+        })
+        const session = yield* sessions.create({
+          location: Location.Ref.make({ directory: location.directory }),
+          permissions: [{ action: "secret", resource: "*", effect: "deny" }],
+        })
+
+        const tools = yield* TanStackOpencodeTools.registered({ sessionID: session.id })
+
+        expect(tools.map((item) => item.name).filter((name) => ["read", "greet", "secret"].includes(name))).toEqual([
+          "greet",
+        ])
+        expect(yield* call(tools, "greet", {})).toBe("greet ran")
+      }),
     )
   })
 })

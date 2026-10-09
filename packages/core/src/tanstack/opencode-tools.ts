@@ -1,15 +1,24 @@
 export * as TanStackOpencodeTools from "./opencode-tools.js"
 
-import { Tool } from "@opencode/schema/tool"
 import { toolDefinition } from "@tanstack/ai"
+import type { AnyTool, ContentPart } from "@tanstack/ai"
 import { Effect, Schema } from "effect"
+import { Agent } from "../agent.js"
 import { Mcp } from "../mcp/index.js"
 import { Model } from "../model.js"
+import { Permission } from "../permission.js"
 import { Provider } from "../provider.js"
 import { AbsolutePath } from "../schema.js"
 import { Session } from "../session.js"
+import { SessionMessage } from "../session/message.js"
+import { Tool } from "../tool.js"
 import { OpenCodeTools } from "../tool/plugin/opencode.js"
-import { definition } from "../tool/runtime.js"
+import { definition, execute } from "../tool/runtime.js"
+import { Wildcard } from "../util/wildcard.js"
+import { harnessToolNames, toOpencodeName } from "./tool-names.js"
+
+// The registry tools that the harness has its own tool for: `read` is `read_file`, `shell` is `bash`, and so on.
+const REPLACED: ReadonlySet<string> = new Set(harnessToolNames.map(toOpencodeName))
 
 // The output schemas of `tool/plugin/opencode.ts`, which does not export them.
 const RenameOutput = Schema.Struct({ sessionID: Session.ID, title: Schema.String })
@@ -281,4 +290,110 @@ function serverTool<Input extends Schema.Codec<unknown, unknown>, Output extends
       { signal: context?.abortSignal },
     ),
   )
+}
+
+/**
+ * The tools that plugins add to opencode's tool registry with `ctx.tool.transform`, as TanStack server tools for one
+ * session. These are the `browser.*` tools of the browser plugin and the tools of other plugins. The harness has its
+ * own tool for each opencode built-in tool, so those are left out.
+ *
+ * Each tool has the name, description, and schemas that opencode gives the model (`browser_tabs_open`). A tool that
+ * opencode runs in Code Mode goes into Code Mode (`metadata.codeMode`) and gives its declared output, as in opencode's
+ * Code Mode. A tool with `codemode: false` stays a tool call and gives the model its content: text, images, and files.
+ * A failure rejects with the `Tool.Error` of the tool.
+ *
+ * The list follows opencode's catalog rule: a tool whose permission action the rules of the session's agent and of
+ * the session deny for every resource is left out. The browser plugin denies `browser` until a desktop browser
+ * attaches to the session, so call it again for each turn.
+ *
+ * Run it in the Effect context of the location: the tools run their effects in that context.
+ *
+ * @example
+ * const tools = yield* TanStackOpencodeTools.registered({ sessionID: session.id })
+ * definePlugin({ name: "opencode/registered-tools", setup: () => ({ discoverTools: () => tools }) })
+ */
+export const registered = Effect.fn("TanStackOpencodeTools.registered")(function* (input: {
+  readonly sessionID: Session.ID
+}) {
+  const registry = yield* Tool.Service
+  const sessions = yield* Session.Service
+  const agents = yield* Agent.Service
+  const runPromise = Effect.runPromiseWith(yield* Effect.context<never>())
+  const session = yield* sessions.get(input.sessionID)
+  const agent = yield* agents.select(session.agent)
+  const rules = Permission.merge(agent.info?.permissions ?? [], session.permissions ?? [])
+  const tools = yield* registry.list()
+  return tools
+    .filter((tool) => !REPLACED.has(tool.id) && !isWhollyDenied(tool.options?.permission ?? tool.id, rules))
+    .map((tool) => registeredTool(runPromise, tool, { sessionID: input.sessionID, agent: agent.id }))
+})
+
+type Registered = Effect.Success<ReturnType<Tool.Interface["list"]>>[number]
+
+/** A registry tool as a TanStack server tool. */
+function registeredTool(
+  runPromise: <A, E>(effect: Effect.Effect<A, E>, options?: Effect.RunOptions) => Promise<A>,
+  tool: Registered,
+  scope: { readonly sessionID: Session.ID; readonly agent: Agent.ID },
+) {
+  const described = definition(tool)
+  const isCodeMode = tool.options?.codemode !== false
+  const server = toolDefinition({
+    name: described.name,
+    description: described.description,
+    inputSchema: described.inputSchema,
+    ...(described.outputSchema ? { outputSchema: described.outputSchema } : {}),
+  }).server(async (args, context) => {
+    const callID = context?.toolCallId ?? crypto.randomUUID()
+    const result = await runPromise(
+      execute(tool, args, {
+        ...scope,
+        // The harness message id is not an opencode one, so the call id names the message.
+        messageID: SessionMessage.ID.make(`msg_${callID}`),
+        id: Tool.CallID.make(callID),
+        progress: (metadata) =>
+          Effect.sync(() => context?.emitCustomEvent("tool:progress", { ...metadata, toolCallId: callID })),
+      }),
+      { signal: context?.abortSignal },
+    )
+    return isCodeMode ? codeModeValue(result) : modelResult(result)
+  })
+  return isCodeMode ? inCodeMode(server) : server
+}
+
+/** The value that opencode's Code Mode gives the code for a result: the declared output, else the text. */
+function codeModeValue(result: Tool.NormalizedResult) {
+  if (result.output !== undefined) return result.output
+  const text = result.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
+  return text === "" ? null : text
+}
+
+/** opencode's catalog rule: the last rule for the action denies every resource. */
+function isWhollyDenied(action: string, rules: Permission.Ruleset) {
+  const rule = rules.findLast((item) => Wildcard.match(action, item.action))
+  return rule?.resource === "*" && rule.effect === "deny"
+}
+
+/** A tool that Code Mode takes when it is safe to run without a question. */
+export function inCodeMode<Server extends AnyTool>(tool: Server) {
+  return { ...tool, metadata: { ...tool.metadata, codeMode: true } }
+}
+
+/** The result that the model gets for an opencode tool result: its text, or its text and files. */
+export function modelResult(result: Tool.Result) {
+  if (typeof result.content === "string") return result.content
+  const content = result.content ?? []
+  if (content.length === 0) return JSON.stringify(result.output ?? null)
+  if (content.every((part) => part.type === "text")) return content.map((part) => part.text).join("\n")
+  return content.map(contentPart)
+}
+
+function contentPart(part: Tool.Content): ContentPart {
+  if (part.type === "text") return { type: "text", content: part.text }
+  const data = /^data:[^,]*;base64,(.*)$/s.exec(part.uri)?.[1]
+  const source =
+    data === undefined
+      ? { type: "url" as const, value: part.uri }
+      : { type: "data" as const, value: data, mimeType: part.mime }
+  return part.mime.startsWith("image/") ? { type: "image", source } : { type: "document", source }
 }
