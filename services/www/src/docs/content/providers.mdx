@@ -595,6 +595,7 @@ ID before changing packages.
 | Bedrock does not appear | Provide a profile or another supported AWS credential-chain input. `AWS_REGION` by itself only selects a region. |
 | Ollama has no models | Confirm the server exposes `/api/tags` and `/api/show` at the path derived from `baseURL`, and that `/api/show` reports the `completion` capability. |
 | Copilot has no models | Confirm the active OAuth account has Copilot Chat access. A failed model sync is logged as `failed to sync GitHub Copilot models`. |
+| `... does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack)` | The provider has no adapter on the TanStack runtime. See [TanStack runtime](#tanstack-runtime). |
 
 V2 rejects the retired provider IDs with a direct replacement. Use `azure/<model>` instead of
 `azure-cognitive-services/<model>`, and `google-vertex/<model>` instead of `google-vertex-anthropic/<model>`.
@@ -626,3 +627,26 @@ WebSocket behavior follows these rules:
   connection.
 - A closed socket reconnects on the next step. If the connection cannot open, the session continues over HTTP.
 - Provider plugins with `http.request` or `http.response` hooks stay on HTTP so each request remains observable.
+
+## TanStack runtime
+
+When `OPENCODE_RUNTIME=tanstack` is set, sessions run on the TanStack AI runtime. These providers do not work on it:
+
+- GitLab Duo
+- SAP AI Core
+- The ChatGPT Codex backend. This is an OpenAI connection made with **Codex browser (legacy)** or
+  **Codex device code (legacy)**.
+
+A request to one of these models stops with an error that names the provider:
+
+```text
+gitlab/duo-chat does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack): GitLab Duo has no TanStack AI adapter
+```
+
+To use these providers, start OpenCode without the variable.
+
+```bash
+unset OPENCODE_RUNTIME
+```
+
+For ChatGPT, you can also keep the TanStack runtime. Run `/connect`, choose OpenAI, then select **Sign in with ChatGPT**.
