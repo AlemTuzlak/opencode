@@ -1,0 +1,418 @@
+[
+  {
+    "id": "evt_1",
+    "type": "session.created",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 0,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "slug": "<slug>",
+      "version": "unknown",
+      "projectID": "global",
+      "location": {
+        "directory": "<root:0>"
+      },
+      "subpath": "",
+      "title": "Golden",
+      "agent": "build",
+      "model": {
+        "id": "golden",
+        "providerID": "test"
+      }
+    }
+  },
+  {
+    "id": "evt_3",
+    "type": "session.inbox.enqueued",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 1,
+      "version": 1
+    },
+    "data": {
+      "inboxID": "msg_4",
+      "sessionID": "ses_2",
+      "item": {
+        "type": "user",
+        "payload": {
+          "text": "First question"
+        },
+        "delivery": "steer"
+      }
+    }
+  },
+  {
+    "id": "evt_5",
+    "type": "session.execution.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 2,
+      "version": 1
+    },
+    "data": {
+      "sessionID": "ses_2"
+    }
+  },
+  {
+    "id": "evt_6",
+    "type": "session.instructions.updated",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 3,
+      "version": 2
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "metadata": {
+      "instructions": {
+        "initial": true
+      }
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "delta": {
+        "core/codemode": "<hash:1>",
+        "core/skill-guidance": "<hash:2>",
+        "core/date": "<hash:3>",
+        "core/environment": "<hash:4>"
+      }
+    }
+  },
+  {
+    "id": "evt_7",
+    "type": "session.inbox.delivered",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 4,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "inboxID": "msg_4"
+    }
+  },
+  {
+    "id": "evt_8",
+    "type": "session.inbox.enqueued",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 5,
+      "version": 1
+    },
+    "data": {
+      "inboxID": "msg_9",
+      "sessionID": "ses_2",
+      "item": {
+        "type": "user",
+        "payload": {
+          "text": "Also answer this"
+        },
+        "delivery": "steer"
+      }
+    }
+  },
+  {
+    "id": "evt_10",
+    "type": "session.step.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 6,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "agent": "build",
+      "model": {
+        "id": "golden",
+        "providerID": "test"
+      },
+      "assistantMessageID": "msg_11",
+      "snapshot": "<hash:5>",
+      "started": "<time>"
+    }
+  },
+  {
+    "id": "evt_12",
+    "type": "session.text.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 7,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_11",
+      "ordinal": 0
+    }
+  },
+  {
+    "id": "evt_13",
+    "type": "session.text.delta",
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_11",
+      "ordinal": 0,
+      "delta": "First answer"
+    }
+  },
+  {
+    "id": "evt_14",
+    "type": "session.text.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 8,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_11",
+      "ordinal": 0,
+      "text": "First answer"
+    }
+  },
+  {
+    "id": "evt_15",
+    "type": "session.step.streamed",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 9,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_11"
+    }
+  },
+  {
+    "id": "evt_16",
+    "type": "session.step.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 10,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_11",
+      "finish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "snapshot": "<hash:5>",
+      "files": []
+    }
+  },
+  {
+    "id": "evt_17",
+    "type": "session.usage.updated",
+    "data": {
+      "sessionID": "ses_2",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      }
+    }
+  },
+  {
+    "id": "evt_18",
+    "type": "session.inbox.delivered",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 11,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "inboxID": "msg_9"
+    }
+  },
+  {
+    "id": "evt_19",
+    "type": "session.step.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 12,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "agent": "build",
+      "model": {
+        "id": "golden",
+        "providerID": "test"
+      },
+      "assistantMessageID": "msg_20",
+      "snapshot": "<hash:5>",
+      "started": "<time>"
+    }
+  },
+  {
+    "id": "evt_21",
+    "type": "session.text.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 13,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20",
+      "ordinal": 0
+    }
+  },
+  {
+    "id": "evt_22",
+    "type": "session.text.delta",
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20",
+      "ordinal": 0,
+      "delta": "Answer with the steer"
+    }
+  },
+  {
+    "id": "evt_23",
+    "type": "session.text.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 14,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20",
+      "ordinal": 0,
+      "text": "Answer with the steer"
+    }
+  },
+  {
+    "id": "evt_24",
+    "type": "session.step.streamed",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 15,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20"
+    }
+  },
+  {
+    "id": "evt_25",
+    "type": "session.step.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 16,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20",
+      "finish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "snapshot": "<hash:5>",
+      "files": []
+    }
+  },
+  {
+    "id": "evt_26",
+    "type": "session.usage.updated",
+    "data": {
+      "sessionID": "ses_2",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      }
+    }
+  },
+  {
+    "id": "evt_27",
+    "type": "session.execution.succeeded",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 17,
+      "version": 1
+    },
+    "data": {
+      "sessionID": "ses_2"
+    }
+  }
+]
