@@ -22,6 +22,7 @@ import { Job } from "../job.js"
 import { Model } from "../model.js"
 import { ModelResolver } from "../model-resolver.js"
 import { Permission } from "../permission.js"
+import { Plugin } from "../plugin.js"
 import { PermissionSaved } from "../permission/saved.js"
 import { Provider } from "../provider.js"
 import { Session } from "../session.js"
@@ -34,6 +35,8 @@ import { TanStackHarness } from "./harness.js"
 import { TanStackHost } from "./host.js"
 import { TanStackJob } from "./job-layer.js"
 import { TanStackPermission } from "./permission-layer.js"
+import { TanStackPluginCompat } from "./plugin-compat.js"
+import { TanStackRecovery } from "./recovery.js"
 import { TanStackSession } from "./session-layer.js"
 
 /** The `OPENCODE_RUNTIME` value that turns the TanStack runtime on. */
@@ -175,7 +178,7 @@ const clientNode = makeGlobalNode({ service: LLMClient.Service, layer: clientLay
 
 /**
  * The location's runner slot on the TanStack runtime. It gives the location's `TanStackHost`, which runs the turns,
- * and a `SessionRunner` that dies: `SessionExecution` is the no-op layer, so nothing drains a session with it.
+ * and a `SessionRunner` that dies: the TanStack `SessionExecution` runs no drain, so nothing drains a session with it.
  */
 const runnerNode = makeLocationNode({
   name: "TanStackRunner",
@@ -200,9 +203,10 @@ const runnerNode = makeLocationNode({
 /**
  * The node replacements of the TanStack runtime:
  * - `Session`, `Permission`, `PermissionSaved`, `Form`, and `Job` run on the harness.
- * - `SessionExecution` is the no-op layer, and `SessionRunnerLLM` gives the location's `TanStackHost`, so opencode's
- *   runner never runs.
+ * - `SessionExecution` reports and controls the harness turns, and `SessionRunnerLLM` gives the location's
+ *   `TanStackHost`, so opencode's runner never runs.
  * - `llmClient` sends with TanStack AI, and `ModelResolver` keeps the TanStack adapter of each model it resolves.
+ * - `Plugin` loads opencode's plugins with the TanStack plugin compatibility.
  */
 export const replacements: LayerNode.Replacements = [
   Session.node.replace(TanStackSession.node),
@@ -210,10 +214,11 @@ export const replacements: LayerNode.Replacements = [
   PermissionSaved.node.replace(TanStackPermission.savedNode),
   Form.node.replace(TanStackForm.node),
   Job.node.replace(TanStackJob.node),
-  SessionExecution.node.replace(SessionExecution.noopLayer),
+  SessionExecution.node.replace(TanStackRecovery.executionNode),
   SessionRunnerLLM.node.replace(runnerNode),
   ModelResolver.node.replace(resolverNode),
   llmClient.replace(clientNode),
+  Plugin.node.replace(TanStackPluginCompat.pluginNode),
 ]
 
 /**
