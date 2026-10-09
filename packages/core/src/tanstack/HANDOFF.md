@@ -27,14 +27,15 @@ This fork runs every opencode session on the TanStack AI harness. The clients, t
 | `recovery.ts` | `SessionExecution` on the harness: busy state, interrupt, and resume. |
 | `stores.ts`, `sql.ts` | The durable harness stores on the opencode SQLite database. |
 
-The tests are in `packages/core/test/tanstack/`. `parity.test.ts` compares each golden trace of the old runtime (`traces/*.json`) with the trace of the harness.
+## Tests
 
-## How to verify
+This branch has no new tests. The existing opencode tests run on the TanStack runtime, as in CI.
+
+The commit "test(core): remove the new TanStack tests" deleted the TanStack tests from `packages/core/test/tanstack/`. To get them back, revert that commit. They include `parity.test.ts`, which compares each golden trace of the old runtime (`traces/*.json`) with the trace of the harness.
 
 Run one test file at a time. For example:
 
 ```sh
-bun test --cwd packages/core test/tanstack/parity.test.ts
 bun test --cwd packages/sdk test/instances.test.ts
 ```
 
@@ -42,7 +43,7 @@ Known failures that also occur without this change:
 
 - `sdk/test/embedded.test.ts`: "embedded client exposes plugin-backed web search".
 - `server/test/fetch.test.ts`: the OAuth port cases fail on Windows in some runs.
-- Some core test files hang or fail in a long run on Windows. They pass when you run them alone. `tanstack/stores.test.ts` is one of them.
+- Some core test files hang or fail in a long run on Windows. They pass when you run them alone.
 
 ## Gaps in TanStack AI
 
@@ -52,7 +53,7 @@ Fix these gaps in TanStack AI, then remove the fork workaround. "Priority" tells
 
 | Gap | Effect in opencode | Fork workaround |
 |---|---|---|
-| A cancel during a `permissions()` question does not end the turn. `onBeforeToolCall` is awaited without the abort signal, and `ctx.session.ask` ignores the signal. | The user cancels, but the turn stays open until the question gets an answer. | None. One test is skipped. |
+| A cancel during a `permissions()` question does not end the turn. `onBeforeToolCall` is awaited without the abort signal, and `ctx.session.ask` ignores the signal. | The user cancels, but the turn stays open until the question gets an answer. | None. |
 | `onConfig` cannot change `maxTokens`, `temperature`, or `topP` for each model call. | Agent and model settings for these values are not applied. | None. |
 | `revert(messageId)` keeps that message. Nothing can revert the first message. | Revert of the first message does nothing. | None. |
 | Middleware cannot compact outside a model call. `continue()` refuses a transcript that ends with an assistant message. | Manual compaction does not run at once. It runs at the next model call. | `compactNext` marks the session, and the compaction middleware runs at the next model call. |
@@ -146,7 +147,7 @@ These items are in the fork, not in TanStack AI.
 - Plugin tools from `tool.transform` are not offered to the model.
 - The `experimental.ws.*` hooks are not supported.
 - SDK instances get one host each. Each host resumes the expired claims of its whole location. When two instances share a location, both can try to resume one session. The lease lets only one win, but the other does extra work.
-- The `SessionRestart` tests were in the deleted `session-execution.test.ts`. They tested shell notices, subagent recovery, and resume budgets. `recovery.test.ts` tests only the resume at boot.
+- The `SessionRestart` tests were in the deleted `session-execution.test.ts`. They tested shell notices, subagent recovery, and resume budgets. The TanStack `recovery.test.ts` (see [Tests](#tests)) tests only the resume at boot.
 - GitLab Duo, SAP AI Core, and the ChatGPT Codex backend have no TanStack AI adapter. A model from these providers fails with an error that names the provider.
 - Plugins that use the `aisdk.sdk` or `aisdk.language` hooks are not supported.
 
