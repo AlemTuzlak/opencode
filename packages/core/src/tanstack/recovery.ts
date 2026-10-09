@@ -81,7 +81,7 @@ export interface Driver {
    */
   readonly interrupt: (
     sessionID: SessionSchema.ID,
-    options: { readonly awaitSettlement: boolean },
+    options: { readonly awaitSettlement: boolean; readonly reason?: "user" | "inactivity" },
   ) => Effect.Effect<boolean>
   /** Waits until the session is idle. Starts no work. */
   readonly awaitIdle: (sessionID: SessionSchema.ID) => Effect.Effect<void>
@@ -127,8 +127,10 @@ export const executionLayer = Layer.effect(
       interrupt: (sessionID, options) =>
         Effect.suspend(
           () =>
-            drivers.current?.interrupt(sessionID, { awaitSettlement: options?.awaitSettlement === true }) ??
-            Effect.succeed(false),
+            drivers.current?.interrupt(sessionID, {
+              awaitSettlement: options?.awaitSettlement === true,
+              ...(options?.reason ? { reason: options.reason } : {}),
+            }) ?? Effect.succeed(false),
         ),
       awaitIdle: (sessionID) => Effect.suspend(() => drivers.current?.awaitIdle(sessionID) ?? Effect.void),
     })
