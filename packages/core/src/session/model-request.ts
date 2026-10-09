@@ -34,10 +34,10 @@ import { Tool } from "../tool.js"
 import { SessionAffinity } from "./affinity.js"
 import { SessionModelTransport } from "./model-transport.js"
 import { SessionProviderContext } from "./provider-context.js"
-import { SessionRunnerModel } from "./runner/model.js"
+import { SessionRunnerModel } from "./runner-model.js"
 import { SessionSchema } from "./schema.js"
 import { SessionSystemPrompt } from "./system-prompt.js"
-import { toLLMMessages } from "./runner/to-llm-message.js"
+import { toLLMMessages } from "./to-llm-message.js"
 import type { SessionMessage } from "./message.js"
 
 const IMAGE_BYTES_TRIGGER = 25 * 1024 * 1024 // 25 MiB

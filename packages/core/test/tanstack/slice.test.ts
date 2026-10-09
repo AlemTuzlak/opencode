@@ -2,7 +2,7 @@
  * The vertical slice: the first end-to-end turns on the TanStack runtime.
  *
  * The tests build the app graph as the server does (`AppNodeBuilder.build` with
- * `TanStackOverrides.forRuntime("tanstack")`), and drive it through the services that the HTTP routes call:
+ * `TanStackOverrides.replacements`), and drive it through the services that the HTTP routes call:
  * `Session` for prompt, steer, and interrupt, and the location's `Permission` for a reply. The harness host comes
  * from the location graph, and its model calls go through the real TanStack adapter. Only the model is fake: an
  * OpenAI-compatible endpoint on loopback that streams scripted steps.
@@ -135,7 +135,7 @@ const config = {
   },
 }
 
-// The app graph of the server with OPENCODE_RUNTIME=tanstack.
+// The app graph of the server.
 const it = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([
@@ -154,7 +154,7 @@ const it = testEffect(
       InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: false, global: false })),
       offlineModels,
       Watcher.node.replace(Watcher.configured({ enabled: false })),
-      ...TanStackOverrides.forRuntime("tanstack"),
+      ...TanStackOverrides.replacements,
     ],
   ),
 )
@@ -216,7 +216,7 @@ const allowPermissions = (context: Context) =>
     Effect.forkScoped({ startImmediately: true }),
   )
 
-describe("vertical slice: the server graph with OPENCODE_RUNTIME=tanstack", () => {
+describe("vertical slice: the server graph", () => {
   it.live(
     "text-turn",
     () =>

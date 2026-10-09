@@ -97,7 +97,7 @@ const testHosts = makeGlobalNode({
       const globals = yield* Effect.context<Bus.Service | Database.Service | Global.Service | Session.Service>()
       const cache = new Map<string, TanStackHost.Interface>()
       return TanStackSession.Hosts.of({
-        get: (location) =>
+        get: ({ location }) =>
           Effect.gen(function* () {
             const cached = cache.get(location.directory)
             if (cached) return cached
@@ -233,7 +233,7 @@ const setup = Effect.fn("SessionLayerTest.setup")(function* () {
     sessions,
     bus: yield* Bus.Service,
     /** The live harness session of a session: the one that the session layer runs. */
-    harness: (sessionID: Session.ID) => hosts.get(location).pipe(Effect.flatMap((host) => host.open(sessionID))),
+    harness: (sessionID: Session.ID) => hosts.get(session).pipe(Effect.flatMap((host) => host.open(sessionID))),
   }
 })
 

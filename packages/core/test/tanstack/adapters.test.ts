@@ -223,7 +223,7 @@ describe("Bedrock Converse", () => {
     })
 
     expect(error.message).toBe(
-      "amazon-bedrock/anthropic.claude-sonnet-4-5-v1:0 does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack): the Bedrock Converse adapter signs with the default AWS credential chain and cannot use an AWS profile",
+      "amazon-bedrock/anthropic.claude-sonnet-4-5-v1:0 does not work on the TanStack runtime: the Bedrock Converse adapter signs with the default AWS credential chain and cannot use an AWS profile",
     )
   })
 })
@@ -558,31 +558,31 @@ describe("not supported on the TanStack runtime", () => {
       "GitLab Duo",
       model("gitlab", "duo-chat", { package: "aisdk:gitlab-ai-provider" }),
       undefined,
-      "gitlab/duo-chat does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack): GitLab Duo has no TanStack AI adapter",
+      "gitlab/duo-chat does not work on the TanStack runtime: GitLab Duo has no TanStack AI adapter",
     ],
     [
       "SAP AI Core",
       model("sap-ai-core", "gpt-5", { package: "aisdk:@jerome-benoit/sap-ai-provider-v2" }),
       undefined,
-      "sap-ai-core/gpt-5 does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack): SAP AI Core has no TanStack AI adapter",
+      "sap-ai-core/gpt-5 does not work on the TanStack runtime: SAP AI Core has no TanStack AI adapter",
     ],
     [
       "the ChatGPT Codex backend",
       model("openai", "gpt-5.5", { package: "@opencode/ai/providers/openai" }),
       oauth("chatgpt-browser", "codex-access"),
-      'openai/gpt-5.5 does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack): the ChatGPT Codex backend has no TanStack AI adapter. Run /connect, choose OpenAI, and select "Sign in with ChatGPT"',
+      'openai/gpt-5.5 does not work on the TanStack runtime: the ChatGPT Codex backend has no TanStack AI adapter. Run /connect, choose OpenAI, and select "Sign in with ChatGPT"',
     ],
     [
       "Cohere chat",
       model("cohere", "command-a-03-2025", { package: "@opencode/ai/providers/cohere" }),
       key("cohere-key"),
-      "cohere/command-a-03-2025 does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack): TanStack AI has no adapter for the cohere-chat API",
+      "cohere/command-a-03-2025 does not work on the TanStack runtime: TanStack AI has no adapter for the cohere-chat API",
     ],
     [
       "another AI SDK package",
       model("acme", "coder", { package: "aisdk:@acme/ai-sdk-provider" }),
       key("acme-key"),
-      "acme/coder does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack): the AI SDK package @acme/ai-sdk-provider has no TanStack AI adapter",
+      "acme/coder does not work on the TanStack runtime: the AI SDK package @acme/ai-sdk-provider has no TanStack AI adapter",
     ],
   ] as const)("%s fails with a typed error that names the provider", async (_name, selected, credential, message) => {
     const error = await rejection({ model: selected, credential })

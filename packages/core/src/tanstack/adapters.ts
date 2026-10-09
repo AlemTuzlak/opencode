@@ -39,7 +39,7 @@ export class UnsupportedProviderError extends Schema.TaggedError<UnsupportedProv
   },
 ) {
   override get message() {
-    return `${this.providerID}/${this.modelID} does not work on the TanStack runtime (OPENCODE_RUNTIME=tanstack): ${this.reason}`
+    return `${this.providerID}/${this.modelID} does not work on the TanStack runtime: ${this.reason}`
   }
 }
 

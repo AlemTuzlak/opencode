@@ -186,7 +186,7 @@ const it = testEffect(
   ),
 )
 
-// The app graph of the server with OPENCODE_RUNTIME=tanstack, for the hooks of the session layer.
+// The app graph of the server, for the hooks of the session layer.
 const serverGraph = testEffect(
   AppNodeBuilder.build(
     LayerNode.group([
@@ -201,7 +201,7 @@ const serverGraph = testEffect(
       PersistentPty.node,
       Worktree.node,
     ]),
-    [...nodes, ...TanStackOverrides.forRuntime("tanstack")],
+    [...nodes, ...TanStackOverrides.replacements],
   ),
 )
 

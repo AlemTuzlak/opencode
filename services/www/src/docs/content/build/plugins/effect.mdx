@@ -1504,14 +1504,14 @@ type Transform<Input> = (callback: (input: Input) => void) => Effect.Effect<Regi
 
 The `aisdk.sdk` and `aisdk.language` hooks build the Vercel AI SDK provider and language model of a request.
 
-The TanStack runtime (`OPENCODE_RUNTIME=tanstack`) has no Vercel AI SDK, so it does not run these hooks. On that
-runtime, a plugin that registers one of them fails to load. The plugin list shows the plugin as failed, with this error:
+OpenCode runs sessions on the TanStack runtime. It has no Vercel AI SDK, so it does not run these hooks. A plugin that
+registers one of them fails to load. The plugin list shows the plugin as failed, with this error:
 
 ```text
-Plugin acme.xai uses the aisdk.sdk hook. The TanStack runtime (OPENCODE_RUNTIME=tanstack) has no Vercel AI SDK, so it does not run aisdk hooks. Remove the hook from the plugin, or run opencode without OPENCODE_RUNTIME=tanstack.
+Plugin acme.xai uses the aisdk.sdk hook. The TanStack runtime has no Vercel AI SDK, so it does not run aisdk hooks. Remove the hook from the plugin.
 ```
 
-To change model requests on both runtimes, use the `model.request`, `http.request`, and `http.response` session hooks.
+To change model requests, use the `model.request`, `http.request`, and `http.response` session hooks.
 
 ## Publish
 

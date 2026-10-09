@@ -1,12 +1,8 @@
 import { describe, expect } from "bun:test"
-import { Deferred, Effect, Fiber, Layer, Schema, Stream } from "effect"
-import { LanguageModel } from "@opencode/ai"
-import { OpenAIChat } from "@opencode/ai/protocols"
-import { TestLLM } from "@opencode/ai/testing"
+import { Effect, Fiber, Layer, Schema, Stream } from "effect"
 import path from "path"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
-import { LayerNodePlatform } from "@opencode/core/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node"
@@ -19,15 +15,13 @@ import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Agent } from "@opencode/core/agent"
 import { Job } from "@opencode/core/job"
-import { KV } from "@opencode/core/kv"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { Session } from "@opencode/core/session"
 import { SessionEvent } from "@opencode/core/session/event"
 import { SessionExecution } from "@opencode/core/session/execution"
-import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionInbox } from "@opencode/core/session/inbox"
 import { SessionMessage } from "@opencode/core/session/message"
-import { SessionRunnerModel } from "@opencode/core/session/runner/model"
+import { SessionRunnerModel } from "@opencode/core/session/runner-model"
 import { SessionStore } from "@opencode/core/session/store"
 import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
@@ -139,30 +133,6 @@ const productionIt = testEffect(AppNodeBuilder.build(nodes, replacements))
 const it = testEffect(
   AppNodeBuilder.build(nodes, [...replacements, PluginSupervisor.node.replace(subagentPluginSupervisor)]),
 )
-const completionIt = testEffect(
-  AppNodeBuilder.build(LayerNode.group([nodes, SessionRestart.node, KV.node]), [
-    Global.node.replace(tempGlobalLayer),
-    offlineModels,
-    PluginSupervisor.node.replace(subagentPluginSupervisor),
-    LayerNodePlatform.llmClient.replace(TestLLM.testLayer({ fallback: TestLLM.text(childText, "completion") })),
-    SessionRunnerModel.node.replace(
-      Layer.succeed(SessionRunnerModel.Service, {
-        resolve: () =>
-          Effect.succeed(
-            SessionRunnerModel.resolved(
-              LanguageModel.make({ id: "child", provider: "test", route: OpenAIChat.route }),
-              {
-                capabilities: { tools: true, input: ["text"], output: ["text"] },
-                cost: [],
-                limit: { context: 200_000, output: 32_000 },
-              },
-            ),
-          ),
-      }),
-    ),
-  ]),
-)
-
 const withSubagent = (location: Location.Ref) =>
   Effect.gen(function* () {
     const locations = yield* LocationServiceMap.Service
@@ -197,81 +167,6 @@ const withSubagent = (location: Location.Ref) =>
   })
 
 describe("SubagentTool", () => {
-  completionIt.live("admits one durable completion across live delivery and restart replay", () =>
-    Effect.acquireRelease(
-      Effect.promise(() => tmpdir()),
-      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
-    ).pipe(
-      Effect.flatMap((dir) =>
-        Effect.gen(function* () {
-          const sessions = yield* Session.Service
-          const parent = yield* sessions.create({
-            location: Location.Ref.make({ directory: AbsolutePath.make(dir.path) }),
-            model: parentModel,
-            title: "Completion recipient",
-          })
-          yield* withSubagent(parent.location)
-          const locations = yield* LocationServiceMap.Service
-          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
-          const jobs = yield* Job.Service
-          const bus = yield* Bus.Service
-          const admitted = yield* Deferred.make<Job.Background>()
-          const notifications: SessionMessage.ID[] = []
-          yield* bus.project(SessionEvent.InboxEnqueued, (event) =>
-            Effect.gen(function* () {
-              if (event.data.sessionID !== parent.id || event.data.item.type !== "synthetic") return
-              notifications.push(event.data.inboxID)
-              const marker = (yield* jobs.pendingBackground).find((job) => job.notificationID === event.data.inboxID)
-              // The marker must survive until admission commits, not merely until delivery starts.
-              expect(marker?.status).toBe("completed")
-              if (marker) yield* Deferred.succeed(admitted, marker)
-            }),
-          )
-
-          const result = yield* executeTool(registry, {
-            sessionID: parent.id,
-            ...toolIdentity,
-            call: {
-              type: "tool-call",
-              id: "call-completion-replay",
-              name: SubagentTool.name,
-              input: { agent: "reviewer", description: "background review", prompt: "review", background: true },
-            },
-          })
-          const marker = yield* Deferred.await(admitted)
-          yield* jobs.pendingBackground.pipe(Effect.repeat({ until: (pending) => pending.length === 0 }))
-          yield* sessions.wait(parent.id)
-          const messages = (yield* sessions.context(parent.id)).filter((message) => message.type === "synthetic")
-          expect(messages).toEqual([
-            expect.objectContaining({
-              id: marker.notificationID,
-              description: "background review",
-              text: `<subagent sessionID="${outputSessionID(result.metadata)}" state="completed" description="background review">\n${childText}\n</subagent>`,
-              metadata: {
-                source: "subagent",
-                childID: outputSessionID(result.metadata),
-                agent: "reviewer",
-                state: "completed",
-              },
-            }),
-          ])
-
-          // Reproduce a crash after admission but before acknowledgment using the real persisted marker.
-          const kv = yield* KV.Service
-          yield* kv.set(`job.background/${marker.notificationID}`, marker)
-          const restart = yield* SessionRestart.Service
-          yield* restart.resumeSuspendedSessions
-          yield* sessions.wait(parent.id)
-          expect(notifications).toEqual([marker.notificationID])
-          expect((yield* sessions.context(parent.id)).filter((message) => message.type === "synthetic")).toEqual(
-            messages,
-          )
-          expect(yield* jobs.pendingBackground).toEqual([])
-        }),
-      ),
-    ),
-  )
-
   productionIt.live("registers globally while resolving agents from the caller location", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),

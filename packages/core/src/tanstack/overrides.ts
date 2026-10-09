@@ -17,6 +17,7 @@ import type { StreamChunk } from "@tanstack/ai"
 import { Context, Effect, Layer, Stream } from "effect"
 import { llmClient } from "../effect/app-node-platform.js"
 import { Form } from "../form.js"
+import { Instance } from "../instance.js"
 import { Integration } from "../integration.js"
 import { Job } from "../job.js"
 import { Model } from "../model.js"
@@ -27,8 +28,6 @@ import { PermissionSaved } from "../permission/saved.js"
 import { Provider } from "../provider.js"
 import { Session } from "../session.js"
 import { SessionExecution } from "../session/execution.js"
-import { SessionRunner } from "../session/runner/index.js"
-import { SessionRunnerLLM } from "../session/runner/llm.js"
 import { TanStackAdapters } from "./adapters.js"
 import { TanStackForm } from "./form-layer.js"
 import { TanStackHarness } from "./harness.js"
@@ -38,9 +37,6 @@ import { TanStackPermission } from "./permission-layer.js"
 import { TanStackPluginCompat } from "./plugin-compat.js"
 import { TanStackRecovery } from "./recovery.js"
 import { TanStackSession } from "./session-layer.js"
-
-/** The `OPENCODE_RUNTIME` value that turns the TanStack runtime on. */
-export const RUNTIME = "tanstack"
 
 type Adapter = Effect.Success<ReturnType<typeof TanStackAdapters.adapterFor>>
 
@@ -176,37 +172,28 @@ const clientLayer = Layer.effect(
 
 const clientNode = makeGlobalNode({ service: LLMClient.Service, layer: clientLayer, deps: [adaptersNode] })
 
-/**
- * The location's runner slot on the TanStack runtime. It gives the location's `TanStackHost`, which runs the turns,
- * and a `SessionRunner` that dies: the TanStack `SessionExecution` runs no drain, so nothing drains a session with it.
- */
-const runnerNode = makeLocationNode({
-  name: "TanStackRunner",
-  layer: Layer.merge(
-    Layer.succeed(
-      SessionRunner.Service,
-      SessionRunner.Service.of({
-        drain: (input) =>
-          Effect.die(new Error(`The TanStack runtime runs session ${input.sessionID}, not opencode's runner.`)),
-      }),
-    ),
-    Layer.effect(
-      TanStackHost.Service,
-      Effect.gen(function* () {
-        return yield* TanStackHost.Service
-      }),
-    ),
+/** The location's runtime slot on the TanStack runtime. It gives the location's `TanStackHost`, which runs the turns. */
+const runtimeNode = makeLocationNode({
+  name: "TanStackRuntime",
+  layer: Layer.effect(
+    TanStackHost.Service,
+    Effect.gen(function* () {
+      return yield* TanStackHost.Service
+    }),
   ),
   deps: [TanStackHost.node],
 })
 
 /**
- * The node replacements of the TanStack runtime:
+ * The node replacements of the TanStack runtime. Add them to the replacements of the app graph:
  * - `Session`, `Permission`, `PermissionSaved`, `Form`, and `Job` run on the harness.
- * - `SessionExecution` reports and controls the harness turns, and `SessionRunnerLLM` gives the location's
- *   `TanStackHost`, so opencode's runner never runs.
+ * - `SessionExecution` reports and controls the harness turns, and the location's runtime slot gives its
+ *   `TanStackHost`.
  * - `llmClient` sends with TanStack AI, and `ModelResolver` keeps the TanStack adapter of each model it resolves.
  * - `Plugin` loads opencode's plugins with the TanStack plugin compatibility.
+ *
+ * @example
+ * AppNodeBuilder.build(root, [...standard, ...TanStackOverrides.replacements])
  */
 export const replacements: LayerNode.Replacements = [
   Session.node.replace(TanStackSession.node),
@@ -215,22 +202,11 @@ export const replacements: LayerNode.Replacements = [
   Form.node.replace(TanStackForm.node),
   Job.node.replace(TanStackJob.node),
   SessionExecution.node.replace(TanStackRecovery.executionNode),
-  SessionRunnerLLM.node.replace(runnerNode),
+  Instance.runtimeNode.replace(runtimeNode),
   ModelResolver.node.replace(resolverNode),
   llmClient.replace(clientNode),
   Plugin.node.replace(TanStackPluginCompat.pluginNode),
 ]
-
-/**
- * The node replacements for a value of `OPENCODE_RUNTIME`: `replacements` for `tanstack`, and none for any other
- * value. Add the result to the replacements of the app graph.
- *
- * @example
- * AppNodeBuilder.build(root, [...standard, ...TanStackOverrides.forRuntime(process.env.OPENCODE_RUNTIME)])
- */
-export function forRuntime(runtime: string | undefined) {
-  return runtime === RUNTIME ? replacements : []
-}
 
 /** The system prompts and the messages of a request, as `chat()` options. */
 const chatInput = Effect.fn("TanStackOverrides.chatInput")(function* (request: LLMRequest) {

@@ -1,7 +1,7 @@
 /**
- * The runtime flag: `TanStackOverrides.forRuntime` swaps opencode's runtime nodes for the TanStack ones.
+ * The TanStack runtime: `TanStackOverrides.replacements` swaps opencode's runtime nodes for the TanStack ones.
  *
- * The tests build the app graph as the server does (`AppNodeBuilder.build` with the flag's replacements), and use
+ * The tests build the app graph as the server does (`AppNodeBuilder.build` with those replacements), and use
  * the services that the HTTP routes call: `Session` for the session routes and `Generate` for
  * `/api/experimental/generate`. Only the model is fake: an OpenAI-compatible endpoint on loopback, which records
  * the tools and the client of each request.
@@ -98,34 +98,29 @@ const config = {
   },
 }
 
-/** The app graph of the server, with the replacements of an `OPENCODE_RUNTIME` value. */
-function appWith(runtime: string | undefined) {
-  return testEffect(
-    AppNodeBuilder.build(
-      LayerNode.group([
-        Bus.node,
-        Global.node,
-        Database.node,
-        Job.node,
-        Session.node,
-        PermissionSaved.node,
-        LocationServiceMap.node,
-      ]),
-      [
-        Global.node.replace(tempGlobalLayer),
-        // No config, skills, or AGENTS.md from the user's home or the project's ancestors.
-        Config.node.replace(Config.configured({ project: false, global: false, content: JSON.stringify(config) })),
-        InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: false, global: false })),
-        offlineModels,
-        Watcher.node.replace(Watcher.configured({ enabled: false })),
-        ...TanStackOverrides.forRuntime(runtime),
-      ],
-    ),
-  )
-}
-
-const tanstack = appWith("tanstack")
-const opencode = appWith(undefined)
+/** The app graph of the server. */
+const it = testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([
+      Bus.node,
+      Global.node,
+      Database.node,
+      Job.node,
+      Session.node,
+      PermissionSaved.node,
+      LocationServiceMap.node,
+    ]),
+    [
+      Global.node.replace(tempGlobalLayer),
+      // No config, skills, or AGENTS.md from the user's home or the project's ancestors.
+      Config.node.replace(Config.configured({ project: false, global: false, content: JSON.stringify(config) })),
+      InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: false, global: false })),
+      offlineModels,
+      Watcher.node.replace(Watcher.configured({ enabled: false })),
+      ...TanStackOverrides.replacements,
+    ],
+  ),
+)
 
 /** A temp project. Each test starts with no recorded model requests. */
 const project = Effect.gen(function* () {
@@ -161,8 +156,8 @@ const turnSessions = () => [
 ]
 
 describe("TanStackOverrides", () => {
-  tanstack.live(
-    "with OPENCODE_RUNTIME=tanstack, the harness runs the prompt and the reply arrives through the Session API",
+  it.live(
+    "the harness runs the prompt and the reply arrives through the Session API",
     () =>
       Effect.gen(function* () {
         const location = yield* project
@@ -173,23 +168,23 @@ describe("TanStackOverrides", () => {
           { type: "user", text: "Say hello" },
           { type: "assistant", text: ANSWER },
         ])
-        // The harness sends its own tool names. opencode's runner calls the same tool `read`.
+        // The harness sends its own tool names.
         expect(turnTools()).toContain("read_file")
         expect(turnTools()).not.toContain("read")
-        // The same session headers as opencode's runner sends.
+        // The session header that OpenCode Zen and Go route on.
         expect(turnSessions()).toEqual([expect.stringMatching(/^ses_/)])
       }),
     60_000,
   )
 
-  tanstack.live(
-    "with OPENCODE_RUNTIME=tanstack, /api/experimental/generate sends through a TanStack adapter",
+  it.live(
+    "/api/experimental/generate sends through a TanStack adapter",
     () =>
       Effect.gen(function* () {
         const location = yield* project
 
         const text = yield* Effect.gen(function* () {
-          // The config providers activate after the plugins. The location does not wait for them, on both runtimes.
+          // The config providers activate after the plugins. The location does not wait for them.
           yield* Plugin.awaitActivation
           const generate = yield* Generate.Service
           return yield* generate.text({ prompt: "Say hello" })
@@ -197,26 +192,6 @@ describe("TanStackOverrides", () => {
 
         expect(text).toBe(ANSWER)
         expect(requests).toEqual([{ tools: [], openaiSDK: true, session: expect.stringMatching(/^ses_/) }])
-      }),
-    60_000,
-  )
-
-  opencode.live(
-    "without the flag, opencode's runner runs the prompt",
-    () =>
-      Effect.gen(function* () {
-        const location = yield* project
-
-        const replies = yield* promptTurn(location)
-
-        expect(replies).toEqual([
-          { type: "user", text: "Say hello" },
-          { type: "assistant", text: ANSWER },
-        ])
-        expect(turnTools()).toContain("read")
-        expect(turnTools()).not.toContain("read_file")
-        expect(turnSessions()).toEqual([expect.stringMatching(/^ses_/)])
-        expect(requests.some((request) => request.openaiSDK)).toBe(false)
       }),
     60_000,
   )
