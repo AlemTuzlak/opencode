@@ -76,6 +76,17 @@ export interface Options {
   readonly onFileChange?: (change: FileChange) => void
 }
 
+/** The compaction of a harness. */
+export interface Compaction {
+  /** The model that compacts: the model of the compaction agent, else the default model of the location. */
+  readonly model: Model.Ref
+  /**
+   * Compacts the thread at its next model call, even when it is under the token limit: a running turn at its next
+   * model call, else the next turn before its first model call. The flag is in memory: a reload drops it.
+   */
+  readonly compactNext: (threadId: string) => void
+}
+
 const FILE_TOOLS = new Set(["write_file", "edit_file", "patch"])
 // opencode keeps this many tokens of recent conversation beside a compaction summary.
 const KEEP_TOKENS = 15_000
@@ -83,6 +94,7 @@ const KEEP_TOKENS = 15_000
 const UNKNOWN_WINDOW = 200_000
 
 type Resolved = Effect.Success<ReturnType<typeof TanStackAdapters.adapterFor>> & {
+  readonly ref: Model.Ref
   readonly info: Model.Info
   readonly compaction: Provider.Compaction | undefined
 }
@@ -104,7 +116,8 @@ type Resolved = Effect.Success<ReturnType<typeof TanStackAdapters.adapterFor>> &
  *
  * The thread id of each harness session must be its opencode session id: the `opencode_*` tools and the MCP
  * tools use it. Give the host `projectCompaction` from `@tanstack/ai-compaction`, because the compaction is
- * durable.
+ * durable. `compaction.compactNext(threadId)` forces a compaction at the next model call of a thread, for a manual
+ * compaction: the middleware cannot compact outside a model call.
  *
  * @example
  * const built = yield* TanStackHarness.make({ onFileChange: (change) => files.push(change) })
@@ -142,7 +155,7 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     )
     const credential = connection ? yield* integrations.connection.resolve(connection) : undefined
     const adapter = yield* TanStackAdapters.adapterFor({ model: info, variant: ref.variant, provider, credential })
-    const entry = { ...adapter, info, compaction: info.settings?.compaction ?? provider?.settings?.compaction }
+    const entry = { ...adapter, ref, info, compaction: info.settings?.compaction ?? provider?.settings?.compaction }
     resolved.set(refKey(ref), entry)
     resolved.set(adapter.adapter.model, entry)
     return entry
@@ -271,7 +284,7 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     name: "opencode",
     ...(fallback ? { adapter: fallback.adapter } : {}),
     ...(fallback?.reasoning ? { reasoning: fallback.reasoning } : {}),
-    ...(compaction ? { middleware: [compaction] } : {}),
+    ...(compaction ? { middleware: [compaction.middleware] } : {}),
     // One `subagent` tool for every subagent, as opencode has.
     subagents: { agents: [], tool: "single" },
     turn: { onModelError: retryTransientErrors() },
@@ -323,7 +336,14 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     return { adapter: entry.adapter, ...(entry.reasoning ? { reasoning: entry.reasoning } : {}) }
   })
 
-  return { harness, overrides }
+  return {
+    harness,
+    overrides,
+    /** `undefined` when no model resolves for the summaries: then the harness never compacts. */
+    compaction:
+      compaction &&
+      ({ model: compaction.model, compactNext: compaction.middleware.compactNext } satisfies Compaction),
+  }
 })
 
 function refKey(ref: Model.Ref) {
@@ -346,13 +366,13 @@ function agentProfile(agent: Agent.Info) {
 
 /**
  * opencode's compaction: summarize all but the newest 15,000 tokens before the context of the default model is
- * full. With native compaction on the default model, its endpoint compacts.
+ * full. With native compaction on the default model, its endpoint compacts. `model` is the model that compacts.
  */
 function compactionMiddleware(summary: Resolved, fallback: Resolved | undefined) {
   const limit = (fallback ?? summary).info.limit
   const window = limit.input || limit.context || UNKNOWN_WINDOW
   const isNative = fallback?.compaction?.type === "native"
-  return withCompaction({
+  const middleware = withCompaction({
     // opencode keeps 10% of the window free for the reply.
     maxTokens: Math.floor(window * 0.9),
     contextWindow: window,
@@ -365,6 +385,7 @@ function compactionMiddleware(summary: Resolved, fallback: Resolved | undefined)
     }),
     ...(isNative && fallback ? { native: fallback.adapter } : {}),
   })
+  return { middleware, model: isNative && fallback ? fallback.ref : summary.ref }
 }
 
 /** A tool that Code Mode takes when it is safe to run without a question. */

@@ -124,6 +124,8 @@ const TURN_FAILED = { type: "unknown", message: "The turn failed." }
  * - `fileChanged`: a file diff from the workspace backend, for the `files` of an edit.
  * - `select`: the agent and the model, when the user switches them.
  * - `link`: a pair of message ids that the transcript shows, for a revert.
+ * - `compacting` and `compacted`: the inbox item of a manual compaction, and the summary of a compaction from
+ *   the harness log.
  *
  * @example
  * ```ts
@@ -147,7 +149,10 @@ export function createEventMapper(options: MapperOptions) {
   const asks = new Map<string, string>()
   const links = { message: new Map<string, string>(), session: new Map<string, string>() }
   const selection = { agent: options.agent, model: options.model }
-  const compactions = new Map<string, "auto" | "manual">()
+  /** The compaction of each operation, from its `compaction:started` to its `compaction:ended`. */
+  const compactions = new Map<string, Compaction>()
+  /** The inbox item of the manual compaction that waits for the next model call. */
+  const manual: { inboxID: SessionMessage.ID | undefined } = { inboxID: undefined }
   for (const link of options.links ?? []) links[link.kind].set(link.harnessID, link.opencodeID)
 
   const emit = <D extends Event.Definition>(definition: D, data: Event.Data<D>) =>
@@ -356,6 +361,8 @@ export function createEventMapper(options: MapperOptions) {
         return onRevert(value)
       case "compaction:started":
         return onCompactionStarted(entry, value)
+      case "compaction:state":
+        return onCompactionState(entry)
       case "compaction:ended":
         return onCompactionEnded(entry, value)
       default:
@@ -530,23 +537,104 @@ export function createEventMapper(options: MapperOptions) {
 
   const onCompactionStarted = (entry: HarnessEvent, value: unknown) => {
     const started = Option.getOrUndefined(decodeCompaction(value))
-    compactions.set(entry.operationId, started?.reason === "forced" ? "manual" : "auto")
+    // Only `compactNext` forces a compaction, and only `Session.compact` calls it.
+    const isManual = started?.reason === "forced"
+    const inboxID = isManual ? manual.inboxID : undefined
+    if (isManual) manual.inboxID = undefined
+    compactions.set(entry.operationId, {
+      reason: isManual ? "manual" : "auto",
+      inboxID,
+      recorded: false,
+      summary: undefined,
+    })
   }
 
-  // A successful compaction sends no summary text, and opencode's
-  // `compaction.ended` needs it. So only a failed compaction maps.
+  // The middleware sends its state only when it replaced the messages and wrote the log record.
+  const onCompactionState = (entry: HarnessEvent) => {
+    const compaction = compactions.get(entry.operationId)
+    if (compaction) compaction.recorded = true
+  }
+
+  // The end event has no summary text, and opencode's `compaction.ended` needs it. The session layer reads it
+  // from the log record and gives it with `compacted`. All events of a compaction go out at its end.
   const onCompactionEnded = (entry: HarnessEvent, value: unknown) => {
     const ended = Option.getOrUndefined(decodeCompaction(value))
-    const reason = compactions.get(entry.operationId) ?? "auto"
+    const compaction = compactions.get(entry.operationId) ?? {
+      reason: "auto",
+      inboxID: undefined,
+      recorded: false,
+      summary: undefined,
+    }
     compactions.delete(entry.operationId)
-    if (ended?.error === undefined) return
-    emit(SessionEvent.Compaction.Started, { sessionID: options.sessionID, reason, recent: "" })
+    const spent = Option.getOrUndefined(decodeTokenUsage(ended?.usage))
+    const usage = spent && {
+      tokens: tokensOf(
+        spent.promptTokens,
+        spent.completionTokens,
+        spent.completionTokensDetails?.reasoningTokens ?? 0,
+        spent.promptTokensDetails?.cachedTokens ?? 0,
+        spent.promptTokensDetails?.cacheWriteTokens ?? 0,
+      ),
+      cost: Money.USD.make(spent.cost ?? 0),
+    }
+    if (ended?.error !== undefined)
+      return failCompaction(compaction, { type: "compaction", message: ended.error.message }, usage)
+    if (compaction.summary !== undefined) return completeCompaction(compaction, compaction.summary, usage)
+    // The strategy found nothing to cut. The old runtime fails a manual compaction with this error.
+    if (!compaction.recorded && compaction.reason === "manual") return failCompaction(compaction, NOTHING_TO_COMPACT, usage)
+    // No summary came: only the inbox item settles.
+    deliverCompaction(compaction)
+  }
+
+  const deliverCompaction = (compaction: Compaction) => {
+    if (compaction.inboxID === undefined) return
+    emit(SessionEvent.InboxDelivered, { sessionID: options.sessionID, inboxID: compaction.inboxID })
+  }
+
+  const startCompaction = (compaction: Compaction, usage: CompactionUsage | undefined) => {
+    deliverCompaction(compaction)
+    emit(SessionEvent.Compaction.Started, {
+      sessionID: options.sessionID,
+      reason: compaction.reason,
+      recent: "",
+      ...(compaction.inboxID === undefined ? {} : { inputID: compaction.inboxID }),
+    })
+    return usage ?? { tokens: noTokens(), cost: Money.USD.zero }
+  }
+
+  const recordUsage = (usage: CompactionUsage | undefined) => {
+    if (usage === undefined) return
+    emit(SessionEvent.UsageRecorded, { sessionID: options.sessionID, source: "compaction", ...usage })
+  }
+
+  const failCompaction = (
+    compaction: Compaction,
+    error: SessionError.Error,
+    usage: CompactionUsage | undefined,
+  ) => {
+    const spent = startCompaction(compaction, usage)
+    recordUsage(usage)
     emit(SessionEvent.Compaction.Failed, {
       sessionID: options.sessionID,
-      reason,
-      error: { type: "compaction", message: ended.error.message },
-      cost: Money.USD.zero,
-      tokens: noTokens(),
+      reason: compaction.reason,
+      error,
+      ...(compaction.inboxID === undefined ? {} : { inputID: compaction.inboxID }),
+      ...spent,
+    })
+  }
+
+  const completeCompaction = (compaction: Compaction, summary: Summary, usage: CompactionUsage | undefined) => {
+    const spent = startCompaction(compaction, usage)
+    emit(SessionEvent.Compaction.Delta, { sessionID: options.sessionID, text: summary.text })
+    recordUsage(usage)
+    // The harness keeps the recent messages as messages, so no recent text goes with the summary.
+    emit(SessionEvent.Compaction.Ended, {
+      sessionID: options.sessionID,
+      reason: compaction.reason,
+      model: summary.model,
+      text: summary.text,
+      recent: "",
+      ...spent,
     })
   }
 
@@ -844,6 +932,30 @@ export function createEventMapper(options: MapperOptions) {
         findCall((call) => isEditTool(call.name))
       found?.call.diffs.push(diff)
     },
+    /**
+     * A manual compaction: `Session.compact` admitted the inbox item `inboxID`, and the harness compacts at its
+     * next model call. That compaction delivers the item.
+     */
+    compacting: (inboxID: SessionMessage.ID) => {
+      manual.inboxID = inboxID
+    },
+    /**
+     * The token count after the compaction that `entry` ends, when that compaction wrote its log record. Read the
+     * summary text from the record, and give it to `compacted` before you map `entry`. `undefined` for any other
+     * event.
+     */
+    compactionEnd: (entry: HarnessEvent) => {
+      const chunk = entry.event
+      if (chunk.type !== EventType.CUSTOM || chunk.name !== "compaction:ended") return undefined
+      const ended = Option.getOrUndefined(decodeCompaction(chunk.value))
+      const isRecorded = compactions.get(entry.operationId)?.recorded === true && ended?.error === undefined
+      return isRecorded ? ended?.after : undefined
+    },
+    /** The summary of the compaction that operation `operationId` ends next, and the model that wrote it. */
+    compacted: (operationId: string, summary: Summary) => {
+      const compaction = compactions.get(operationId)
+      if (compaction) compaction.summary = summary
+    },
     /** The agent and the model of the next model calls. */
     select: (next: { readonly agent?: Agent.ID; readonly model?: Model.Ref }) => {
       if (next.agent !== undefined) selection.agent = next.agent
@@ -867,6 +979,29 @@ interface Input {
   readonly item: SessionInbox.Item
   state: "admitted" | "enqueued" | "delivered" | "done"
 }
+
+/** The summary of a compaction, and the model that wrote it. */
+export interface Summary {
+  readonly text: string
+  readonly model: Model.Ref
+}
+
+interface Compaction {
+  readonly reason: "auto" | "manual"
+  /** The inbox item of a manual compaction. */
+  readonly inboxID: SessionMessage.ID | undefined
+  /** The middleware replaced the messages and wrote its log record. */
+  recorded: boolean
+  summary: Summary | undefined
+}
+
+interface CompactionUsage {
+  readonly tokens: TokenUsage.Info
+  readonly cost: Money.USD
+}
+
+// The error of the old runtime when a manual compaction has nothing to summarize.
+const NOTHING_TO_COMPACT = { type: "compaction.unavailable", message: "Nothing to compact yet" }
 
 interface Part {
   readonly ordinal: number
@@ -1080,6 +1215,8 @@ const decodeRevert = Schema.decodeUnknownOption(Schema.Struct({ messageId: Schem
 const decodeCompaction = Schema.decodeUnknownOption(
   Schema.Struct({
     reason: Schema.optionalKey(Schema.String),
+    after: Schema.optionalKey(Schema.Finite),
+    usage: Schema.optionalKey(Schema.Unknown),
     error: Schema.optionalKey(Schema.Struct({ message: Schema.String })),
   }),
 )

@@ -7,9 +7,9 @@
  * the old runtime, with the same patches as `events.test.ts`.
  */
 import { $ } from "bun"
-import { describe, expect } from "bun:test"
+import { afterAll, describe, expect } from "bun:test"
 import path from "path"
-import { Cause, Context, Effect, Exit, Fiber, Layer, Scope, Stream } from "effect"
+import { Cause, Context, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect"
 import { EventType } from "@tanstack/ai"
 import type { ModelMessage, Modality, TextOptions } from "@tanstack/ai"
 import { FakeTextAdapter } from "@tanstack/ai/testing"
@@ -52,9 +52,12 @@ const other = Model.Ref.make({ id: Model.ID.make("other"), providerID: Provider.
 class GoldenModel extends FakeTextAdapter<string, ReadonlyArray<Modality>> {
   hang = false
   calls = 0
+  /** The messages of each model call: the model context. */
+  readonly requests: Array<ReadonlyArray<ModelMessage>> = []
 
   override async *chatStream(options: TextOptions) {
     this.calls++
+    this.requests.push([...options.messages])
     for await (const chunk of super.chatStream(options)) {
       if (this.hang && chunk.type === EventType.TEXT_MESSAGE_END)
         return await aborted(options.request?.signal ?? undefined)
@@ -122,9 +125,44 @@ const testHosts = makeGlobalNode({
   deps: [LocationServiceMap.node, Bus.node, Database.node, Global.node, Session.node.mapLayer((layer) => layer)],
 })
 
+/** The summary that the summary model writes: the summary of the golden compaction trace. */
+const SUMMARY = "## Objective\n- Say hello"
+const decodeSummaryRequest = Schema.decodeUnknownSync(Schema.Struct({ stream: Schema.optional(Schema.Boolean) }))
+
+/**
+ * The summary model of the compaction agent: an OpenAI-compatible endpoint on loopback. The harness builds its
+ * summary adapter from the config, so the fake turn models cannot write the summary. Each call gets `SUMMARY`, with
+ * no tokens, like the scripted model of the old runtime.
+ */
+const summaries = Bun.serve({
+  hostname: "127.0.0.1",
+  port: 0,
+  fetch: async (request) => {
+    const chunk = { id: "chatcmpl-1", object: "chat.completion.chunk", created: 0, model: "summary" }
+    const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+    if (!decodeSummaryRequest(await request.json()).stream)
+      return Response.json({
+        ...chunk,
+        object: "chat.completion",
+        choices: [{ index: 0, message: { role: "assistant", content: SUMMARY }, finish_reason: "stop" }],
+        usage,
+      })
+    const events = [
+      { ...chunk, choices: [{ index: 0, delta: { role: "assistant", content: SUMMARY }, finish_reason: null }] },
+      { ...chunk, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+      { ...chunk, choices: [], usage },
+    ]
+    const body = [...events.map((event) => `data: ${JSON.stringify(event)}\n\n`), "data: [DONE]\n\n"].join("")
+    return new Response(body, { headers: { "content-type": "text/event-stream" } })
+  },
+})
+afterAll(() => summaries.stop(true))
+
 const config = {
   // The build agent asks before an edit, so the tool turn has a permission ask.
   permissions: [{ action: "edit", resource: "*", effect: "ask" }],
+  // The compaction agent writes its summaries with the loopback summary model.
+  agents: { compaction: { model: "stub/summary" } },
   // The models of the sessions. Each turn gets a fake model, so nothing calls this closed loopback port. Only the
   // title of the harness tries, and fails at once.
   model: "test/golden",
@@ -138,6 +176,12 @@ const config = {
         golden: { name: "Golden", limit: { context: 200_000, output: 32_000 } },
         other: { name: "Other", limit: { context: 200_000, output: 32_000 } },
       },
+    },
+    stub: {
+      name: "Stub",
+      package: "@opencode/ai/providers/openai-compatible",
+      settings: { baseURL: new URL("v1", summaries.url).href, apiKey: "test-key" },
+      models: { summary: { name: "Summary", limit: { context: 200_000, output: 32_000 } } },
     },
   },
 }
@@ -257,12 +301,11 @@ interface Patch {
 }
 
 /** The golden trace as the TanStack runtime must publish it: without step snapshots, and with the patches. */
-const expected = (name: string, patches: ReadonlyArray<Patch> = []) =>
+const expected = (name: string, patches: ReadonlyArray<Patch> = [], select = everything) =>
   Effect.promise(() => readTrace(name)).pipe(
     Effect.map((trace) =>
       comparable(
-        trace
-          .filter((event) => !NOT_OWNED.has(event.type))
+        select(trace.filter((event) => !NOT_OWNED.has(event.type)))
           .map((event) =>
             [
               { type: event.type, unset: event.type.startsWith("session.step.") ? ["snapshot"] : [] },
@@ -274,10 +317,34 @@ const expected = (name: string, patches: ReadonlyArray<Patch> = []) =>
   )
 
 /** The recorded trace of a scenario, comparable with `expected`. */
-const recorded = (context: Context) =>
+const recorded = (context: Context, select = everything) =>
   context.recorder.events.pipe(
-    Effect.map((events) => comparable(normalizeTrace(events, { roots: [context.directory, context.global] }))),
+    Effect.map((events) => comparable(select(normalizeTrace(events, { roots: [context.directory, context.global] })))),
   )
+
+function everything(trace: Trace) {
+  return trace
+}
+
+/**
+ * The events of the manual compaction of a trace: its inbox item, its compaction events, and its usage. The
+ * projector publishes `session.usage.updated` from the usage at its own time, so it is left out.
+ */
+function compactionSlice(trace: Trace) {
+  const inboxID = trace.flatMap((event) => {
+    const data = event.data
+    const isCompaction =
+      event.type === "session.inbox.enqueued" && isObject(data) && isObject(data.item) && data.item.type === "compaction"
+    return isCompaction ? [data.inboxID] : []
+  })[0]
+  return trace.filter((event) => {
+    const data = event.data
+    if (!isObject(data)) return false
+    if (event.type.startsWith("session.inbox.")) return data.inboxID === inboxID
+    if (event.type === "session.usage.recorded") return data.source === "compaction"
+    return event.type.startsWith("session.compaction.")
+  })
+}
 
 function patchEvent(event: TraceEvent, patch: Patch): TraceEvent {
   const data = event.data
@@ -456,6 +523,54 @@ describe("TanStackSession golden traces", () => {
 
         expect(interrupted).toBe(true)
         expect(yield* recorded(context)).toEqual(yield* expected("interrupt"))
+      }),
+    60_000,
+  )
+
+  it.live(
+    "compaction",
+    () =>
+      Effect.gen(function* () {
+        const context = yield* setup()
+        const sessionID = context.sessionID
+        // Over the 15,000 tokens that the compaction keeps, so the compaction cuts the first turn.
+        const fake = script([{ text: "Hello there. ".repeat(6_000) }, { text: "Hello again" }])
+        yield* runTurn(context, "Say hello")
+
+        const admitted = yield* context.sessions.compact({ sessionID })
+        const waiting = yield* context.sessions.inbox(sessionID)
+        // The harness compacts only at a model call, so the next turn compacts before its model call.
+        yield* runTurn(context, "Say it again")
+
+        expect(waiting.map((item) => item.id)).toEqual([admitted.id])
+        expect(yield* context.sessions.inbox(sessionID)).toEqual([])
+        // The model context of the second turn: the summary in place of the first turn.
+        expect(texts(fake.requests[1] ?? [])).toEqual([
+          { role: "assistant", text: `<untrusted-conversation-summary>\n${SUMMARY}\n</untrusted-conversation-summary>` },
+          { role: "user", text: "Say it again" },
+        ])
+        const messages = yield* context.sessions.messages({ sessionID, order: "asc" })
+        expect(
+          messages.flatMap((message) =>
+            message.type === "compaction" && message.status === "completed" ? [message.summary] : [],
+          ),
+        ).toEqual([SUMMARY])
+        // Only the compaction events compare: the old runtime ran the compaction as its own execution, and the
+        // harness runs it inside the next turn, after that turn's `inbox.delivered` and `step.started`.
+        expect(yield* recorded(context, compactionSlice)).toEqual(
+          yield* expected(
+            "compaction",
+            [
+              // The compaction agent of this test has its own model. The old trace's agent had none, so the session
+              // model wrote the summary.
+              {
+                type: "session.compaction.ended",
+                set: { model: { id: "summary", providerID: "stub" } },
+              },
+            ],
+            compactionSlice,
+          ),
+        )
       }),
     60_000,
   )

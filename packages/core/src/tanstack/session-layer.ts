@@ -24,6 +24,7 @@ import { AbsolutePath, RelativePath } from "../schema.js"
 import { Session } from "../session.js"
 import {
   BusyError,
+  CompactionConflictError,
   InboxConflictError,
   MessageNotFoundError,
   PromptConflictError,
@@ -138,12 +139,15 @@ interface Entry {
  *
  * - The database methods (list, get, create, rename, metadata, permissions, view, environment, messages, message,
  *   context, diff, inbox, log, command, remove) go to opencode's layer.
- * - The runtime methods (prompt, synthetic, shell, skill, wait, active, background, resume, interrupt, the inbox
- *   changes, fork, revert, switchAgent, switchModel, move, generate) run on the harness session of the same id, on
- *   the host of the session's location.
+ * - The runtime methods (prompt, synthetic, shell, skill, compact, wait, active, background, resume, interrupt, the
+ *   inbox changes, fork, revert, switchAgent, switchModel, move, generate) run on the harness session of the same
+ *   id, on the host of the session's location.
  * - One event pump for each open harness session maps its events with `createEventMapper` and publishes them on
- *   the Bus, in order. File changes go to the mapper of the session whose tool call made them.
- * - `compact` dies with `NotSupportedError`.
+ *   the Bus, in order. File changes go to the mapper of the session whose tool call made them. The summary of a
+ *   compaction comes from the harness log.
+ * - `compact` admits a compaction inbox item and forces a compaction at the next model call of the session. An idle
+ *   session compacts at the start of its next turn: the harness cannot compact outside a model call. It dies with
+ *   `NotSupportedError` when no model of the location can write a summary.
  *
  * Provide `Session.Service` (opencode's layer) and `Hosts` to it. `node` does that.
  */
@@ -282,6 +286,8 @@ export const layer = Layer.effect(
       Effect.gen(function* () {
         // The diffs of an edit go to the mapper before its result, so the result gets them as `metadata.files`.
         if (event.event.type === EventType.TOOL_CALL_RESULT) applyChanges(entry, event.event.toolCallId)
+        const tokensAfter = entry.mapper.compactionEnd(event)
+        if (tokensAfter !== undefined) yield* summarize(entry, event.operationId, tokensAfter)
         const outputs = entry.mapper.map({ operationId: event.operationId, event: event.event })
         // The permission, form, and job facades read the asks of the outputs before clients see them.
         live.track({ session: entry.session, mapper: entry.mapper, outputs })
@@ -291,6 +297,21 @@ export const layer = Layer.effect(
           Effect.logError("TanStack session: could not publish a harness event", { sessionID: entry.sessionID, cause }),
         ),
       )
+
+    /** Gives the mapper the summary of the compaction that ends now, from the harness log. */
+    const summarize = Effect.fn("TanStackSession.summarize")(function* (
+      entry: Entry,
+      operationId: string,
+      tokensAfter: number,
+    ) {
+      const compaction = entry.host.compaction()
+      const text = yield* entry.host.compacted(entry.sessionID, tokensAfter)
+      if (text === undefined || compaction === undefined)
+        return yield* Effect.logWarning("TanStack session: no summary for the compaction", {
+          sessionID: entry.sessionID,
+        })
+      entry.mapper.compacted(operationId, { text, model: compaction.model })
+    })
 
     const applyChanges = (entry: Entry, toolCallId: string) => {
       const found = changes.get(toolCallId) ?? []
@@ -738,13 +759,31 @@ export const layer = Layer.effect(
         yield* continueWith(entry, info, skill.content)
       }),
       synthetic,
-      compact: (input) =>
-        Effect.die(
-          new NotSupportedError({
-            method: "compact",
-            reason: `the harness compacts only inside a turn (session ${input.sessionID}).`,
-          }),
-        ),
+      // The harness compacts only at a model call. So a running turn compacts at its next model call, and an idle
+      // session compacts at the first model call of its next turn. That compaction delivers the inbox item.
+      compact: Effect.fn("TanStackSession.compact")(function* (input) {
+        const info = yield* base.get(input.sessionID)
+        const entry = yield* open(info)
+        const compaction = entry.host.compaction()
+        if (compaction === undefined)
+          return yield* Effect.die(
+            new NotSupportedError({ method: "compact", reason: "no model of the location can write a summary." }),
+          )
+        if (info.revert) yield* SessionRevert.commit(bus, info)
+        const inputID = input.id ?? SessionMessage.ID.create()
+        // It returns the compaction that already waits, if there is one.
+        const admitted = yield* admission
+          .admitCompaction({ id: inputID, sessionID: info.id, delivery: input.delivery ?? "steer" })
+          .pipe(
+            Effect.catchTag(
+              "SessionInbox.LifecycleConflict",
+              () => new CompactionConflictError({ sessionID: info.id, inputID }),
+            ),
+          )
+        entry.mapper.compacting(admitted.id)
+        compaction.compactNext(info.id)
+        return admitted
+      }),
       wait: Effect.fn("TanStackSession.wait")(function* (sessionID) {
         yield* base.get(sessionID)
         const entry = entries.get(sessionID)

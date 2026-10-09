@@ -195,6 +195,47 @@ describe("TanStackHost", () => {
   )
 
   it.live(
+    "compacts a session at its next model call, and reads the summary from the log",
+    () =>
+      Effect.gen(function* () {
+        const context = yield* setup
+        const started = yield* startHost(context.location)
+        const session = yield* started.service.open(context.sessionID)
+        const overrides = yield* started.service.overrides(coder)
+        const compaction = started.service.compaction()
+        // Over the 15,000 tokens that the compaction keeps, so the compaction cuts this message.
+        yield* Effect.promise(() => session.prompt("Read this. ".repeat(7_000), { overrides }))
+        const abort = new AbortController()
+        yield* Effect.addFinalizer(() => Effect.sync(() => abort.abort()))
+        const ended = (async () => {
+          for await (const entry of session.events({ signal: abort.signal })) {
+            if (entry.event.type === "CUSTOM" && entry.event.name === "compaction:ended") return entry.event.value.after
+          }
+        })()
+
+        compaction?.compactNext(context.sessionID)
+        yield* Effect.promise(() => session.prompt("Say hello again", { overrides }))
+        const tokensAfter = yield* Effect.promise(() => ended)
+        const summary =
+          typeof tokensAfter === "number" ? yield* started.service.compacted(context.sessionID, tokensAfter) : undefined
+
+        expect(compaction?.model).toEqual(coder)
+        // The compaction cut inside the first turn, so the summary is the context of that turn.
+        expect(summary).toBe(`## Turn context\n\n${ANSWER}`)
+        expect(texts(yield* Effect.promise(() => session.transcript()))).toEqual([
+          {
+            role: "assistant",
+            text: `<untrusted-conversation-summary>\n## Turn context\n\n${ANSWER}\n</untrusted-conversation-summary>`,
+          },
+          { role: "assistant", text: ANSWER },
+          { role: "user", text: "Say hello again" },
+          { role: "assistant", text: ANSWER },
+        ])
+      }),
+    60_000,
+  )
+
+  it.live(
     "stops the running turn when the location scope closes, and the next host resumes it at boot",
     () =>
       Effect.gen(function* () {

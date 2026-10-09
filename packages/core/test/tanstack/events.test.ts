@@ -824,4 +824,65 @@ describe("event mapper rules", () => {
     ])
     expect(succeeded).toEqual([])
   })
+
+  test("a manual compaction delivers its inbox item, and maps the summary that the log gives", () => {
+    const { mapper, feed } = scripted()
+    const summaryModel = { id: Model.ID.make("summary"), providerID: Provider.ID.make("stub") }
+    const usage = { promptTokens: 100, completionTokens: 20, totalTokens: 120, cost: 0.25 }
+    const ended = chunks.custom("compaction:ended", { reason: "forced", after: 27, usage })
+    mapper.compacting(SessionMessage.ID.make("msg_compact"))
+
+    const before = feed(chunks.custom("compaction:started", { reason: "forced" }), chunks.custom("compaction:state", {}))
+    const tokensAfter = mapper.compactionEnd({ operationId: "op-1", event: ended })
+    mapper.compacted("op-1", { text: "## Objective\n- Say hello", model: summaryModel })
+    const events = feed(ended)
+
+    const spent = { tokens: { input: 100, output: 20, reasoning: 0, cache: { read: 0, write: 0 } }, cost: 0.25 }
+    expect(before).toEqual([])
+    expect(tokensAfter).toBe(27)
+    expect(events).toEqual([
+      ["session.inbox.delivered", { sessionID: "ses_main", inboxID: "msg_compact" }],
+      ["session.compaction.started", { sessionID: "ses_main", reason: "manual", recent: "", inputID: "msg_compact" }],
+      ["session.compaction.delta", { sessionID: "ses_main", text: "## Objective\n- Say hello" }],
+      ["session.usage.recorded", { sessionID: "ses_main", source: "compaction", ...spent }],
+      [
+        "session.compaction.ended",
+        {
+          sessionID: "ses_main",
+          reason: "manual",
+          model: summaryModel,
+          text: "## Objective\n- Say hello",
+          recent: "",
+          ...spent,
+        },
+      ],
+    ])
+  })
+
+  test("a manual compaction with nothing to cut fails with the error of the old runtime", () => {
+    const { mapper, feed } = scripted()
+    const ended = chunks.custom("compaction:ended", { reason: "forced", after: 11 })
+    mapper.compacting(SessionMessage.ID.make("msg_compact"))
+
+    feed(chunks.custom("compaction:started", { reason: "forced" }))
+    const tokensAfter = mapper.compactionEnd({ operationId: "op-1", event: ended })
+    const events = feed(ended)
+
+    expect(tokensAfter).toBeUndefined()
+    expect(events).toEqual([
+      ["session.inbox.delivered", { sessionID: "ses_main", inboxID: "msg_compact" }],
+      ["session.compaction.started", { sessionID: "ses_main", reason: "manual", recent: "", inputID: "msg_compact" }],
+      [
+        "session.compaction.failed",
+        {
+          sessionID: "ses_main",
+          reason: "manual",
+          error: { type: "compaction.unavailable", message: "Nothing to compact yet" },
+          inputID: "msg_compact",
+          cost: 0,
+          tokens: noTokens,
+        },
+      ],
+    ])
+  })
 })

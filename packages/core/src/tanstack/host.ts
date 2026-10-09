@@ -3,10 +3,10 @@ export * as TanStackHost from "./host.js"
 import { Event } from "@opencode/schema/config"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Global } from "@opencode/util/global"
-import { projectCompaction } from "@tanstack/ai-compaction"
+import { COMPACTION_RECORD_TYPE, projectCompaction } from "@tanstack/ai-compaction"
 import { createHarnessHost } from "@tanstack/ai-harness"
 import type { HarnessHost, HarnessSession } from "@tanstack/ai-harness"
-import { Context, Effect, Layer, PubSub, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Option, PubSub, Schema, Stream } from "effect"
 import { Agent } from "../agent.js"
 import { Bus } from "../bus.js"
 import { Config } from "../config.js"
@@ -26,6 +26,12 @@ import { TanstackStores } from "./stores.js"
 type Built = Effect.Success<ReturnType<typeof TanStackHarness.make>>
 type Overrides = ReturnType<Built["overrides"]>
 export type Harness = Built["harness"]
+
+// How long `compacted` waits for the log record of a compaction. The harness writes it right after its end event.
+const COMPACTION_WAIT = "5 seconds"
+// `@tanstack/ai-compaction` puts its summary text in these tags. It does not export its reader.
+const SUMMARY_OPEN = "<untrusted-conversation-summary>"
+const SUMMARY_CLOSE = "</untrusted-conversation-summary>"
 
 /** The harness host could not open the session, for example because a harness plugin failed to set up. */
 export class OpenError extends Schema.TaggedError<OpenError>()("TanStackHost.OpenError", {
@@ -49,6 +55,17 @@ export interface Interface {
   readonly open: (sessionID: Session.ID) => Effect.Effect<HarnessSession<Harness>, OpenError>
   /** The turn overrides for an opencode model: pass them to `session.prompt(text, { overrides })`. */
   readonly overrides: (ref: Model.Ref) => Effect.Effect<Effect.Success<Overrides>, Effect.Error<Overrides>>
+  /**
+   * The compaction of the current harness definition, or `undefined` when no model of the location can write a
+   * summary. `compactNext(sessionID)` compacts the session at its next model call.
+   */
+  readonly compaction: () => TanStackHarness.Compaction | undefined
+  /**
+   * The summary text of the session's compaction that ended with `tokensAfter` tokens, from its log record. The
+   * harness writes the record just after its `compaction:ended` event, so this waits for it, up to 5 seconds.
+   * `undefined` when no such record comes.
+   */
+  readonly compacted: (sessionID: Session.ID, tokensAfter: number) => Effect.Effect<string | undefined>
   /**
    * Calls `listener` for each file that a file tool of any session changes. Returns a function that stops the
    * calls. The change names its tool call, not its session.
@@ -159,6 +176,38 @@ export const layer = Layer.effect(
         sessions: resumed.map((entry) => entry.threadId),
       })
 
+    // The log position of the last compaction record that `compacted` found, by session. The next read starts there.
+    // ponytail: the first read of a session reads its whole log.
+    const cursors = new Map<string, number>()
+    /** Reads the log of the session until the compaction record with `tokensAfter` comes, or `signal` aborts. */
+    const findCompaction = async (sessionID: Session.ID, tokensAfter: number, signal: AbortSignal) => {
+      while (!signal.aborted) {
+        // Listen first, so an append between the read and the wait is not lost.
+        const appended = Promise.withResolvers<void>()
+        const wake = () => appended.resolve()
+        const stop = stores.log.subscribe(sessionID, wake)
+        signal.addEventListener("abort", wake, { once: true })
+        try {
+          const entries = await stores.log.read(sessionID, { after: cursors.get(sessionID) ?? 0 })
+          const found = entries
+            .flatMap((entry) => {
+              const record = Option.getOrUndefined(decodeCompactionRecord(entry.record))
+              return record?.tokensAfter === tokensAfter ? [{ seq: entry.seq, head: record.head }] : []
+            })
+            .at(-1)
+          if (found) {
+            cursors.set(sessionID, found.seq)
+            return summaryText(found.head)
+          }
+          await appended.promise
+        } finally {
+          stop()
+          signal.removeEventListener("abort", wake)
+        }
+      }
+      return undefined
+    }
+
     return Service.of({
       host,
       harness: () => state.built.harness,
@@ -168,6 +217,16 @@ export const layer = Layer.effect(
           catch: (cause) => new OpenError({ sessionID, reason: cause instanceof Error ? cause.message : String(cause) }),
         }),
       overrides: (ref) => state.built.overrides(ref).pipe(Effect.provideContext(context)),
+      compaction: () => state.built.compaction,
+      compacted: (sessionID, tokensAfter) =>
+        Effect.tryPromise((signal) => findCompaction(sessionID, tokensAfter, signal)).pipe(
+          Effect.timeoutOrElse({ duration: COMPACTION_WAIT, orElse: () => Effect.succeed(undefined) }),
+          Effect.catch((error) =>
+            Effect.logWarning("TanStack host: could not read the compaction record", { sessionID, error }).pipe(
+              Effect.as(undefined),
+            ),
+          ),
+        ),
       onFileChange: (listener) => {
         listeners.add(listener)
         return () => {
@@ -177,6 +236,38 @@ export const layer = Layer.effect(
     })
   }),
 )
+
+const decodeCompactionRecord = Schema.decodeUnknownOption(
+  Schema.Struct({
+    type: Schema.Literal(COMPACTION_RECORD_TYPE),
+    tokensAfter: Schema.Finite,
+    head: Schema.Array(Schema.Struct({ content: Schema.Unknown })),
+  }),
+)
+const decodeParts = Schema.decodeUnknownOption(
+  Schema.Array(Schema.Struct({ type: Schema.String, content: Schema.optionalKey(Schema.Unknown) })),
+)
+
+/**
+ * The text of the messages that replace a compacted part, without the summary tags. A native compaction can give
+ * messages with no text: then the text is empty.
+ */
+function summaryText(head: ReadonlyArray<{ readonly content: unknown }>) {
+  return head
+    .map((message) => {
+      const text = contentText(message.content)
+      const isSummary = text.startsWith(SUMMARY_OPEN) && text.endsWith(SUMMARY_CLOSE)
+      return isSummary ? text.slice(SUMMARY_OPEN.length, -SUMMARY_CLOSE.length).trim() : text
+    })
+    .filter((text) => text !== "")
+    .join("\n\n")
+}
+
+function contentText(content: unknown) {
+  if (typeof content === "string") return content
+  const parts = Option.getOrElse(decodeParts(content), () => [])
+  return parts.flatMap((part) => (part.type === "text" && typeof part.content === "string" ? [part.content] : [])).join("")
+}
 
 export const node = makeLocationNode({
   service: Service,
