@@ -16,7 +16,11 @@ import { ServerFetch } from "../src/fetch"
 
 setDefaultTimeout(30_000)
 
-it.live("serves turn diffs by user message with range validation", () =>
+// The test delivers its turn through the old runner's `SessionExecution.wake`. The TanStack runtime
+// (OPENCODE_RUNTIME=tanstack) runs turns on the harness and never calls it.
+const live = process.env.OPENCODE_RUNTIME === "tanstack" ? it.live.skip : it.live
+
+live("serves turn diffs by user message with range validation", () =>
   Effect.gen(function* () {
     const tmp = yield* Effect.acquireDisposable(Effect.promise(() => tmpdir("opencode-session-diff-")))
     const ids = { user: SessionMessage.ID.create(), assistant: SessionMessage.ID.create() }

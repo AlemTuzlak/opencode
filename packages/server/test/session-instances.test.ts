@@ -30,7 +30,12 @@ import { tmpdirScoped } from "../../core/test/fixture/tmpdir"
 import { it } from "../../core/test/lib/effect"
 import { createEmbeddedRoutes } from "../src/routes"
 
-it.live(
+// The test scripts its turns through opencode's `LLMClient` (`TestLLM`) and checks the per-call temperature. The
+// TanStack runtime (OPENCODE_RUNTIME=tanstack) sends turns through TanStack adapters, which take no per-call
+// temperature. `packages/core/test/tanstack/` covers the harness turns.
+const live = process.env.OPENCODE_RUNTIME === "tanstack" ? it.live.skip : it.live
+
+live(
   "isolates same-directory Session tools, hooks, commands, and HTTP requests through one selector",
   () =>
     Effect.gen(function* () {
