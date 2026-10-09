@@ -520,7 +520,7 @@ export const make = Effect.fn("TanStackPluginCompat.make")(function* (options: O
     return new Proxy(adapter, {
       get: (target, key) => {
         if (key === "chatStream") return chatStream
-        const value = Reflect.get(target, key)
+        const value = target[key as keyof AnyTextAdapter]
         // Bound, so an adapter with private fields still reads them.
         return typeof value === "function" ? value.bind(target) : value
       },
