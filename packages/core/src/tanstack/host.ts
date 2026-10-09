@@ -78,6 +78,29 @@ export const layer = Layer.effect(
     const state = { built: yield* make }
     const context = yield* Effect.context<Effect.Services<Overrides>>()
     const stores = persistence.stores
+    const location = yield* Location.Service
+    const sessions = yield* Session.Service
+    // A work claim names only the thread and the harness, and every location's harness is `opencode`. So the boot
+    // sweep resumes only the sessions of this location, and a turn never runs in the folder of another location.
+    // ponytail: filters after the store's `limit`, so many expired claims of other locations can delay a resume.
+    const isHere = (threadId: string) =>
+      Effect.runPromise(
+        sessions.get(Session.ID.make(threadId)).pipe(
+          Effect.map(
+            (info) =>
+              info.location.directory === location.directory && info.location.workspaceID === location.workspaceID,
+          ),
+          Effect.orElseSucceed(() => false),
+        ),
+      )
+    const workClaims = {
+      ...stores.workClaims,
+      listExpired: async (input: Parameters<typeof stores.workClaims.listExpired>[0]) => {
+        const expired = await stores.workClaims.listExpired(input)
+        const here = await Promise.all(expired.map((claim) => isHere(claim.threadId)))
+        return expired.filter((_, index) => here[index])
+      },
+    }
     // A durable host: the log keeps the transcript and the inputs, so the host gets no `messages` and no `inbox`.
     const host = createHarnessHost({
       persistence: {
@@ -91,7 +114,7 @@ export const layer = Layer.effect(
           artifacts: stores.artifacts,
           blobs: stores.blobs,
           generationRuns: stores.generationRuns,
-          workClaims: stores.workClaims,
+          workClaims,
           sessions: stores.sessions,
         },
       },
