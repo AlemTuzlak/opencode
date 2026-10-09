@@ -2,7 +2,7 @@ export * as TanStackSession from "./session-layer.js"
 
 import path from "path"
 import { asc, eq } from "drizzle-orm"
-import { Context, DateTime, Effect, Fiber, Layer, Option, Schema, Scope } from "effect"
+import { Context, DateTime, Effect, Fiber, Layer, Option, Result, Schema, Scope } from "effect"
 import { chat, EventType } from "@tanstack/ai"
 import type { ContentPart, StreamChunk } from "@tanstack/ai"
 import { HARNESS_EVENTS } from "@tanstack/ai-harness"
@@ -40,11 +40,14 @@ import { SessionSkill } from "../session/skill.js"
 import { SessionSchema } from "../session/schema.js"
 import { SessionMessageTable } from "../session/sql.js"
 import { SessionStore } from "../session/store.js"
+import { SessionTitle } from "../session/title.js"
+import { toSessionError } from "../session/to-session-error.js"
 import { ShellResult } from "../shell/result.js"
 import { fileDiff } from "../tool/plugin/file-diff.js"
 import { createEventMapper } from "./events.js"
-import type { EventMapper, HarnessEvent, Link, Output } from "./events.js"
-import type { TanStackHarness } from "./harness.js"
+import type { ChildSession, EventMapper, HarnessEvent, InterruptReason, Link, Output } from "./events.js"
+import { TanStackAdapters } from "./adapters.js"
+import { TanStackHarness } from "./harness.js"
 import { TanStackHost } from "./host.js"
 import { TanStackPermission } from "./permission-layer.js"
 import { TanStackRecovery } from "./recovery.js"
@@ -162,6 +165,9 @@ interface Entry {
  *   at the next boot. The layer gives `SessionExecution` its `TanStackRecovery.Driver`.
  * - Cancel: each busy period runs as a busy fiber (`ensureBusy`). Interrupting it cancels the harness turn, and a
  *   cancel on the harness side ends it. A decline with no message ends the turn, as on opencode's runtime.
+ * - As opencode's runtime does: a model that cannot run (no TanStack adapter) keeps the input in the inbox and fails
+ *   the busy period, `revert.clear` and `resume` run the held inputs, and a new root session takes the title that
+ *   the harness `title()` plugin writes to the session index.
  *
  * Provide `Session.Service` (opencode's layer) and `Hosts` to it. `node` does that.
  */
@@ -202,7 +208,7 @@ export const layer = Layer.effect(
     const unwatch: Array<() => void> = []
     yield* Effect.addFinalizer(() => Effect.sync(() => unwatch.forEach((stop) => stop())))
 
-    /** Takes the file changes of a host, and opens the sessions that its boot sweep resumed. Once for each host. */
+    /** Takes the file changes and the session titles of a host. Once for each host. */
     const watch = Effect.fn("TanStackSession.watch")(function* (host: TanStackHost.Interface) {
       if (watched.has(host)) return
       watched.add(host)
@@ -211,39 +217,57 @@ export const layer = Layer.effect(
           changes.set(change.toolCallId, [...(changes.get(change.toolCallId) ?? []), change]),
         ),
       )
-      // Their turns run already. On their own fibers, because `open` holds the lock of the session that asked.
-      yield* Effect.forEach(
-        host.resumed,
-        (sessionID) =>
-          result.resume(sessionID).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("TanStack session: could not open a resumed session", { sessionID, cause }),
-            ),
-            Effect.forkIn(scope),
-          ),
-        { discard: true },
-      )
+      const reading = new AbortController()
+      unwatch.push(() => reading.abort())
+      yield* Effect.promise(() => followTitles(host, reading.signal)).pipe(Effect.forkIn(scope))
     })
 
-    /** The agent and the model of the next turn: the session's own, else the defaults of its location. */
+    /**
+     * The harness `title()` plugin writes the title of a new session to the session index of the host. opencode's
+     * session takes it while it has opencode's default title, as opencode's runner titles a new root session.
+     */
+    async function followTitles(host: TanStackHost.Interface, signal: AbortSignal) {
+      for await (const event of host.host.events({ signal })) {
+        if (event.type !== "session" || !event.entry.title) continue
+        await run(retitle(SessionSchema.ID.make(event.threadId), event.entry.title))
+      }
+    }
+
+    const retitle = (sessionID: SessionSchema.ID, title: string) =>
+      Effect.gen(function* () {
+        const info = yield* base.get(sessionID)
+        const isUntitled = info.parentID === undefined && SessionTitle.isUntitled(info)
+        if (isUntitled) yield* base.rename({ sessionID, title })
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("TanStack session: could not take the harness title", { sessionID, cause }),
+        ),
+      )
+
+    /**
+     * The agent and the model of the next turn: the session's own, else the defaults of its location. `costs` are the
+     * catalog prices of the model: opencode prices each step with them.
+     */
     const selection = Effect.fn("TanStackSession.selection")(function* (info: SessionSchema.Info) {
-      const defaults = yield* Effect.gen(function* () {
+      const selected = yield* Effect.gen(function* () {
         const agents = yield* Agent.Service
         const models = yield* Model.Service
         const agent = info.agent ?? (yield* agents.select()).id
         const fallback = info.model ? undefined : yield* models.default()
-        return { agent, fallback }
+        const model =
+          TanStackRecovery.sessionModel(info) ??
+          (fallback && Model.Ref.make({ providerID: fallback.providerID, id: fallback.id }))
+        const costs = model === undefined ? [] : ((yield* models.get(model.providerID, model.id))?.cost ?? [])
+        return { agent, model, costs }
       }).pipe(
         Effect.provide(LocationServiceMap.Service.get(info.location)),
         Effect.provideService(LocationServiceMap.Service, locations),
         Effect.orDie,
       )
-      const model =
-        TanStackRecovery.sessionModel(info) ??
-        (defaults.fallback && Model.Ref.make({ providerID: defaults.fallback.providerID, id: defaults.fallback.id }))
+      const model = selected.model
       if (model === undefined)
         return yield* Effect.die(new Error(`The session ${info.id} has no model, and its location has no default.`))
-      return { agent: defaults.agent, model }
+      return { agent: selected.agent, model, costs: selected.costs }
     })
 
     const open = Effect.fn("TanStackSession.open")(function* (info: SessionSchema.Info) {
@@ -267,6 +291,7 @@ export const layer = Layer.effect(
               location: info.location,
               agent: selected.agent,
               model: selected.model,
+              costs: selected.costs,
               links: saved,
               onLink: (link) => {
                 links.push(link)
@@ -461,11 +486,27 @@ export const layer = Layer.effect(
       )
     }
 
+    /** The child session of a subagent run, on the model of the run: the subagent's own model, else the parent's. */
+    const createChild = Effect.fn("TanStackSession.createChild")(function* (entry: Entry, output: ChildSession) {
+      const parent = yield* base.get(output.parentID).pipe(Effect.orDie)
+      const agent = yield* Agent.Service.use((agents) => agents.get(output.agent)).pipe(
+        Effect.provide(LocationServiceMap.Service.get(entry.location)),
+        Effect.provideService(LocationServiceMap.Service, locations),
+        Effect.orDie,
+      )
+      yield* base
+        .create({
+          id: output.sessionID,
+          parentID: output.parentID,
+          agent: output.agent,
+          title: output.title,
+          model: agent?.model ?? parent.model,
+        })
+        .pipe(Effect.orDie)
+    })
+
     const publishOutput = (entry: Entry, output: Output) => {
-      if (output.type === "child")
-        return base
-          .create({ id: output.sessionID, parentID: output.parentID, agent: output.agent, title: output.title })
-          .pipe(Effect.asVoid, Effect.orDie)
+      if (output.type === "child") return createChild(entry, output)
       // The session layer publishes the revert events. The mapper cannot name the reverted message: see `boundary`.
       const isRevert =
         output.definition.type === SessionEvent.RevertEvent.Staged.type ||
@@ -539,7 +580,17 @@ export const layer = Layer.effect(
       const config = entry.session.config()
       if (info.agent !== undefined && config.agent !== undefined && config.agent.value !== info.agent)
         yield* receive(entry.session.setConfig("agent", info.agent))
-      return yield* entry.host.overrides(selected.model).pipe(Effect.orDie)
+      return yield* entry.host.overrides(selected.model)
+    })
+
+    /** Keeps an inbox item in the inbox. It goes to the harness with the next input. */
+    const hold = Effect.fn("TanStackSession.hold")(function* (
+      entry: Entry,
+      info: SessionSchema.Info,
+      input: { readonly inboxID: SessionMessage.ID; readonly item: SessionInbox.Item; readonly text: string },
+    ) {
+      yield* bus.publish(SessionEvent.InboxEnqueued, { sessionID: info.id, inboxID: input.inboxID, item: input.item })
+      entry.held.push({ inboxID: input.inboxID, text: input.text })
     })
 
     /**
@@ -557,23 +608,28 @@ export const layer = Layer.effect(
         readonly resume: boolean
       },
     ) {
-      const isHeld = !input.resume && !isBusy(entry)
-      if (isHeld) {
-        yield* bus.publish(SessionEvent.InboxEnqueued, {
-          sessionID: info.id,
-          inboxID: input.inboxID,
-          item: input.item,
-        })
-        entry.held.push({ inboxID: input.inboxID, text: input.text })
+      const isIdle = !isBusy(entry)
+      if (!input.resume && isIdle) {
+        yield* hold(entry, info, input)
+        return "accepted"
+      }
+      const overrides = yield* Effect.result(turn(entry, info))
+      // The model cannot run, for example a provider with no TanStack adapter. As on opencode's runtime, the input
+      // stays in the inbox, and the busy period fails with the error before it delivers the input.
+      if (Result.isFailure(overrides)) {
+        yield* hold(entry, info, input)
+        if (isIdle) {
+          yield* bus.publish(SessionEvent.Execution.Started, { sessionID: info.id })
+          yield* bus.publish(SessionEvent.Execution.Failed, { sessionID: info.id, error: modelError(overrides.failure) })
+        }
         return "accepted"
       }
       const message = yield* release(entry, info, input.message)
-      const overrides = yield* turn(entry, info)
       entry.mapper.admit({ inboxID: input.inboxID, item: input.item })
       const operation = entry.session.prompt(message, {
         inputId: input.inboxID,
         busy: input.item.delivery === "queue" ? "queue" : "steer",
-        overrides,
+        overrides: overrides.success,
       })
       const receipt = yield* Effect.promise(() => operation.receipt)
       if (receipt.status === "rejected") return receipt.status
@@ -606,18 +662,28 @@ export const layer = Layer.effect(
       return parts
     })
 
-    /** Sends a turn with no inbox item, for example a skill. */
+    /** Sends a turn with no inbox item, for example a skill. The held inputs go in front of `input`. */
     const continueWith = Effect.fn("TanStackSession.continueWith")(function* (
       entry: Entry,
       info: SessionSchema.Info,
-      text: string,
+      input: UserInput,
     ) {
-      const message = yield* release(entry, info, text)
-      const overrides = yield* turn(entry, info)
+      const message = yield* release(entry, info, input)
+      const overrides = yield* turn(entry, info).pipe(Effect.orDie)
       const operation = entry.session.prompt(message, { busy: "steer", overrides })
       expect(entry, (yield* Effect.promise(() => operation.receipt)).operationId)
       yield* ensureBusy(entry)
       yield* syncClaim(entry)
+    })
+
+    /**
+     * Wakes an idle session, as opencode's runtime does after `revert.clear`: the held inputs run as a turn. With no
+     * held input, opencode's drain finds no work, and its busy period starts and ends at once.
+     */
+    const wake = Effect.fn("TanStackSession.wake")(function* (entry: Entry, info: SessionSchema.Info) {
+      if (entry.held.length > 0) return yield* continueWith(entry, info, [])
+      yield* bus.publish(SessionEvent.Execution.Started, { sessionID: info.id })
+      yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID: info.id })
     })
 
     const synthetic: Session.Interface["synthetic"] = Effect.fn("TanStackSession.synthetic")(function* (input) {
@@ -836,7 +902,7 @@ export const layer = Layer.effect(
       generate: Effect.fn("TanStackSession.generate")(function* (input) {
         const info = yield* base.get(input.sessionID)
         const entry = yield* open(info)
-        const overrides = yield* turn(entry, info)
+        const overrides = yield* turn(entry, info).pipe(Effect.orDie)
         const transcript = yield* Effect.promise(() => entry.session.transcript())
         // Interrupting the Effect aborts the model call.
         const generated = yield* Effect.tryPromise((signal) =>
@@ -942,6 +1008,8 @@ export const layer = Layer.effect(
         const info = yield* base.get(sessionID)
         const entry = yield* open(info)
         yield* Effect.promise(() => entry.session.recover())
+        // As opencode's `resume` drains the inbox: the inputs held with `resume: false` run now.
+        if (!isBusy(entry) && entry.held.length > 0) yield* continueWith(entry, info, [])
         if (isBusy(entry)) yield* ensureBusy(entry)
         yield* syncClaim(entry)
         // It joins the busy period: interrupting it leaves the turn running, as on opencode's runtime.
@@ -1049,6 +1117,7 @@ export const layer = Layer.effect(
           if (receipt.status === "rejected") return yield* new BusyError({ sessionID })
           if (info.revert)
             yield* bus.publish(SessionEvent.RevertEvent.Cleared, { sessionID }, { location: info.location })
+          yield* wake(entry, info)
         }),
         // The harness drops the hidden messages at its next turn. opencode drops its rows now.
         commit: Effect.fn("TanStackSession.revert.commit")(function* (sessionID) {
@@ -1063,10 +1132,12 @@ export const layer = Layer.effect(
     drivers.current = {
       active: result.active,
       resume: (sessionID) => result.resume(sessionID).pipe(Effect.orDie),
-      interrupt: (sessionID, options) =>
+      // `SessionExecution` names the reason, for example `inactivity` when the location evicts its idle owners.
+      interrupt: (sessionID, options: { readonly awaitSettlement: boolean; readonly reason?: InterruptReason }) =>
         Effect.gen(function* () {
           const entry = entries.get(sessionID)
           if (entry === undefined || !isBusy(entry)) return false
+          entry.mapper.interrupting(options.reason ?? "user")
           const stopping = entry.busy ? Fiber.interrupt(entry.busy) : stop(entry)
           if (options.awaitSettlement) yield* stopping
           else yield* Effect.forkIn(stopping, scope)
@@ -1117,6 +1188,16 @@ export const node = makeGlobalNode({
 function isBusy(entry: Entry) {
   const snapshot = entry.session.snapshot()
   return snapshot.activeOperations.some((operation) => operation.kind !== "agent") || snapshot.queuedTurns > 0
+}
+
+/**
+ * The session error of a model that cannot run a turn. A provider with no TanStack adapter, or a model that is not
+ * in the catalog, has no route, like a model that opencode's runtime cannot resolve.
+ */
+function modelError(error: unknown) {
+  const hasNoRoute =
+    error instanceof TanStackAdapters.UnsupportedProviderError || error instanceof TanStackHarness.ModelNotFoundError
+  return hasNoRoute ? { type: "provider.no-route", message: error.message } : toSessionError(error)
 }
 
 /** Runs a harness control input. A refused one only logs: opencode applies the change at the next turn. */
