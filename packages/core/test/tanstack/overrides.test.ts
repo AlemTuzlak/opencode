@@ -20,6 +20,7 @@ import { Job } from "@opencode/core/job"
 import { Location } from "@opencode/core/location"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { PermissionSaved } from "@opencode/core/permission/saved"
+import { Plugin } from "@opencode/core/plugin"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { TanStackOverrides } from "@opencode/core/tanstack/overrides"
@@ -188,6 +189,8 @@ describe("TanStackOverrides", () => {
         const location = yield* project
 
         const text = yield* Effect.gen(function* () {
+          // The config providers activate after the plugins. The location does not wait for them, on both runtimes.
+          yield* Plugin.awaitActivation
           const generate = yield* Generate.Service
           return yield* generate.text({ prompt: "Say hello" })
         }).pipe(Effect.provide(LocationServiceMap.Service.get(location)))

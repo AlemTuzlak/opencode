@@ -247,7 +247,14 @@ const restart = (process: Process, root: string) =>
 
 const decodeSessionID = Schema.decodeUnknownOption(Schema.Struct({ sessionID: Schema.String }))
 
-/** Records the session, permission, and form events that the process publishes. `types` reads them for a session. */
+// The projector publishes it on its own fiber after a step ends or fails with usage, so its place among the
+// events of the turn is not fixed.
+const USAGE_UPDATED = "session.usage.updated"
+
+/**
+ * Records the session, permission, and form events that the process publishes. `types` reads them for a session,
+ * without `session.usage.updated`.
+ */
 const record = (process: Process) =>
   Effect.gen(function* () {
     const recorder = yield* process.use(recordTrace())
@@ -255,7 +262,10 @@ const record = (process: Process) =>
       types: (sessionID: Session.ID) =>
         recorder.events.pipe(
           Effect.map((events) =>
-            events.flatMap((event) => (Option.getOrUndefined(decodeSessionID(event.data))?.sessionID === sessionID ? [event.type] : [])),
+            events.flatMap((event) => {
+              const isOfSession = Option.getOrUndefined(decodeSessionID(event.data))?.sessionID === sessionID
+              return isOfSession && event.type !== USAGE_UPDATED ? [event.type] : []
+            }),
           ),
         ),
     }

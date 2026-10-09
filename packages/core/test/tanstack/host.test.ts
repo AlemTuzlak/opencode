@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, setSystemTime } from "bun:test"
 import { Context, Effect, Exit, Layer, Schema, Scope } from "effect"
+import { TestClock } from "effect/testing"
 import { Event } from "@opencode/schema/config"
 import { Agent } from "@opencode/core/agent"
 import { Bus } from "@opencode/core/bus"
@@ -15,6 +16,7 @@ import { Provider } from "@opencode/core/provider"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { TanStackHost } from "@opencode/core/tanstack/host"
+import { TanstackLeaseTable } from "@opencode/core/tanstack/sql"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
 import type { ModelMessage } from "@tanstack/ai"
@@ -98,6 +100,7 @@ const config = {
 const coder = Model.Ref.make({ providerID: Provider.ID.make("local"), id: Model.ID.make("coder") })
 
 const layer = AppNodeBuilder.build(
+  // No session layer and no driver, so the sweeps recover their sessions on the host.
   LayerNode.group([Bus.node, Global.node, Database.node, Session.node, LocationServiceMap.node]),
   [
     Global.node.replace(tempGlobalLayer),
@@ -128,6 +131,48 @@ const startHost = (location: Location.Ref) =>
       scope,
     )
     return { scope, service: Context.get(built, TanStackHost.Service) }
+  })
+
+type Setup = Effect.Success<typeof setup>
+type Host = Effect.Success<ReturnType<typeof startHost>>
+
+/** Starts a host and a turn on it that the model holds. The turn never ends on this host. */
+const holdTurn = (context: Setup) =>
+  Effect.gen(function* () {
+    model.hold = true
+    model.turns = 0
+    model.held = Promise.withResolvers<void>()
+    model.cut = Promise.withResolvers<void>()
+    model.resumed = Promise.withResolvers<void>()
+    const host = yield* startHost(context.location)
+    const session = yield* host.service.open(context.sessionID)
+    const overrides = yield* host.service.overrides(coder)
+    // The turn never ends on this host, so its result is not awaited.
+    session.prompt("Say hello", { overrides })
+    yield* Effect.promise(() => model.held.promise)
+    return host
+  })
+
+/** Closes the host, and lets the model answer from now on. The closed host keeps its claim on the thread. */
+const stopHost = (host: Host) =>
+  Effect.gen(function* () {
+    yield* Scope.close(host.scope, Exit.void)
+    // The closed host cut its model call.
+    yield* Effect.promise(() => model.cut.promise)
+    model.hold = false
+  })
+
+/**
+ * A crash: the host stops, but its run leases stay until they expire, as when its process dies. A close gives
+ * them back, so this writes them again. Returns the leases.
+ */
+const crashHost = (host: Host) =>
+  Effect.gen(function* () {
+    const db = (yield* Database.Service).db
+    const leases = yield* db.select().from(TanstackLeaseTable).all()
+    yield* stopHost(host)
+    yield* db.insert(TanstackLeaseTable).values(leases).run()
+    return leases
   })
 
 /** The role and the text of each message. */
@@ -239,24 +284,9 @@ describe("TanStackHost", () => {
     "stops the running turn when the location scope closes, and the next host resumes it at boot",
     () =>
       Effect.gen(function* () {
-        model.hold = true
-        model.turns = 0
-        model.held = Promise.withResolvers<void>()
-        model.cut = Promise.withResolvers<void>()
-        model.resumed = Promise.withResolvers<void>()
         yield* Effect.addFinalizer(() => Effect.sync(() => setSystemTime()))
         const context = yield* setup
-        const first = yield* startHost(context.location)
-        const session = yield* first.service.open(context.sessionID)
-        const overrides = yield* first.service.overrides(coder)
-        // The turn never ends on this host, so its result is not awaited.
-        session.prompt("Say hello", { overrides })
-        yield* Effect.promise(() => model.held.promise)
-
-        yield* Scope.close(first.scope, Exit.void)
-        // The closed host cut its model call.
-        yield* Effect.promise(() => model.cut.promise)
-        model.hold = false
+        yield* stopHost(yield* holdTurn(context))
         // The closed host keeps its claim on the thread for 30 seconds, as a host that crashed.
         setSystemTime(new Date(Date.now() + 60_000))
         // The host of another location leaves the turn alone, so it never runs in that location's folder.
@@ -269,6 +299,37 @@ describe("TanStackHost", () => {
         const resumed = yield* second.service.open(context.sessionID)
         const transcript = yield* Effect.promise(() => poll(() => resumed.transcript(), (messages) => messages.length === 2))
 
+        expect(model.turns).toBe(2)
+        expect(texts(transcript)).toEqual([
+          { role: "user", text: "Say hello" },
+          { role: "assistant", text: ANSWER },
+        ])
+      }),
+    60_000,
+  )
+
+  // A TestClock test: the late sweep sleeps one lease time on the Effect clock, and `TestClock.adjust` ends the sleep.
+  it.effect(
+    "after a crash, a late sweep one lease time after boot resumes the turn that the boot sweep skipped",
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.addFinalizer(() => Effect.sync(() => setSystemTime()))
+        const context = yield* setup
+        const leases = yield* crashHost(yield* holdTurn(context))
+        const second = yield* startHost(context.location)
+        // `SessionRestart` opens the session at boot. The crashed host still holds the lease and the claim, so the
+        // boot sweep and the open run nothing.
+        const session = yield* second.service.open(context.sessionID)
+        const atBoot = { turns: model.turns, status: session.snapshot().status }
+
+        // The lease and the claim of the crashed host expire, and the late sweep runs.
+        setSystemTime(new Date(Date.now() + 60_000))
+        yield* TestClock.adjust("30 seconds")
+        yield* Effect.promise(() => model.resumed.promise)
+        const transcript = yield* Effect.promise(() => poll(() => session.transcript(), (messages) => messages.length === 2))
+
+        expect(leases).toHaveLength(1)
+        expect(atBoot).toEqual({ turns: 1, status: "idle" })
         expect(model.turns).toBe(2)
         expect(texts(transcript)).toEqual([
           { role: "user", text: "Say hello" },
