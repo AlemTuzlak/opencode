@@ -1,0 +1,645 @@
+[
+  {
+    "id": "evt_1",
+    "type": "session.created",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 0,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "slug": "<slug>",
+      "version": "unknown",
+      "projectID": "global",
+      "location": {
+        "directory": "<root:0>"
+      },
+      "subpath": "",
+      "title": "Golden",
+      "agent": "build",
+      "model": {
+        "id": "golden",
+        "providerID": "test"
+      }
+    }
+  },
+  {
+    "id": "evt_3",
+    "type": "session.inbox.enqueued",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 1,
+      "version": 1
+    },
+    "data": {
+      "inboxID": "msg_4",
+      "sessionID": "ses_2",
+      "item": {
+        "type": "user",
+        "payload": {
+          "text": "Run the job in the background"
+        },
+        "delivery": "steer"
+      }
+    }
+  },
+  {
+    "id": "evt_5",
+    "type": "session.execution.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 2,
+      "version": 1
+    },
+    "data": {
+      "sessionID": "ses_2"
+    }
+  },
+  {
+    "id": "evt_6",
+    "type": "session.instructions.updated",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 3,
+      "version": 2
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "metadata": {
+      "instructions": {
+        "initial": true
+      }
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "delta": {
+        "core/codemode": "<hash:1>",
+        "core/skill-guidance": "<hash:2>",
+        "core/date": "<hash:3>",
+        "core/environment": "<hash:4>"
+      }
+    }
+  },
+  {
+    "id": "evt_7",
+    "type": "session.inbox.delivered",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 4,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "inboxID": "msg_4"
+    }
+  },
+  {
+    "id": "evt_8",
+    "type": "session.step.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 5,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "agent": "build",
+      "model": {
+        "id": "golden",
+        "providerID": "test"
+      },
+      "assistantMessageID": "msg_9",
+      "snapshot": "<hash:5>",
+      "started": "<time>"
+    }
+  },
+  {
+    "id": "evt_10",
+    "type": "session.tool.input.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 6,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_9",
+      "id": "call-shell",
+      "name": "shell"
+    }
+  },
+  {
+    "id": "evt_11",
+    "type": "session.tool.input.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 7,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_9",
+      "id": "call-shell",
+      "text": ""
+    }
+  },
+  {
+    "id": "evt_12",
+    "type": "session.tool.called",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 8,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_9",
+      "id": "call-shell",
+      "input": {
+        "command": "bun -e \"const fs=require('fs');for(let i=0;i<3000;i++){if(fs.existsSync('release'))break;Bun.sleepSync(10)}console.log('done')\"",
+        "background": true
+      },
+      "executed": false
+    }
+  },
+  {
+    "id": "evt_13",
+    "type": "session.step.streamed",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 9,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_9"
+    }
+  },
+  {
+    "id": "evt_14",
+    "type": "session.tool.progress",
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_9",
+      "id": "call-shell",
+      "metadata": {
+        "shellID": "sh_15"
+      }
+    }
+  },
+  {
+    "id": "evt_16",
+    "type": "session.tool.success",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 10,
+      "version": 2
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_9",
+      "id": "call-shell",
+      "content": [
+        {
+          "type": "text",
+          "text": "Command moved to the background (shell ID: sh_15).\nOutput is streaming to: <root:1>/data/shell/global/sh_15.out"
+        },
+        {
+          "type": "text",
+          "text": "You will be notified automatically when the command finishes. The notification will include the command's output. Unless the user explicitly asks otherwise, DO NOT poll for completion, even if you need the final result to continue. Repeatedly sleeping and reading or searching the output file is polling, not useful work. You may read the current output if it lets you do useful work now, but do not repeatedly check it while waiting for the command to finish. Keep working on anything that does not depend on the result. If you have nothing else to do, end your response; you will be resumed automatically when the command finishes."
+        }
+      ],
+      "metadata": {
+        "status": "running",
+        "truncated": false,
+        "shellID": "sh_15"
+      },
+      "executed": false
+    }
+  },
+  {
+    "id": "evt_17",
+    "type": "session.step.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 11,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_9",
+      "finish": "tool-calls",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "snapshot": "<hash:5>",
+      "files": []
+    }
+  },
+  {
+    "id": "evt_18",
+    "type": "session.usage.updated",
+    "data": {
+      "sessionID": "ses_2",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      }
+    }
+  },
+  {
+    "id": "evt_19",
+    "type": "session.step.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 12,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "agent": "build",
+      "model": {
+        "id": "golden",
+        "providerID": "test"
+      },
+      "assistantMessageID": "msg_20",
+      "snapshot": "<hash:5>",
+      "started": "<time>"
+    }
+  },
+  {
+    "id": "evt_21",
+    "type": "session.text.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 13,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20",
+      "ordinal": 0
+    }
+  },
+  {
+    "id": "evt_22",
+    "type": "session.text.delta",
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20",
+      "ordinal": 0,
+      "delta": "Started the job."
+    }
+  },
+  {
+    "id": "evt_23",
+    "type": "session.text.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 14,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20",
+      "ordinal": 0,
+      "text": "Started the job."
+    }
+  },
+  {
+    "id": "evt_24",
+    "type": "session.step.streamed",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 15,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20"
+    }
+  },
+  {
+    "id": "evt_25",
+    "type": "session.step.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 16,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_20",
+      "finish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "snapshot": "<hash:5>",
+      "files": []
+    }
+  },
+  {
+    "id": "evt_26",
+    "type": "session.usage.updated",
+    "data": {
+      "sessionID": "ses_2",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      }
+    }
+  },
+  {
+    "id": "evt_27",
+    "type": "session.execution.succeeded",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 17,
+      "version": 1
+    },
+    "data": {
+      "sessionID": "ses_2"
+    }
+  },
+  {
+    "id": "evt_28",
+    "type": "session.inbox.enqueued",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 18,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "inboxID": "msg_29",
+      "sessionID": "ses_2",
+      "item": {
+        "type": "synthetic",
+        "payload": {
+          "text": "<shell id=\"sh_15\" state=\"completed\" command=\"bun -e \"const fs=require('fs');for(let i=0;i<3000;i++){if(fs.existsSync('release'))break;Bun.sleepSync(10)}console.log('done')\"\">\ndone\n\n</shell>",
+          "description": "bun -e \"const fs=require('fs');for(let i=0;i<3000;i++){if(fs.existsSync('release'))break;Bun.sleepSync(10)}console.log('done')\"",
+          "metadata": {
+            "source": "shell",
+            "shellID": "sh_15",
+            "jobID": "sh_15",
+            "state": "completed",
+            "truncated": false,
+            "exit": 0
+          }
+        },
+        "delivery": "steer"
+      }
+    }
+  },
+  {
+    "id": "evt_30",
+    "type": "session.execution.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 19,
+      "version": 1
+    },
+    "data": {
+      "sessionID": "ses_2"
+    }
+  },
+  {
+    "id": "evt_31",
+    "type": "session.inbox.delivered",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 20,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "inboxID": "msg_29"
+    }
+  },
+  {
+    "id": "evt_32",
+    "type": "session.step.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 21,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "agent": "build",
+      "model": {
+        "id": "golden",
+        "providerID": "test"
+      },
+      "assistantMessageID": "msg_33",
+      "snapshot": "<hash:6>",
+      "started": "<time>"
+    }
+  },
+  {
+    "id": "evt_34",
+    "type": "session.text.started",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 22,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_33",
+      "ordinal": 0
+    }
+  },
+  {
+    "id": "evt_35",
+    "type": "session.text.delta",
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_33",
+      "ordinal": 0,
+      "delta": "The job printed done."
+    }
+  },
+  {
+    "id": "evt_36",
+    "type": "session.text.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 23,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_33",
+      "ordinal": 0,
+      "text": "The job printed done."
+    }
+  },
+  {
+    "id": "evt_37",
+    "type": "session.step.streamed",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 24,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_33"
+    }
+  },
+  {
+    "id": "evt_38",
+    "type": "session.step.ended",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 25,
+      "version": 1
+    },
+    "location": {
+      "directory": "<root:0>"
+    },
+    "data": {
+      "sessionID": "ses_2",
+      "assistantMessageID": "msg_33",
+      "finish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      },
+      "snapshot": "<hash:6>",
+      "files": []
+    }
+  },
+  {
+    "id": "evt_39",
+    "type": "session.usage.updated",
+    "data": {
+      "sessionID": "ses_2",
+      "cost": 0,
+      "tokens": {
+        "input": 0,
+        "output": 0,
+        "reasoning": 0,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      }
+    }
+  },
+  {
+    "id": "evt_40",
+    "type": "session.execution.succeeded",
+    "durable": {
+      "aggregateID": "ses_2",
+      "seq": 26,
+      "version": 1
+    },
+    "data": {
+      "sessionID": "ses_2"
+    }
+  }
+]
