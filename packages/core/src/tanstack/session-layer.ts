@@ -34,6 +34,7 @@ import { SessionEvent } from "../session/event.js"
 import { SessionInbox } from "../session/inbox.js"
 import { SessionMessage } from "../session/message.js"
 import { SessionPrompt } from "../session/prompt.js"
+import { userAttachmentContent } from "../session/to-llm-message.js"
 import { SessionRevert } from "../session/revert.js"
 import { SessionShell } from "../session/shell.js"
 import { SessionSkill } from "../session/skill.js"
@@ -1218,9 +1219,13 @@ function userMessage(payload: SessionInbox.UserPayload): UserInput {
   const skills = (payload.skills ?? []).flatMap((skill) =>
     skill.text === undefined ? [] : [{ type: "text" as const, content: skill.text }],
   )
-  const files = (payload.files ?? []).map((file): ContentPart => {
-    const source = { type: "data" as const, value: file.data, mimeType: file.mime }
-    return file.mime.startsWith("image/") ? { type: "image", source } : { type: "document", source }
+  // As on opencode's runtime: text files and folders go as text, images and PDFs as media, and other files not at all.
+  const files = userAttachmentContent(payload.files ?? []).flatMap((part): ContentPart[] => {
+    if (part.type === "text") return [{ type: "text", content: part.text }]
+    const inline = part.type === "media" ? part.media.inline() : undefined
+    if (inline === undefined) return []
+    const source = { type: "data" as const, value: inline.base64, mimeType: inline.mime }
+    return [inline.mime.startsWith("image/") ? { type: "image", source } : { type: "document", source }]
   })
   if (skills.length === 0 && files.length === 0) return payload.text
   return [{ type: "text", content: payload.text }, ...skills, ...files]

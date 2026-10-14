@@ -82,7 +82,8 @@ const attachmentContent = (file: FileAttachment): ContentPart[] => {
   return []
 }
 
-const userAttachmentContent = (files: readonly FileAttachment[]) => {
+/** The model content of the files of a user message. The TanStack runtime sends the same content. */
+export const userAttachmentContent = (files: readonly FileAttachment[]) => {
   const eligible = files.filter(
     (file) => imageMimes.has(file.mime) && file.source.type === "inline" && file.mention?.text,
   )
