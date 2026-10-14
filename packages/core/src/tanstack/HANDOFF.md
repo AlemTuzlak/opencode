@@ -134,6 +134,10 @@ Fix these gaps in TanStack AI, then remove the fork workaround. "Priority" tells
 - `ModelErrorContext` has no model.
 - The retry policy values are private, and retries stop after 3.
 
+### Packaging
+
+- The types of `@tanstack/ai-mistral` and `@tanstack/ai-openrouter` load their SDK types (`@mistralai/mistralai`, `@openrouter/sdk`). These SDK types add a global `[Symbol.asyncIterator]` to `ReadableStream`. In a Bun or Node project, this change breaks other `pipeThrough` code. In core, the `github-copilot` code failed the typecheck. The fork loads these two adapters with no types (`loadSdkAdapters` in `adapters.ts`).
+
 ### Testing
 
 - The persistence testkit does not run in `bun test` without a shim (the `ctx` parameter and `expect.poll`).

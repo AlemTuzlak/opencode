@@ -12,12 +12,9 @@ import { GeminiTextAdapter, createGeminiChat } from "@tanstack/ai-gemini"
 import { GROK_CHAT_MODELS, createGrokText } from "@tanstack/ai-grok"
 import { GROQ_CHAT_MODELS, createGroqText } from "@tanstack/ai-groq"
 import { createLLMGatewayText } from "@tanstack/ai-llmgateway"
-import { createMistralText } from "@tanstack/ai-mistral"
 import { createOllamaChat } from "@tanstack/ai-ollama"
 import { azureOpenaiText, createOpenaiChat } from "@tanstack/ai-openai"
 import { openaiCompatibleText } from "@tanstack/ai-openai/compatible"
-import { createOpenRouterText } from "@tanstack/ai-openrouter"
-import { OPENROUTER_CHAT_MODELS } from "@tanstack/ai-openrouter/model-meta"
 import { VERCEL_GATEWAY_CHAT_MODELS, createVercelGatewayText } from "@tanstack/ai-vercel-gateway"
 import { Effect, Schema } from "effect"
 import { Headers } from "effect/unstable/http"
@@ -92,11 +89,13 @@ export const adapterFor = Effect.fn("TanStackAdapters.adapterFor")(function* (in
   // A provider without a credential can be enabled by ambient setup, such as a local runtime. Its
   // requests then go out without auth, as on the opencode runtime.
   const optionalAuth = input.provider?.activation === "enabled" && input.credential === undefined
+  const sdk = yield* Effect.promise(loadSdkAdapters)
   const built = build({
     runtime,
     resolved,
     credential: input.credential,
     reasoning: reasoning?.model,
+    sdk,
     send: (fallback) => {
       const network = input.fetch ?? fallback
       return routeFetch(resolved, isCopilot ? copilot(network, app) : network, optionalAuth)
@@ -115,6 +114,42 @@ interface Wire {
   readonly reasoning: ModelReasoning | undefined
   /** A fetch that sends through the opencode route (headers, body, auth), over `fallback` when no network was given. */
   readonly send: (fallback: Fetch) => Fetch
+  readonly sdk: SdkAdapters
+}
+
+/**
+ * The adapters that load without their types. The types of `@tanstack/ai-mistral` and `@tanstack/ai-openrouter`
+ * load their SDK types (`@mistralai/mistralai`, `@openrouter/sdk`), which change the global `ReadableStream`. That
+ * change breaks other stream code in core. TypeScript does not read a module whose path is `as string`, and the
+ * bundler still sees the literal path.
+ */
+interface SdkAdapters {
+  readonly createMistralText: (
+    model: string,
+    apiKey: string,
+    config: { readonly baseURL?: string; readonly reasoning?: ModelReasoning },
+  ) => AnyTextAdapter
+  readonly createOpenRouterText: (
+    model: string,
+    apiKey: string,
+    config: { readonly serverURL?: string },
+  ) => AnyTextAdapter
+  readonly OPENROUTER_CHAT_MODELS: ReadonlyArray<string>
+}
+
+let sdkAdapters: Promise<SdkAdapters> | undefined
+
+function loadSdkAdapters() {
+  sdkAdapters ??= Promise.all([
+    import("@tanstack/ai-mistral" as string),
+    import("@tanstack/ai-openrouter" as string),
+    import("@tanstack/ai-openrouter/model-meta" as string),
+  ]).then(([mistral, openrouter, meta]) => ({
+    createMistralText: mistral.createMistralText,
+    createOpenRouterText: openrouter.createOpenRouterText,
+    OPENROUTER_CHAT_MODELS: meta.OPENROUTER_CHAT_MODELS,
+  }))
+  return sdkAdapters
 }
 
 interface Built {
@@ -250,11 +285,11 @@ function chatCompletions(
       if (known(GROQ_CHAT_MODELS, id)) return { adapter: createGroqText(id, ROUTE_AUTH, { baseURL, fetch }) }
       break
     case Provider.ID.openrouter:
-      if (known(OPENROUTER_CHAT_MODELS, id))
-        return wrap(createOpenRouterText(id, ROUTE_AUTH, { serverURL: baseURL }))
+      if (known(wire.sdk.OPENROUTER_CHAT_MODELS, id))
+        return wrap(wire.sdk.createOpenRouterText(id, ROUTE_AUTH, { serverURL: baseURL }))
       break
     case Provider.ID.mistral:
-      return wrap(createMistralText(id, ROUTE_AUTH, { baseURL, reasoning: wire.reasoning }))
+      return wrap(wire.sdk.createMistralText(id, ROUTE_AUTH, { baseURL, reasoning: wire.reasoning }))
     case Provider.ID.make("llmgateway"):
       return { adapter: createLLMGatewayText(id, ROUTE_AUTH, { baseURL, fetch }) }
     case Provider.ID.make("ollama"):
