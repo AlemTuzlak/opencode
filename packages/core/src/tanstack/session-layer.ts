@@ -33,6 +33,7 @@ import {
 import { SessionEvent } from "../session/event.js"
 import { SessionInbox } from "../session/inbox.js"
 import { SessionMessage } from "../session/message.js"
+import { Permission } from "../permission.js"
 import { SessionPrompt } from "../session/prompt.js"
 import { userAttachmentContent } from "../session/to-llm-message.js"
 import { SessionRevert } from "../session/revert.js"
@@ -429,8 +430,35 @@ export const layer = Layer.effect(
       )
     }
 
+    /**
+     * Answers the outside-folder question of `workspaceTools` with opencode's `external_directory` permission, as
+     * opencode's tools ask it: the rules allow or deny the folder, and else the user answers an opencode permission.
+     * The harness asks it as a plain question, which no client can answer as a permission.
+     */
+    const answerOutside = (entry: Entry, ask: { readonly questionId: string; readonly folder: string }) =>
+      Effect.gen(function* () {
+        const info = yield* base.get(entry.sessionID)
+        const resource = path.join(ask.folder, "*").replaceAll("\\", "/")
+        const isAllowed = yield* Permission.Service.use((permission) =>
+          permission.assert({ sessionID: info.id, action: "external_directory", resources: [resource], save: [resource] }),
+        ).pipe(
+          instances.provide(info),
+          Effect.as(true),
+          Effect.catchCause(() => Effect.succeed(false)),
+        )
+        yield* Effect.promise(() => entry.session.answer(ask.questionId, isAllowed ? "y" : "n"))
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError("TanStack session: could not answer an outside-folder question", { cause }),
+        ),
+        Effect.forkIn(busyScope, { startImmediately: true }),
+        Effect.asVoid,
+      )
+
     const publishEvent = (entry: Entry, event: HarnessEvent) =>
       Effect.gen(function* () {
+        const outside = outsideQuestion(event.event)
+        if (outside !== undefined) return yield* answerOutside(entry, outside)
         // The diffs of an edit go to the mapper before its result, so the result gets them as `metadata.files`.
         if (event.event.type === EventType.TOOL_CALL_RESULT) applyChanges(entry, event.event.toolCallId)
         const tokensAfter = entry.mapper.compactionEnd(event)
@@ -1245,6 +1273,19 @@ function track(entry: Entry, event: HarnessEvent) {
   entry.running.delete(operationId)
   entry.expected.delete(operationId)
   entry.finished.add(operationId)
+}
+
+// The outside-folder question of `workspaceTools`: "<tool> wants <path>, outside the workspace (<root>). Allow <folder>
+// for this session? (y/n)".
+const OUTSIDE_QUESTION = /^\S+ wants [\s\S]+, outside the workspace \([\s\S]+\)\. Allow ([\s\S]+) for this session\? \(y\/n\)$/
+const decodeQuestion = Schema.decodeUnknownOption(Schema.Struct({ questionId: Schema.String, message: Schema.String }))
+
+/** The question id and the folder of an outside-folder question. `undefined` for any other event. */
+function outsideQuestion(chunk: StreamChunk) {
+  if (chunk.type !== EventType.CUSTOM || chunk.name !== HARNESS_EVENTS.question) return undefined
+  const question = Option.getOrUndefined(decodeQuestion(chunk.value))
+  const folder = question === undefined ? undefined : OUTSIDE_QUESTION.exec(question.message)?.[1]
+  return question === undefined || folder === undefined ? undefined : { questionId: question.questionId, folder }
 }
 
 function mark(type: string, inboxID: string) {

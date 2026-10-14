@@ -44,6 +44,7 @@ import { TanStackAdapters } from "./adapters.js"
 import { TanStackOpencodeTools, inCodeMode } from "./opencode-tools.js"
 import { TanStackPluginCompat } from "./plugin-compat.js"
 import { TanStackRules } from "./rules.js"
+import { TanStackToolNames } from "./tool-names.js"
 
 /** The model is not in the model catalog of the location. */
 export class ModelNotFoundError extends Schema.TaggedError<ModelNotFoundError>()("TanStackHarness.ModelNotFoundError", {
@@ -185,6 +186,7 @@ export const make = Effect.fn("TanStackHarness.make")(function* (options: Option
     const settings = Provider.mergeOverlay(provider?.settings, Provider.modelSettings(info.settings))
     const entry = {
       ...adapter,
+      adapter: TanStackToolNames.withOpencodeAliases(adapter.adapter),
       ref,
       info,
       compaction: info.settings?.compaction ?? provider?.settings?.compaction,

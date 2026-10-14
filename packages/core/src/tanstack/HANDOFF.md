@@ -19,7 +19,7 @@ This fork runs every opencode session on the TanStack AI harness. The clients, t
 | `session-layer.ts` | `Session.Service` on the harness: prompt, inbox, revert, fork, compaction, and the other session methods. |
 | `events.ts` | Maps harness stream events to opencode Bus events. |
 | `adapters.ts` | Maps opencode providers to TanStack AI adapters. |
-| `tool-names.ts` | Maps harness tool names, inputs, and results to opencode tool names. |
+| `tool-names.ts` | Maps harness tool names, inputs, and results to opencode tool names. `withOpencodeAliases` lets a model call a harness tool by its opencode name. |
 | `opencode-tools.ts` | The opencode tools that the harness does not have, for example the browser tools. |
 | `rules.ts` | Converts opencode permission rules to harness rules. |
 | `permission-layer.ts`, `form-layer.ts`, `job-layer.ts` | `Permission`, `Form`, and `Job` services on the harness. |
@@ -57,7 +57,7 @@ Fix these gaps in TanStack AI, then remove the fork workaround. "Priority" tells
 | `onConfig` cannot change `maxTokens`, `temperature`, or `topP` for each model call. | Agent and model settings for these values are not applied. | None. |
 | `revert(messageId)` keeps that message. Nothing can revert the first message. | Revert of the first message does nothing. | None. |
 | Middleware cannot compact outside a model call. `continue()` refuses a transcript that ends with an assistant message. | Manual compaction does not run at once. It runs at the next model call. | `compactNext` marks the session, and the compaction middleware runs at the next model call. |
-| `workspaceTools({ outside })` accepts only `'deny'` or `'ask'`. | opencode allows paths outside the project by default. The fork asks instead. | `'ask'`. |
+| `workspaceTools({ outside })` accepts only `'deny'` or `'ask'`, and it has no rules for each folder. It asks its own y/n question for each outside folder. | opencode checks the `external_directory` rules, for example the additional directories of an ACP session. | `'ask'`. The session layer answers the y/n question with opencode's `external_directory` permission (`answerOutside` in `session-layer.ts`): the rules allow or deny, or the user answers an opencode permission. |
 | Profile permission rules apply only to the primary agent, not to subagent runs. | Subagent permissions differ from opencode. | None. |
 | `PermissionResources` has only paths and commands. | MCP rules for each server (`github:*`) cannot match. | None. |
 | `host.reload(harness)` does not give the new definition to live sessions. | Live sessions keep the old plugins after a reload. | None. |

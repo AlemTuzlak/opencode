@@ -1,8 +1,8 @@
 export * as TanStackToolNames from "./tool-names.js"
 
 import type { Tool } from "@opencode/schema/tool"
-import { isContentPartArray } from "@tanstack/ai"
-import type { ContentPart } from "@tanstack/ai"
+import { EventType, isContentPartArray } from "@tanstack/ai"
+import type { AnyTextAdapter, ContentPart, StreamChunk } from "@tanstack/ai"
 import { Option, Schema } from "effect"
 
 /**
@@ -133,6 +133,63 @@ export function toHarnessInput<Value>(name: string, input: Readonly<Record<strin
       return [rename.harness, typeof value === "number" ? value * (rename.scale ?? 1) : value] as const
     }),
   )
+}
+
+/**
+ * The adapter, with opencode tool names as aliases of the harness tools. A model that calls `read`, which the request
+ * does not offer, gets `read_file`, with the input fields renamed by {@link toHarnessInput}. The harness offers its
+ * own names. Models that call opencode names still work, for example the scripted models of opencode's tests.
+ */
+export function withOpencodeAliases(adapter: AnyTextAdapter): AnyTextAdapter {
+  return new Proxy(adapter, {
+    get: (target, key) => {
+      if (key === "chatStream")
+        return (options: Parameters<AnyTextAdapter["chatStream"]>[0]) =>
+          aliased(target.chatStream(options), new Set((options.tools ?? []).map((tool) => tool.name)))
+      const value = target[key as keyof AnyTextAdapter]
+      // Bound, so an adapter with private fields still reads them.
+      return typeof value === "function" ? value.bind(target) : value
+    },
+  })
+}
+
+const decodeArgs = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)))
+const decodeInput = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Unknown))
+
+async function* aliased(stream: AsyncIterable<StreamChunk>, offered: ReadonlySet<string>): AsyncIterable<StreamChunk> {
+  // The opencode name and the held input text of each aliased call.
+  const calls = new Map<string, { readonly name: string; args: string }>()
+  for await (const chunk of stream) {
+    if (chunk.type === EventType.TOOL_CALL_START) {
+      const name = chunk.toolCallName ?? chunk.toolName ?? ""
+      const harness = toHarnessName(name)
+      if (offered.has(name) || !offered.has(harness)) {
+        yield chunk
+        continue
+      }
+      calls.set(chunk.toolCallId, { name, args: "" })
+      yield { ...chunk, toolCallName: harness, toolName: harness }
+      continue
+    }
+    const call =
+      chunk.type === EventType.TOOL_CALL_ARGS || chunk.type === EventType.TOOL_CALL_END
+        ? calls.get(chunk.toolCallId)
+        : undefined
+    if (call === undefined) {
+      yield chunk
+      continue
+    }
+    // The input goes out whole at the end, with the harness field names.
+    if (chunk.type === EventType.TOOL_CALL_ARGS) {
+      call.args += chunk.delta
+      continue
+    }
+    if (chunk.type !== EventType.TOOL_CALL_END) continue
+    const sent = Option.getOrUndefined(decodeArgs(call.args)) ?? Option.getOrUndefined(decodeInput(chunk.input)) ?? {}
+    const input = toHarnessInput(call.name, sent)
+    yield { type: EventType.TOOL_CALL_ARGS, toolCallId: chunk.toolCallId, delta: JSON.stringify(input), timestamp: chunk.timestamp }
+    yield { ...chunk, input }
+  }
 }
 
 /** One tool call inside `execute`, as the opencode execute views read it. A type, so it is JSON metadata. */
