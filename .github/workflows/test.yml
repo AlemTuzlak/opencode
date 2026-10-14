@@ -81,6 +81,11 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
+      # The GitHub-hosted images have no ripgrep, and the search tests block the download.
+      - name: Install ripgrep
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then choco install ripgrep --no-progress -y; else sudo apt-get update -q && sudo apt-get install -y ripgrep; fi
+
       - name: Test Effect simplification rules
         if: runner.os == 'Linux'
         run: bun run test:effect-simplification-rules
