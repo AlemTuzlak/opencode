@@ -10,8 +10,8 @@ import {
 import type { Model } from "@opencode/schema/model"
 import { Option, Schema } from "effect"
 import { fileURLToPath } from "url"
-import { SessionMessage } from "../message.js"
-import { SessionProviderContext } from "../provider-context.js"
+import { SessionMessage } from "./message.js"
+import { SessionProviderContext } from "./provider-context.js"
 import type { FileAttachment } from "@opencode/schema/prompt"
 
 const imageMimes = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"])
@@ -82,7 +82,8 @@ const attachmentContent = (file: FileAttachment): ContentPart[] => {
   return []
 }
 
-const userAttachmentContent = (files: readonly FileAttachment[]) => {
+/** The model content of the files of a user message. The TanStack runtime sends the same content. */
+export const userAttachmentContent = (files: readonly FileAttachment[]) => {
   const eligible = files.filter(
     (file) => imageMimes.has(file.mime) && file.source.type === "inline" && file.mention?.text,
   )

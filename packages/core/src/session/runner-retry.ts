@@ -1,15 +1,12 @@
-export * as SessionRunnerRetry from "./retry.js"
+export * as SessionRunnerRetry from "./runner-retry.js"
 
 import { AIError, isRetryable } from "@opencode/ai"
 import { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { SessionError } from "@opencode/schema/session-error"
 import { Clock, Duration, Effect, Pull, Schedule } from "effect"
-import { Bus } from "../../bus.js"
-import type { PluginHooks } from "../../plugin/hooks.js"
-import { SessionEvent } from "../event.js"
-import { SessionMessage } from "../message.js"
-import { SessionSchema } from "../schema.js"
+import type { PluginHooks } from "../plugin/hooks.js"
+import { SessionSchema } from "./schema.js"
 
 export { isRetryable }
 
@@ -20,12 +17,6 @@ interface Input {
   readonly model: Model.Ref
   readonly hook: (event: PluginHooks.Domains["session"]["retry"]) => Effect.Effect<void>
   readonly retry: boolean
-}
-
-export interface Decision {
-  readonly retry: true
-  readonly attempt: number
-  readonly delay: number
 }
 
 /** Bound provider-requested delays so a hostile or buggy retry-after cannot stall a session for hours. */
@@ -89,27 +80,4 @@ export const policy = (sessionID: SessionSchema.ID) =>
           Number.isFinite(event.decision.delay) && event.decision.delay >= 0 ? Math.ceil(event.decision.delay) : delay
         return { retry: true as const, attempt, delay: normalized }
       })
-  })
-
-export const make = (bus: Bus.Interface, sessionID: SessionSchema.ID) =>
-  Effect.gen(function* () {
-    const decide = yield* policy(sessionID)
-    const wait = (input: {
-      readonly decision: Decision
-      readonly assistantMessageID: SessionMessage.ID
-      readonly error: SessionError.Error
-    }) =>
-      Effect.gen(function* () {
-        const scheduled = yield* Clock.currentTimeMillis
-        yield* bus.publish(SessionEvent.RetryScheduled, {
-          sessionID,
-          assistantMessageID: input.assistantMessageID,
-          attempt: input.decision.attempt,
-          at: scheduled + input.decision.delay,
-          error: input.error,
-        })
-        const remaining = Math.max(0, scheduled + input.decision.delay - (yield* Clock.currentTimeMillis))
-        yield* Effect.sleep(Duration.millis(remaining))
-      })
-    return { decide, wait }
   })

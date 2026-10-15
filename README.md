@@ -112,6 +112,13 @@ This is used internally and can be invoked using `@general` in messages.
 
 Learn more about [agents](https://opencode.ai/docs/agents).
 
+### TanStack runtime
+
+OpenCode runs your sessions on the TanStack AI harness. These limits apply:
+
+- GitLab Duo, SAP AI Core, and the ChatGPT Codex backend have no TanStack AI adapter. A model from one of these providers fails with an error that names the provider.
+- Plugins that use the `aisdk.sdk` or `aisdk.language` hooks are not supported.
+
 ### Documentation
 
 For more info on how to configure OpenCode, [**head over to our docs**](https://opencode.ai/docs).

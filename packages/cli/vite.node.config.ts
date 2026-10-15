@@ -290,6 +290,9 @@ export function mainConfig(input: NodeBuildInput): UserConfig {
       emptyOutDir: false,
       minify: true,
       rollupOptions: {
+        // Optional peers of `@tanstack/ai-harness` that are not installed. Inlined, their stubs throw at startup.
+        // External, the harness's own `import()` fails at runtime, and it goes on without them.
+        external: ["@vscode/ripgrep", "turndown"],
         output: output("opencode.mjs", nodePrelude(input)),
       },
     },

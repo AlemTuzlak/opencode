@@ -22,7 +22,7 @@ import { SessionProviderContext } from "./provider-context.js"
 import { InstructionEntry } from "./instruction-entry.js"
 import { SessionMessage } from "./message.js"
 import { SessionModelRequest } from "./model-request.js"
-import { SessionRunnerModel } from "./runner/model.js"
+import { SessionRunnerModel } from "./runner-model.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
 

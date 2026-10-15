@@ -106,6 +106,10 @@ yield *
 
 Hooks run sequentially in registration order. Later hooks observe mutations made by earlier hooks.
 
+OpenCode runs sessions on the TanStack runtime. It has no Vercel AI SDK, so it does not run `aisdk` hooks. A plugin
+that registers one fails to load, and the plugin list shows the error. To change model requests, use the
+`model.request`, `http.request`, and `http.response` session hooks.
+
 Session context is mutable immediately before provider dispatch:
 
 ```ts
