@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { $ } from "bun"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, readdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -24,33 +24,75 @@ const names = [
 const temporary = await mkdtemp(join(tmpdir(), "opencode-sdk-package-"))
 const archives = new Map<string, string>()
 
+interface Manifest {
+  name: string
+  dependencies?: Record<string, string>
+  exports?: Record<string, string | { import: string; types: string }>
+  imports?: Record<string, Record<string, string>>
+}
+
+/** The dependencies with each packed workspace package as its archive. Throws for an unpacked workspace package. */
+function packedDependencies(pkg: Manifest) {
+  if (!pkg.dependencies) return undefined
+  const unpacked = Object.entries(pkg.dependencies)
+    .filter(([dependency, version]) => version.startsWith("workspace:") && !archives.has(dependency))
+    .map(([dependency]) => dependency)
+  if (unpacked.length > 0) throw new Error(`${pkg.name} has unpacked workspace dependencies: ${unpacked.join(", ")}`)
+  return Object.fromEntries(
+    Object.entries(pkg.dependencies).map(([dependency, version]) => {
+      const local = archives.get(dependency)
+      return [dependency, local ? `file:${local}` : version]
+    }),
+  )
+}
+
+/** Packs `directory` with the manifest `pkg`, then restores its `package.json` to `original`. */
+async function pack(directory: string, original: string, pkg: Manifest, archive: string) {
+  await Bun.write(join(directory, "package.json"), JSON.stringify(pkg, null, 2) + "\n")
+  try {
+    await $`bun pm pack --filename ${archive} --ignore-scripts --quiet`.cwd(directory)
+  } finally {
+    await Bun.write(join(directory, "package.json"), original)
+  }
+  archives.set(pkg.name, archive)
+}
+
 try {
+  // The TanStack AI packages vendored in vendor/tanstack. They are built already, so they are only packed, each after
+  // the vendored packages that it depends on.
+  const vendor = join(root, "vendor", "tanstack")
+  const vendored = new Map<string, { directory: string; original: string; pkg: Manifest }>()
+  for (const entry of await readdir(vendor, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const directory = join(vendor, entry.name)
+    const original = await Bun.file(join(directory, "package.json")).text()
+    // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- the vendor script writes these manifests.
+    const pkg = JSON.parse(original) as Manifest
+    vendored.set(pkg.name, { directory, original, pkg })
+  }
+  while (vendored.size > 0) {
+    const ready = [...vendored.values()].filter((item) =>
+      Object.entries(item.pkg.dependencies ?? {}).every(
+        ([dependency, version]) => !version.startsWith("workspace:") || archives.has(dependency),
+      ),
+    )
+    if (ready.length === 0) throw new Error(`Vendored packages depend on each other: ${[...vendored.keys()].join(", ")}`)
+    for (const item of ready) {
+      const archive = join(temporary, `vendor-${item.pkg.name.replace("@tanstack/", "")}.tgz`)
+      await pack(item.directory, item.original, { ...item.pkg, dependencies: packedDependencies(item.pkg) }, archive)
+      vendored.delete(item.pkg.name)
+    }
+  }
+
   for (const name of names) {
     const directory = join(root, "packages", name)
     await $`bun run build`.cwd(directory)
     const original = await Bun.file(join(directory, "package.json")).text()
     // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion -- package manifests are validated by their package builds.
-    const pkg = JSON.parse(original) as {
-      name: string
-      dependencies?: Record<string, string>
-      exports?: Record<string, string | { import: string; types: string }>
-      imports?: Record<string, Record<string, string>>
-    }
+    const pkg = JSON.parse(original) as Manifest
     const archive = join(temporary, `${name}.tgz`)
 
-    if (pkg.dependencies) {
-      const unpacked = Object.entries(pkg.dependencies)
-        .filter(([dependency, version]) => version.startsWith("workspace:") && !archives.has(dependency))
-        .map(([dependency]) => dependency)
-      if (unpacked.length > 0)
-        throw new Error(`${pkg.name} has unpacked workspace dependencies: ${unpacked.join(", ")}`)
-      pkg.dependencies = Object.fromEntries(
-        Object.entries(pkg.dependencies).map(([dependency, version]) => {
-          const local = archives.get(dependency)
-          return [dependency, local ? `file:${local}` : version]
-        }),
-      )
-    }
+    pkg.dependencies = packedDependencies(pkg)
     if (pkg.exports) {
       pkg.exports = Object.fromEntries(
         Object.entries(pkg.exports).map(([key, value]) => {
@@ -73,13 +115,7 @@ try {
       )
     }
 
-    await Bun.write(join(directory, "package.json"), JSON.stringify(pkg, null, 2) + "\n")
-    try {
-      await $`bun pm pack --filename ${archive} --ignore-scripts --quiet`.cwd(directory)
-    } finally {
-      await Bun.write(join(directory, "package.json"), original)
-    }
-    archives.set(pkg.name, archive)
+    await pack(directory, original, pkg, archive)
   }
 
   const consumer = join(temporary, "consumer")

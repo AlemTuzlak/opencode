@@ -151,6 +151,7 @@
     "**/.sst",
     "**/*.d.ts",
     "**/sdk.gen.ts",
+    "vendor/**",
     ".agent/**",
     ".agents/**",
     ".claude/**",

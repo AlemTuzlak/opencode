@@ -1,0 +1,36 @@
+{
+  "name": "@tanstack/ai-compaction",
+  "version": "0.1.13",
+  "description": "Context-window compaction middleware for TanStack AI chat()",
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TanStack/ai.git",
+    "directory": "packages/ai-compaction"
+  },
+  "type": "module",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "ai",
+    "tanstack",
+    "compaction",
+    "context",
+    "middleware"
+  ],
+  "peerDependencies": {
+    "@tanstack/ai": "^0.65.1"
+  }
+}

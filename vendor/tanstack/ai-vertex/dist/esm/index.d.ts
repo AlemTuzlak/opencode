@@ -1,0 +1,13 @@
+import { ChatStreamSummarizeAdapter } from '@tanstack/ai/adapters';
+import { GeminiAudioAdapter, GeminiEmbeddingAdapter, GeminiImageAdapter, GeminiTTSAdapter, GeminiTextAdapter, GeminiVideoAdapter, GeminiAudioModel, GeminiEmbeddingModel, GeminiImageModel, GeminiTTSModels, GeminiTextModel, GeminiVideoModel } from '@tanstack/ai-gemini';
+import { VertexClientConfig, VertexVideoConfig } from './auth.js';
+export { VertexAuthError } from './errors.js';
+export { resolveVertexGeminiOptions, type VertexClientConfig, type VertexVideoConfig, } from './auth.js';
+type GeminiTTSModel = (typeof GeminiTTSModels)[number];
+export declare function vertexText<TModel extends GeminiTextModel>(model: TModel, config?: VertexClientConfig): GeminiTextAdapter<TModel>;
+export declare function vertexSummarize<TModel extends GeminiTextModel>(model: TModel, config?: VertexClientConfig): ChatStreamSummarizeAdapter<TModel>;
+export declare function vertexImage<TModel extends GeminiImageModel>(model: TModel, config?: VertexClientConfig): GeminiImageAdapter<TModel>;
+export declare function vertexEmbedding<TModel extends GeminiEmbeddingModel>(model: TModel, config?: VertexClientConfig): GeminiEmbeddingAdapter<TModel>;
+export declare function vertexSpeech<TModel extends GeminiTTSModel>(model: TModel, config?: VertexClientConfig): GeminiTTSAdapter<TModel>;
+export declare function vertexAudio<TModel extends GeminiAudioModel>(model: TModel, config?: VertexClientConfig): GeminiAudioAdapter<TModel>;
+export declare function vertexVideo<TModel extends GeminiVideoModel>(model: TModel, config?: VertexVideoConfig): GeminiVideoAdapter<TModel>;

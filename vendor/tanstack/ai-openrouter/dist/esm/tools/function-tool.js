@@ -1,0 +1,28 @@
+//#region src/tools/function-tool.ts
+/**
+* Converts a standard Tool to OpenRouter FunctionTool format.
+*
+* Tool schemas are already converted to JSON Schema in the ai layer.
+*/
+function convertFunctionToolToAdapterFormat(tool) {
+	const inputSchema = tool.inputSchema ?? {
+		type: "object",
+		properties: {},
+		required: []
+	};
+	const cacheControl = tool.metadata?.cacheControl;
+	return {
+		type: "function",
+		function: {
+			name: tool.name,
+			description: tool.description,
+			parameters: inputSchema,
+			strict: false
+		},
+		...cacheControl ? { cacheControl } : {}
+	};
+}
+//#endregion
+export { convertFunctionToolToAdapterFormat };
+
+//# sourceMappingURL=function-tool.js.map

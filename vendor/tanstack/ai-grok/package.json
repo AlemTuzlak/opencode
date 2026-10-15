@@ -1,0 +1,73 @@
+{
+  "name": "@tanstack/ai-grok",
+  "version": "0.21.0",
+  "description": "xAI Grok adapter for TanStack AI chat, image generation, realtime, and structured outputs.",
+  "author": "Tanner Linsley",
+  "license": "MIT",
+  "homepage": "https://tanstack.com/ai",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TanStack/ai.git",
+    "directory": "packages/ai-grok"
+  },
+  "bugs": {
+    "url": "https://github.com/TanStack/ai/issues"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/tannerlinsley"
+  },
+  "type": "module",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js"
+    },
+    "./byok": {
+      "types": "./dist/esm/byok.d.ts",
+      "import": "./dist/esm/byok.js"
+    },
+    "./tools": {
+      "types": "./dist/esm/tools/index.d.ts",
+      "import": "./dist/esm/tools/index.js"
+    },
+    "./vertex": {
+      "types": "./dist/esm/vertex/index.d.ts",
+      "import": "./dist/esm/vertex/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "ai",
+    "ai-sdk",
+    "typescript",
+    "tanstack",
+    "grok",
+    "xai",
+    "adapter",
+    "chat",
+    "tool-calling",
+    "structured-outputs",
+    "image-generation",
+    "realtime"
+  ],
+  "dependencies": {
+    "@tanstack/ai-utils": "workspace:*",
+    "@tanstack/openai-base": "workspace:*",
+    "openai": "^7.30.0"
+  },
+  "peerDependencies": {
+    "google-auth-library": "^10.5.0",
+    "@tanstack/ai": "^0.65.1"
+  },
+  "peerDependenciesMeta": {
+    "google-auth-library": {
+      "optional": true
+    }
+  }
+}

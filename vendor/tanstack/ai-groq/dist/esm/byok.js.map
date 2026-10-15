@@ -1,0 +1,1 @@
+{"version":3,"file":"byok.js","names":[],"sources":["../../src/byok.ts"],"sourcesContent":["import { defineByokProvider } from '@tanstack/ai/byok'\n\nexport const groqByok = defineByokProvider({\n  id: 'groq',\n  label: 'Groq',\n  env: 'GROQ_API_KEY',\n})\n"],"mappings":";;AAEA,IAAa,WAAW,mBAAmB;CACzC,IAAI;CACJ,OAAO;CACP,KAAK;AACP,CAAC"}

@@ -1,0 +1,1 @@
+{"version":3,"file":"byok.js","names":[],"sources":["../../src/byok.ts"],"sourcesContent":["import { defineByokProvider } from '@tanstack/ai/byok'\n\nexport const bedrockByok = defineByokProvider({\n  id: 'bedrock',\n  label: 'Amazon Bedrock',\n})\n"],"mappings":";;AAEA,IAAa,cAAc,mBAAmB;CAC5C,IAAI;CACJ,OAAO;AACT,CAAC"}
